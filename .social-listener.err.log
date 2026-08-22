@@ -1,0 +1,160 @@
+{"component":"social_listener","operation":"POST /content/campaign-mode","status":"error","error":"No selected channel has a successful persisted provider identity test."}
+{"component":"social_listener","operation":"PUT /channel-configurations/instagram","status":"error","error":"Webhook URL must be a valid URL."}
+{"component":"social_listener","operation":"PUT /channel-configurations/instagram","status":"error","error":"Webhook URL must be a valid URL."}
+{"component":"social_listener","operation":"PUT /channel-configurations/instagram","status":"error","error":"Webhook URL must be a valid URL."}
+{"component":"social_listener","operation":"PUT /channel-configurations/instagram","status":"error","error":"Webhook URL must be a valid URL."}
+{"component":"social_listener","operation":"PUT /channel-configurations/instagram","status":"error","error":"Webhook URL must be a valid URL."}
+{"component":"social_listener","operation":"PUT /channel-configurations/instagram","status":"error","error":"Webhook URL must be a valid URL."}
+{"component":"social_listener","operation":"PUT /channel-configurations/instagram","status":"error","error":"Webhook URL must be a valid URL."}
+{"component":"social_listener","operation":"PUT /channel-configurations/instagram","status":"error","error":"Webhook URL must be a valid URL."}
+{"component":"social_listener","operation":"PUT /channel-configurations/instagram","status":"error","error":"Webhook URL must be a valid URL."}
+{"component":"social_listener","operation":"PUT /channel-configurations/instagram","status":"error","error":"CHANNEL_CONFIG_ENCRYPTION_KEY must be a base64-encoded 32-byte key."}
+{"component":"social_listener","operation":"PUT /channel-configurations/instagram","status":"error","error":"CHANNEL_CONFIG_ENCRYPTION_KEY must be a base64-encoded 32-byte key."}
+{"component":"social_listener","operation":"PUT /channel-configurations/instagram","status":"error","error":"CHANNEL_CONFIG_ENCRYPTION_KEY must be a base64-encoded 32-byte key."}
+{"component":"social_listener","operation":"PUT /channel-configurations/instagram","status":"error","error":"CHANNEL_CONFIG_ENCRYPTION_KEY must be a base64-encoded 32-byte key."}
+{"component":"social_listener","operation":"PUT /channel-configurations/instagram","status":"error","error":"CHANNEL_CONFIG_ENCRYPTION_KEY must be a base64-encoded 32-byte key."}
+{"component":"social_listener","operation":"PUT /channel-configurations/instagram","status":"error","error":"CHANNEL_CONFIG_ENCRYPTION_KEY must be a base64-encoded 32-byte key."}
+{"component":"social_listener","operation":"PUT /channel-configurations/instagram","status":"error","error":"CHANNEL_CONFIG_ENCRYPTION_KEY must be a base64-encoded 32-byte key."}
+{"component":"social_listener","operation":"PUT /channel-configurations/instagram","status":"error","error":"CHANNEL_CONFIG_ENCRYPTION_KEY must be a base64-encoded 32-byte key."}
+{"component":"social_listener","operation":"PUT /channel-configurations/instagram","status":"error","error":"CHANNEL_CONFIG_ENCRYPTION_KEY must be a base64-encoded 32-byte key."}
+{"component":"social_listener","operation":"PUT /channel-configurations/instagram","status":"error","error":"CHANNEL_CONFIG_ENCRYPTION_KEY must be a base64-encoded 32-byte key."}
+{"component":"social_listener","operation":"PUT /channel-configurations/instagram","status":"error","error":"CHANNEL_CONFIG_ENCRYPTION_KEY must be a base64-encoded 32-byte key."}
+{"component":"social_listener","operation":"PUT /channel-configurations/instagram","status":"error","error":"CHANNEL_CONFIG_ENCRYPTION_KEY must be a base64-encoded 32-byte key."}
+{"component":"social_listener","operation":"PUT /channel-configurations/instagram","status":"error","error":"CHANNEL_CONFIG_ENCRYPTION_KEY must be a base64-encoded 32-byte key."}
+{"component":"social_listener","operation":"PUT /channel-configurations/instagram","status":"error","error":"CHANNEL_CONFIG_ENCRYPTION_KEY must be a base64-encoded 32-byte key."}
+{"component":"social_listener","operation":"PUT /channel-configurations/instagram","status":"error","error":"CHANNEL_CONFIG_ENCRYPTION_KEY must be a base64-encoded 32-byte key."}
+{"component":"social_listener","operation":"PUT /channel-configurations/instagram","status":"error","error":"CHANNEL_CONFIG_ENCRYPTION_KEY must be a base64-encoded 32-byte key."}
+{"component":"social_listener","operation":"PUT /channel-configurations/instagram","status":"error","error":"CHANNEL_CONFIG_ENCRYPTION_KEY must be a base64-encoded 32-byte key."}
+{"component":"social_listener","operation":"campaign_automation_tick","status":"error","error":"Timeout: Request failed to complete in 15000ms"}
+{"component":"social_listener","operation":"campaign_automation_tick","status":"error","error":"Failed to cancel request in 5000ms"}
+{"component":"social_listener","operation":"campaign_automation_tick","status":"error","error":"Timeout: Request failed to complete in 15000ms"}
+{"component":"social_listener","operation":"GET /scoring","status":"error","error":"Failed to cancel request in 5000ms"}
+{"component":"social_listener","operation":"campaign_automation_tick","status":"error","error":"Failed to cancel request in 5000ms"}
+{"component":"social_listener","operation":"campaign_automation_tick","status":"error","error":"Timeout: Request failed to complete in 15000ms"}
+{"component":"social_listener","operation":"campaign_automation_tick","status":"error","error":"Timeout: Request failed to complete in 15000ms"}
+{"component":"social_listener","operation":"campaign_automation_tick","status":"error","error":"Failed to cancel request in 5000ms"}
+{"component":"social_listener","operation":"campaign_automation_tick","status":"error","error":"Timeout: Request failed to complete in 15000ms"}
+{"component":"social_listener","operation":"campaign_automation_tick","status":"error","error":"Timeout: Request failed to complete in 15000ms"}
+{"component":"social_listener","operation":"campaign_automation_tick","status":"error","error":"Timeout: Request failed to complete in 15000ms"}
+{"component":"social_listener","operation":"campaign_automation_tick","status":"error","error":"Timeout: Request failed to complete in 15000ms"}
+{"component":"social_listener","operation":"campaign_automation_tick","status":"error","error":"Failed to cancel request in 5000ms"}
+{"component":"social_listener","operation":"campaign_automation_tick","status":"error","error":"Timeout: Request failed to complete in 15000ms"}
+{"component":"social_listener","operation":"PUT /channel-configurations/x","status":"error","error":"CHANNEL_CONFIG_ENCRYPTION_KEY must be a base64-encoded 32-byte key."}
+{"component":"social_listener","operation":"PUT /channel-configurations/x","status":"error","error":"CHANNEL_CONFIG_ENCRYPTION_KEY must be a base64-encoded 32-byte key."}
+{"component":"social_listener","operation":"PUT /channel-configurations/x","status":"error","error":"CHANNEL_CONFIG_ENCRYPTION_KEY must be a base64-encoded 32-byte key."}
+{"component":"social_listener","operation":"campaign_automation_tick","status":"error","error":"Failed to cancel request in 5000ms"}
+{"component":"social_listener","operation":"PUT /channel-configurations/x","status":"error","error":"CHANNEL_CONFIG_ENCRYPTION_KEY must be a base64-encoded 32-byte key."}
+{"component":"social_listener","operation":"PUT /channel-configurations/x","status":"error","error":"CHANNEL_CONFIG_ENCRYPTION_KEY must be a base64-encoded 32-byte key."}
+{"component":"social_listener","operation":"PUT /channel-configurations/x","status":"error","error":"CHANNEL_CONFIG_ENCRYPTION_KEY must be a base64-encoded 32-byte key."}
+{"component":"social_listener","operation":"campaign_automation_tick","status":"error","error":"Failed to cancel request in 5000ms"}
+{"component":"social_listener","operation":"campaign_automation_tick","status":"error","error":"Failed to connect to localhost\\SQLEXPRESS in 15000ms"}
+{"component":"social_listener","operation":"PUT /channel-configurations/x","status":"error","error":"Webhook URL must be a valid URL."}
+{"component":"social_listener","operation":"PUT /channel-configurations/x","status":"error","error":"Webhook URL must be a valid URL."}
+{"component":"social_listener","operation":"PUT /channel-configurations/x","status":"error","error":"Webhook URL must be a valid URL."}
+{"component":"social_listener","operation":"PUT /channel-configurations/x","status":"error","error":"Webhook URL must be a valid URL."}
+{"component":"social_listener","operation":"PUT /channel-configurations/x","status":"error","error":"Webhook URL must be a valid URL."}
+{"component":"social_listener","operation":"campaign_automation_tick","status":"error","error":"Failed to connect to localhost\\SQLEXPRESS in 15000ms"}
+{"component":"social_listener","operation":"PUT /channel-configurations/x","status":"error","error":"Webhook URL must be a valid URL."}
+{"component":"social_listener","operation":"PUT /channel-configurations/x","status":"error","error":"Webhook URL must be a valid URL."}
+{"component":"social_listener","operation":"PUT /channel-configurations/x","status":"error","error":"Webhook URL must be a valid URL."}
+{"component":"social_listener","operation":"PUT /channel-configurations/x","status":"error","error":"Webhook URL must be a valid URL."}
+{"component":"social_listener","operation":"PUT /channel-configurations/x","status":"error","error":"Webhook URL must be a valid URL."}
+{"component":"social_listener","operation":"PUT /channel-configurations/x","status":"error","error":"Webhook URL must be a valid URL."}
+{"component":"social_listener","operation":"PUT /channel-configurations/x","status":"error","error":"Webhook URL must be a valid URL."}
+{"component":"social_listener","operation":"PUT /channel-configurations/x","status":"error","error":"Webhook URL must be a valid URL."}
+{"component":"social_listener","operation":"PUT /channel-configurations/x","status":"error","error":"Webhook URL must be a valid URL."}
+{"component":"social_listener","operation":"PUT /channel-configurations/x","status":"error","error":"Webhook URL must be a valid URL."}
+{"component":"social_listener","operation":"PUT /channel-configurations/x","status":"error","error":"Webhook URL must be a valid URL."}
+{"component":"social_listener","operation":"PUT /channel-configurations/x","status":"error","error":"Webhook URL must be a valid URL."}
+{"component":"social_listener","operation":"PUT /channel-configurations/x","status":"error","error":"Webhook URL must be a valid URL."}
+{"component":"social_listener","operation":"PUT /channel-configurations/x","status":"error","error":"Webhook URL must be a valid URL."}
+{"component":"social_listener","operation":"PUT /channel-configurations/x","status":"error","error":"Webhook URL must be a valid URL."}
+{"component":"social_listener","operation":"PUT /channel-configurations/x","status":"error","error":"Webhook URL must be a valid URL."}
+{"component":"social_listener","operation":"PUT /channel-configurations/x","status":"error","error":"Webhook URL must be a valid URL."}
+{"component":"social_listener","operation":"PUT /channel-configurations/x","status":"error","error":"Webhook URL must be a valid URL."}
+{"component":"social_listener","operation":"PUT /channel-configurations/x","status":"error","error":"Webhook URL must be a valid URL."}
+{"component":"social_listener","operation":"PUT /channel-configurations/x","status":"error","error":"Webhook URL must be a valid URL."}
+{"component":"social_listener","operation":"PUT /channel-configurations/x","status":"error","error":"Webhook URL must be a valid URL."}
+{"component":"social_listener","operation":"PUT /channel-configurations/x","status":"error","error":"Webhook URL must be a valid URL."}
+{"component":"social_listener","operation":"PUT /channel-configurations/x","status":"error","error":"Webhook URL must be a valid URL."}
+{"component":"social_listener","operation":"campaign_automation_tick","status":"error","error":"Failed to connect to localhost\\SQLEXPRESS in 15000ms"}
+{"component":"social_listener","operation":"POST /content/campaign-mode","status":"error","error":"No selected channel has a successful persisted provider identity test."}
+{"component":"social_listener","operation":"POST /content/campaign-mode","status":"error","error":"No selected channel has a successful persisted provider identity test."}
+{"component":"social_listener","operation":"campaign_automation_tick","status":"error","error":"Failed to connect to localhost\\SQLEXPRESS in 15000ms"}
+{"component":"social_listener","operation":"GET /channel-configurations","status":"error","error":"Failed to connect to localhost\\SQLEXPRESS in 15000ms"}
+{"component":"social_listener","operation":"GET /scoring","status":"error","error":"Failed to connect to localhost\\SQLEXPRESS in 15000ms"}
+{"component":"social_listener","operation":"campaign_automation_tick","status":"error","error":"Failed to cancel request in 5000ms"}
+{"component":"social_listener","operation":"campaign_automation_tick","status":"error","error":"Failed to connect to localhost\\SQLEXPRESS in 15000ms"}
+{"component":"social_listener","operation":"campaign_automation_tick","status":"error","error":"Failed to connect to localhost\\SQLEXPRESS in 15000ms"}
+{"component":"social_listener","operation":"campaign_automation_tick","status":"error","error":"Failed to connect to localhost\\SQLEXPRESS in 15000ms"}
+{"component":"social_listener","operation":"campaign_automation_tick","status":"error","error":"Timeout: Request failed to complete in 15000ms"}
+{"component":"social_listener","operation":"campaign_automation_tick","status":"error","error":"Failed to connect to localhost\\SQLEXPRESS in 15000ms"}
+{"component":"social_listener","operation":"campaign_automation_tick","status":"error","error":"Failed to connect to localhost\\SQLEXPRESS in 15000ms"}
+{"component":"social_listener","operation":"campaign_automation_tick","status":"error","error":"Failed to connect to localhost\\SQLEXPRESS in 15000ms"}
+{"component":"social_listener","operation":"campaign_automation_tick","status":"error","error":"Failed to connect to localhost\\SQLEXPRESS in 15000ms"}
+{"component":"social_listener","operation":"campaign_automation_tick","status":"error","error":"Failed to connect to localhost\\SQLEXPRESS in 15000ms"}
+{"component":"social_listener","operation":"campaign_automation_tick","status":"error","error":"Failed to connect to localhost\\SQLEXPRESS in 15000ms"}
+{"component":"social_listener","operation":"campaign_automation_tick","status":"error","error":"Failed to cancel request in 5000ms"}
+{"component":"social_listener","operation":"campaign_automation_tick","status":"error","error":"Failed to connect to localhost\\SQLEXPRESS in 15000ms"}
+{"component":"social_listener","operation":"GET /leads","status":"error","error":"Failed to connect to localhost\\SQLEXPRESS in 15000ms"}
+{"component":"social_listener","operation":"GET /content","status":"error","error":"Failed to connect to localhost\\SQLEXPRESS in 15000ms"}
+{"component":"social_listener","operation":"GET /content","status":"error","error":"Failed to connect to localhost\\SQLEXPRESS in 15000ms"}
+{"component":"social_listener","operation":"GET /leads","status":"error","error":"Failed to connect to localhost\\SQLEXPRESS in 15000ms"}
+{"component":"social_listener","operation":"GET /status","status":"error","error":"Failed to connect to localhost\\SQLEXPRESS in 15000ms"}
+{"component":"social_listener","operation":"campaign_automation_tick","status":"error","error":"Failed to connect to localhost\\SQLEXPRESS in 15000ms"}
+{"component":"social_listener","operation":"campaign_automation_tick","status":"error","error":"Failed to connect to localhost\\SQLEXPRESS in 15000ms"}
+{"component":"social_listener","operation":"campaign_automation_tick","status":"error","error":"Failed to connect to localhost\\SQLEXPRESS in 15000ms"}
+{"component":"social_listener","operation":"campaign_automation_tick","status":"error","error":"Failed to connect to localhost\\SQLEXPRESS in 15000ms"}
+{"component":"social_listener","operation":"campaign_automation_tick","status":"error","error":"Failed to connect to localhost\\SQLEXPRESS in 15000ms"}
+{"component":"social_listener","operation":"campaign_automation_tick","status":"error","error":"Failed to connect to localhost\\SQLEXPRESS in 15000ms"}
+{"component":"social_listener","operation":"campaign_automation_tick","status":"error","error":"Failed to connect to localhost\\SQLEXPRESS in 15000ms"}
+{"component":"social_listener","operation":"campaign_automation_tick","status":"error","error":"Failed to connect to localhost\\SQLEXPRESS in 15000ms"}
+{"component":"social_listener","operation":"campaign_automation_tick","status":"error","error":"Failed to connect to localhost\\SQLEXPRESS in 15000ms"}
+{"component":"social_listener","operation":"campaign_automation_tick","status":"error","error":"Failed to connect to localhost\\SQLEXPRESS in 15000ms"}
+{"component":"social_listener","operation":"campaign_automation_tick","status":"error","error":"Failed to connect to localhost\\SQLEXPRESS in 15000ms"}
+{"component":"social_listener","operation":"campaign_automation_tick","status":"error","error":"Failed to connect to localhost\\SQLEXPRESS in 15000ms"}
+{"component":"social_listener","operation":"campaign_automation_tick","status":"error","error":"Failed to connect to localhost\\SQLEXPRESS in 15000ms"}
+{"component":"social_listener","operation":"campaign_automation_tick","status":"error","error":"Failed to connect to localhost\\SQLEXPRESS in 15000ms"}
+{"component":"social_listener","operation":"campaign_automation_tick","status":"error","error":"Failed to connect to localhost\\SQLEXPRESS in 15000ms"}
+{"component":"social_listener","operation":"campaign_automation_tick","status":"error","error":"Failed to connect to localhost\\SQLEXPRESS in 15000ms"}
+{"component":"social_listener","operation":"campaign_automation_tick","status":"error","error":"Failed to connect to localhost\\SQLEXPRESS in 15000ms"}
+{"component":"social_listener","operation":"campaign_automation_tick","status":"error","error":"Failed to connect to localhost\\SQLEXPRESS in 15000ms"}
+{"component":"social_listener","operation":"campaign_automation_tick","status":"error","error":"Failed to connect to localhost\\SQLEXPRESS in 15000ms"}
+{"component":"social_listener","operation":"campaign_automation_tick","status":"error","error":"Failed to connect to localhost\\SQLEXPRESS in 15000ms"}
+{"component":"social_listener","operation":"campaign_automation_tick","status":"error","error":"Failed to connect to localhost\\SQLEXPRESS in 15000ms"}
+{"component":"social_listener","operation":"campaign_automation_tick","status":"error","error":"Failed to connect to localhost\\SQLEXPRESS in 15000ms"}
+{"component":"social_listener","operation":"GET /leads","status":"error","error":"Failed to connect to localhost\\SQLEXPRESS in 15000ms"}
+{"component":"social_listener","operation":"GET /content","status":"error","error":"Failed to connect to localhost\\SQLEXPRESS in 15000ms"}
+{"component":"social_listener","operation":"GET /status","status":"error","error":"Failed to connect to localhost\\SQLEXPRESS in 15000ms"}
+{"component":"social_listener","operation":"GET /leads","status":"error","error":"Failed to connect to localhost\\SQLEXPRESS in 15000ms"}
+{"component":"social_listener","operation":"GET /content","status":"error","error":"Failed to connect to localhost\\SQLEXPRESS in 15000ms"}
+{"component":"social_listener","operation":"campaign_automation_tick","status":"error","error":"Failed to connect to localhost\\SQLEXPRESS in 15000ms"}
+{"component":"social_listener","operation":"campaign_automation_tick","status":"error","error":"Failed to connect to localhost\\SQLEXPRESS in 15000ms"}
+{"component":"social_listener","operation":"GET /content","status":"error","error":"Failed to connect to localhost\\SQLEXPRESS in 15000ms"}
+{"component":"social_listener","operation":"GET /status","status":"error","error":"Failed to connect to localhost\\SQLEXPRESS in 15000ms"}
+{"component":"social_listener","operation":"GET /leads","status":"error","error":"Failed to connect to localhost\\SQLEXPRESS in 15000ms"}
+{"component":"social_listener","operation":"GET /leads","status":"error","error":"Failed to connect to localhost\\SQLEXPRESS in 15000ms"}
+{"component":"social_listener","operation":"GET /content","status":"error","error":"Failed to connect to localhost\\SQLEXPRESS in 15000ms"}
+{"component":"social_listener","operation":"campaign_automation_tick","status":"error","error":"Failed to connect to localhost\\SQLEXPRESS in 15000ms"}
+{"component":"social_listener","operation":"GET /leads","status":"error","error":"Failed to connect to localhost\\SQLEXPRESS in 15000ms"}
+{"component":"social_listener","operation":"GET /content","status":"error","error":"Failed to connect to localhost\\SQLEXPRESS in 15000ms"}
+{"component":"social_listener","operation":"GET /status","status":"error","error":"Failed to connect to localhost\\SQLEXPRESS in 15000ms"}
+{"component":"social_listener","operation":"GET /leads","status":"error","error":"Failed to connect to localhost\\SQLEXPRESS in 15000ms"}
+{"component":"social_listener","operation":"GET /content","status":"error","error":"Failed to connect to localhost\\SQLEXPRESS in 15000ms"}
+{"component":"social_listener","operation":"GET /channel-configurations","status":"error","error":"Failed to connect to localhost\\SQLEXPRESS in 15000ms"}
+{"component":"social_listener","operation":"GET /scoring","status":"error","error":"Failed to connect to localhost\\SQLEXPRESS in 15000ms"}
+{"component":"social_listener","operation":"GET /content","status":"error","error":"Failed to connect to localhost\\SQLEXPRESS in 15000ms"}
+{"component":"social_listener","operation":"GET /status","status":"error","error":"Failed to connect to localhost\\SQLEXPRESS in 15000ms"}
+{"component":"social_listener","operation":"GET /leads","status":"error","error":"Failed to connect to localhost\\SQLEXPRESS in 15000ms"}
+{"component":"social_listener","operation":"GET /leads","status":"error","error":"Failed to connect to localhost\\SQLEXPRESS in 15000ms"}
+{"component":"social_listener","operation":"GET /content","status":"error","error":"Failed to connect to localhost\\SQLEXPRESS in 15000ms"}
+{"component":"social_listener","operation":"GET /leads","status":"error","error":"Failed to connect to localhost\\SQLEXPRESS in 15000ms"}
+{"component":"social_listener","operation":"GET /leads","status":"error","error":"Failed to connect to localhost\\SQLEXPRESS in 15000ms"}
+{"component":"social_listener","operation":"GET /content","status":"error","error":"Failed to connect to localhost\\SQLEXPRESS in 15000ms"}
+{"component":"social_listener","operation":"GET /status","status":"error","error":"Failed to connect to localhost\\SQLEXPRESS in 15000ms"}
+{"component":"social_listener","operation":"GET /content","status":"error","error":"Failed to connect to localhost\\SQLEXPRESS in 15000ms"}
+{"component":"social_listener","operation":"campaign_automation_tick","status":"error","error":"Failed to connect to localhost\\SQLEXPRESS in 15000ms"}
+{"component":"social_listener","operation":"campaign_automation_tick","status":"error","error":"Failed to connect to localhost\\SQLEXPRESS in 15000ms"}
+{"component":"social_listener","operation":"campaign_automation_tick","status":"error","error":"Failed to connect to localhost\\SQLEXPRESS in 15000ms"}
+{"component":"social_listener","operation":"campaign_automation_tick","status":"error","error":"Failed to connect to localhost\\SQLEXPRESS in 15000ms"}
+{"component":"social_listener","operation":"campaign_automation_tick","status":"error","error":"Failed to connect to localhost\\SQLEXPRESS in 15000ms"}
