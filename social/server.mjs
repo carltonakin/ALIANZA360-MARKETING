@@ -42,7 +42,22 @@ const express = require("express");
 
 const app = express();
 
-const PORT = process.env.PORT || 3000;
+const requestedPort =
+  process.env.PORT ||
+  process.env.SOCIAL_LISTENER_PORT ||
+  "3000";
+
+const PORT = Number(requestedPort);
+
+if (
+  !Number.isInteger(PORT) ||
+  PORT < 1 ||
+  PORT > 65_535
+) {
+  throw new Error(
+    "PORT must be an integer between 1 and 65535."
+  );
+}
 
 /*
 |--------------------------------------------------------------------------
@@ -3617,6 +3632,7 @@ async function start() {
   const server =
     app.listen(
       PORT,
+      "0.0.0.0",
       () => {
         console.log(
           `Server running on port ${PORT}`

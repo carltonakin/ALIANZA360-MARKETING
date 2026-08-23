@@ -21,6 +21,15 @@
 # misc
 .DS_Store
 *.pem
+*.key
+/m360
+/m360.pub
+/Alianzam360
+/Alianzam360.pub
+/id_rsa
+/id_rsa.pub
+/id_ed25519
+/id_ed25519.pub
 
 # debug
 npm-debug.log*
