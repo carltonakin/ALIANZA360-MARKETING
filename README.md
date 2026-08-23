@@ -1,7 +1,7 @@
 # Alianza CRM Marketing 360
 
-Alianza CRM Marketing 360 uses an official Next.js dashboard, a separate
-Express Social Listener service, and Microsoft SQL Server.
+Alianza CRM Marketing 360 uses an official Next.js dashboard, an Express
+Social Listener service, and Microsoft SQL Server.
 
 ```text
 Browser -> Next.js route handlers -> Express Social Listener -> SQL Server
@@ -59,22 +59,32 @@ npm run start:social-listener
 
 ## Production deployment
 
-The dashboard is self-hosted with `next start` and honors the host-provided
-`PORT`. The Express/MSSQL Social Listener remains a separate HTTPS service.
-GitHub and IIS/httpPlatformHandler deployment instructions are in
+The production launcher honors SmarterASP's host-provided `PORT`, starts the
+Express/MSSQL Social Listener on an internal loopback port, requires its real
+SQL health check to pass, and then starts Next.js. This gives the published app
+the same SQL-backed data path as local development. GitHub and
+IIS/httpPlatformHandler deployment instructions are in
 `docs/smarterasp-deployment.md`.
 
-Required dashboard production variables:
+Required single-app SmarterASP production variables:
 
 ```text
 NODE_ENV=production
-SOCIAL_LISTENER_SERVICE_URL=https://<listener-host>
-SOCIAL_LISTENER_SERVICE_TOKEN=<matching-service-token>
+SERVICE_AUTH_TOKEN=<strong-random-token>
+DB_SERVER=<SmarterASP SQL host>
+DB_PORT=1433
+DB_NAME=<database name>
+DB_USER=<database user>
+DB_PASSWORD=<database password>
+DB_ENCRYPT=true
+DB_TRUST_SERVER_CERTIFICATE=false
+CHANNEL_CONFIG_ENCRYPTION_KEY=<strong-random-key>
 ```
 
-SQL credentials, provider credentials, webhook secrets, and
-`CHANNEL_CONFIG_ENCRYPTION_KEY` belong only to the Social Listener deployment.
-Never commit a filled `.env` file.
+An independently deployed listener remains supported by setting an external
+HTTPS `SOCIAL_LISTENER_SERVICE_URL` and matching
+`SOCIAL_LISTENER_SERVICE_TOKEN`; in that mode the dashboard launcher does not
+start an internal listener. Never commit a filled `.env` file.
 
 ## Social and campaign services
 
@@ -98,7 +108,7 @@ state in SQL Server.
 - `npm run dev:local` — start the local listener and Next.js dashboard
 - `npm run dev` — start only the Next.js development server
 - `npm run build` — create the production Next.js build
-- `npm start` — start the production Next.js server using `PORT`
+- `npm start` — start the production SQL-backed listener and Next.js dashboard using `PORT`
 - `npm test` — build and run the complete regression suite
 - `npm run lint` — run ESLint
 - `npm run security:scan` — scan tracked files for credential patterns

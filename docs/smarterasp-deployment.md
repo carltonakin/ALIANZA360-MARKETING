@@ -2,16 +2,19 @@
 
 ## Architecture
 
-The dashboard uses official Next.js self-hosted on Node.js. The existing
-Express Social Listener and Microsoft SQL Server repository remain a separate
-service. This keeps the existing App Router/API structure while removing the
-Cloudflare-specific runtime from the SmarterASP production path.
+The dashboard uses official Next.js self-hosted on Node.js. By default, the
+production launcher starts the existing Express Social Listener inside the
+same SmarterASP Node application on a private loopback port. The listener owns
+the existing Microsoft SQL Server repository and Next.js continues to call it
+through the existing route handlers.
 
 ## Root cause resolved
 
-The previous production scripts invoked `vinext`, but that executable could be
-absent from a production installation or unavailable on the Windows command
-path. The project now uses the supported project-local Next.js CLI:
+Local startup launched the SQL-backed listener before Next.js, but the
+published `npm start` command launched only Next.js. Without a separately
+deployed listener URL, published API routes could not reach MSSQL. The
+production command now launches and health-checks the listener before starting
+the supported project-local Next.js server:
 
 ```text
 Install: npm ci
@@ -39,43 +42,52 @@ The deployment must include `package.json`, `package-lock.json`, `.next/` from
 the hosting build, `public/`, `next.config.ts`, and the application source.
 Do not upload a local `node_modules` directory.
 
-## Dashboard environment variables
+## Single-app production environment variables
 
 Set these through the hosting control panel, not GitHub:
 
 ```text
 NODE_ENV=production
-SOCIAL_LISTENER_SERVICE_URL=https://<listener-host>
-SOCIAL_LISTENER_SERVICE_TOKEN=<same value as SERVICE_AUTH_TOKEN on the listener>
+SERVICE_AUTH_TOKEN=<strong-random-service-token>
+SOCIAL_LISTENER_PORT=8788
+DB_SERVER=<SmarterASP SQL server>
+DB_PORT=1433
+DB_NAME=<database name>
+DB_USER=<database user>
+DB_PASSWORD=<database password>
+DB_ENCRYPT=true
+DB_TRUST_SERVER_CERTIFICATE=false
+CHANNEL_CONFIG_ENCRYPTION_KEY=<strong-random-encryption-key>
 ```
 
-Do not set `PORT`; the host injects it when the process starts. Use
-`.env.production.example` only as a non-secret checklist.
+Do not set `PORT`; the host injects it when the process starts. The launcher
+passes that port only to Next.js and uses `SOCIAL_LISTENER_PORT` for the private
+listener. Use `.env.production.example` only as a non-secret checklist. Provider
+tokens and webhook secrets remain server-side control-panel values.
 
 If `SOCIAL_LISTENER_ADMIN_EMAIL` is used, the reverse proxy or authentication
 layer must supply the corresponding trusted user-email header. Otherwise leave
 it unset until SmarterASP authentication is configured.
 
-## Separate Social Listener deployment
+## Optional separate Social Listener deployment
 
-Deploy the listener as a second Node.js application when it is hosted on
-SmarterASP. Its start command is:
+To keep the listener as a second Node.js application, set these dashboard
+variables instead of the single-app database variables:
 
 ```text
-npm run start:social-listener
+SOCIAL_LISTENER_SERVICE_URL=https://<listener-host>
+SOCIAL_LISTENER_SERVICE_TOKEN=<same value as SERVICE_AUTH_TOKEN on the listener>
 ```
 
-That application owns the `DB_*`/`SQL_SERVER_*` values, provider tokens,
-webhook secrets, `SERVICE_AUTH_TOKEN`, and
-`CHANNEL_CONFIG_ENCRYPTION_KEY`. Expose it over HTTPS and use that address as
-the dashboard's `SOCIAL_LISTENER_SERVICE_URL`.
+External production URLs must use HTTPS. The separate listener starts with
+`npm run start:social-listener` and owns its own `DB_*`/`SQL_SERVER_*` values.
 
 ## Traditional IIS/httpPlatformHandler mode
 
 The repository includes `web.config` for accounts that use traditional IIS
-Node hosting instead of the GitHub runtime. It launches the project-local
-Next.js CLI with Node, enables stdout startup logs, and maps
-`%HTTP_PLATFORM_PORT%` to `PORT`.
+Node hosting instead of the GitHub runtime. It launches the production stack
+with Node, enables stdout startup logs, and maps `%HTTP_PLATFORM_PORT%` to
+`PORT`.
 
 Confirm that the account has httpPlatformHandler enabled and that Node is
 installed at `%ProgramFiles%\nodejs\node.exe`. If SmarterASP supplies a
@@ -93,8 +105,9 @@ $env:PORT = "43131"
 npm start
 ```
 
-Open `http://127.0.0.1:43131/` and require HTTP 200. Also test the deployed
-`/api/social/status` route after the listener URL and token are configured.
+Open `http://127.0.0.1:43131/` and require HTTP 200. Test `/api/data` and
+`/api/social/status`; startup logs must report the MSSQL data source and a
+healthy production MSSQL connection.
 
 ## Troubleshooting
 
@@ -103,11 +116,12 @@ Open `http://127.0.0.1:43131/` and require HTTP 200. Also test the deployed
 - `next` not recognized: confirm the committed lockfile was installed and the
   Start Command is `npm start`; do not install Next.js globally.
 - Missing `.next/BUILD_ID`: the production build did not finish.
-- Social API 502/503: verify the separate listener is reachable over HTTPS and
+- Social API 502/503 in single-app mode: verify `SERVICE_AUTH_TOKEN`, `DB_*`,
+  and `SOCIAL_LISTENER_PORT`; inspect the safe startup health message.
+- Social API 502/503 in external mode: verify the HTTPS listener URL and that
   the two service tokens match.
 - SQL connection failure: troubleshoot the listener's database variables and
-  network access; the dashboard does not connect directly to SQL Server.
+  SmarterASP network access; the browser never connects directly to SQL Server.
 
 Roll back by redeploying a known-good Git commit or tag. Dashboard rollback does
 not alter listener or SQL Server data.
-

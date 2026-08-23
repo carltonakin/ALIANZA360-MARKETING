@@ -1,0 +1,70 @@
+import assert from "node:assert/strict";
+import test from "node:test";
+import { resolveProductionTopology } from "../scripts/start-production.mjs";
+
+const databaseEnv = {
+  DB_SERVER: "sql.example",
+  DB_NAME: "crm360",
+  DB_USER: "crm_user",
+  DB_PASSWORD: "not-a-real-password",
+};
+
+test("SmarterASP single-app mode starts an internal MSSQL listener", () => {
+  const topology = resolveProductionTopology({
+    ...databaseEnv,
+    PORT: "43131",
+    SOCIAL_LISTENER_PORT: "8788",
+    SERVICE_AUTH_TOKEN: "test-service-token",
+  });
+
+  assert.equal(topology.mode, "internal");
+  assert.equal(topology.dashboardEnv.PORT, "43131");
+  assert.equal(topology.listenerEnv.PORT, "8788");
+  assert.equal(topology.dashboardEnv.SOCIAL_LISTENER_SERVICE_URL, "http://127.0.0.1:8788");
+  assert.equal(topology.dashboardEnv.SOCIAL_LISTENER_SERVICE_TOKEN, "test-service-token");
+  assert.equal(topology.listenerEnv.SERVICE_AUTH_TOKEN, "test-service-token");
+  assert.equal(topology.listenerEnv.DB_NAME, "crm360");
+});
+
+test("a local service URL remains internal during production startup", () => {
+  const topology = resolveProductionTopology({
+    ...databaseEnv,
+    PORT: "43131",
+    SOCIAL_LISTENER_SERVICE_URL: "http://localhost:8790",
+    SERVICE_AUTH_TOKEN: "test-service-token",
+  });
+
+  assert.equal(topology.mode, "internal");
+  assert.equal(topology.listenerPort, 8790);
+  assert.equal(topology.dashboardEnv.SOCIAL_LISTENER_SERVICE_URL, "http://127.0.0.1:8790");
+});
+
+test("an explicit external HTTPS listener remains supported", () => {
+  const topology = resolveProductionTopology({
+    PORT: "43131",
+    SOCIAL_LISTENER_SERVICE_URL: "https://listener.example.com",
+    SOCIAL_LISTENER_SERVICE_TOKEN: "external-test-token",
+  });
+
+  assert.equal(topology.mode, "external");
+  assert.equal(topology.dashboardEnv.SOCIAL_LISTENER_SERVICE_URL, "https://listener.example.com");
+  assert.equal(topology.dashboardEnv.SOCIAL_LISTENER_SERVICE_TOKEN, "external-test-token");
+});
+
+test("production cannot silently start internal mode without MSSQL configuration", () => {
+  assert.throws(
+    () => resolveProductionTopology({ PORT: "43131", SERVICE_AUTH_TOKEN: "test-service-token" }),
+    /Missing production MSSQL configuration: DB_SERVER, DB_NAME, DB_USER, DB_PASSWORD/,
+  );
+});
+
+test("an external production listener must use HTTPS", () => {
+  assert.throws(
+    () => resolveProductionTopology({
+      PORT: "43131",
+      SOCIAL_LISTENER_SERVICE_URL: "http://listener.example.com",
+      SOCIAL_LISTENER_SERVICE_TOKEN: "external-test-token",
+    }),
+    /must use HTTPS/,
+  );
+});

@@ -12,6 +12,7 @@ const lockfile = JSON.parse(await read("package-lock.json"));
 const nextConfig = await read("next.config.ts");
 const socialConfig = await read("app/api/social/_config.ts");
 const productionEnvironment = await read(".env.production.example");
+const productionLauncher = await read("scripts/start-production.mjs");
 const webConfig = await read("web.config");
 
 assert.match(
@@ -23,13 +24,13 @@ assert.match(
 for (const [name, command] of Object.entries({
   dev: "next dev",
   build: "next build",
-  start: "next start",
-  "start:smarterasp": "next start",
+  start: "node --env-file-if-exists=.env scripts/start-production.mjs",
+  "start:smarterasp": "node --env-file-if-exists=.env scripts/start-production.mjs",
 })) {
   assert.equal(
     packageJson.scripts?.[name],
     command,
-    `${name} must use the official project-local Next.js CLI.`,
+    `${name} must use the expected official runtime command.`,
   );
 }
 
@@ -93,20 +94,49 @@ assert.doesNotMatch(
   /cloudflare:workers/,
   "The SmarterASP Node runtime cannot load the cloudflare:workers URL scheme.",
 );
-assert.equal(
+for (const name of [
+  "NODE_ENV",
+  "SERVICE_AUTH_TOKEN",
+  "SOCIAL_LISTENER_PORT",
+  "DB_SERVER",
+  "DB_PORT",
+  "DB_NAME",
+  "DB_USER",
+  "DB_PASSWORD",
+  "DB_ENCRYPT",
+  "DB_TRUST_SERVER_CERTIFICATE",
+  "CHANNEL_CONFIG_ENCRYPTION_KEY",
+]) {
+  assert.match(
+    productionEnvironment,
+    new RegExp(`^${name}=`, "m"),
+    `.env.production.example must document ${name}.`,
+  );
+}
+assert.doesNotMatch(
   productionEnvironment,
-  [
-    "NODE_ENV=production",
-    "SOCIAL_LISTENER_SERVICE_URL=https://<your-listener-domain>",
-    "SOCIAL_LISTENER_SERVICE_TOKEN=<matching-service-token>",
-    "",
-  ].join("\n"),
+  /^(DB_PASSWORD|SERVICE_AUTH_TOKEN|CHANNEL_CONFIG_ENCRYPTION_KEY)=(?!<)[^\r\n]+/m,
   "The production environment template must contain only non-secret placeholders.",
 );
 assert.match(
+  productionLauncher,
+  /Production data source selected: MSSQL/i,
+  "The production launcher must log the selected MSSQL data path without credentials.",
+);
+assert.match(
+  productionLauncher,
+  /SOCIAL_LISTENER_SERVICE_URL: serviceUrl/i,
+  "The production launcher must route Next.js to the internal SQL-backed listener.",
+);
+assert.match(
+  productionLauncher,
+  /await waitForListener\(listener, topology\.healthUrl\)/i,
+  "The dashboard must wait for a successful MSSQL health check.",
+);
+assert.match(
   webConfig,
-  /node_modules\\next\\dist\\bin\\next start/i,
-  "web.config must launch the official Next.js production server.",
+  /scripts\\start-production\.mjs/i,
+  "web.config must launch the production MSSQL/Next.js stack.",
 );
 assert.match(
   webConfig,
@@ -127,5 +157,5 @@ await access(new URL(nextExecutable, projectRoot));
 await access(new URL(".next/BUILD_ID", projectRoot));
 
 console.log(
-  "SmarterASP Next.js validation passed: official npm scripts, production dependencies, IIS dynamic PORT wiring, and build artifact.",
+  "SmarterASP validation passed: production MSSQL launcher, dependencies, IIS dynamic PORT wiring, and Next.js build artifact.",
 );
