@@ -118,3 +118,25 @@ test("dashboard exposes social listener configuration and live diagnostics", asy
   assert.match(layout, /Alianza CRM Marketing 360/i);
   assert.match(layout, /AI-powered marketing funnel, lead capture and social campaign intelligence/i);
 });
+
+test("production dashboard uses the SQL-backed API without demo-record fallback", async () => {
+  const [page, dataRoute, listener, repository] = await Promise.all([
+    readFile(new URL("../app/page.tsx", import.meta.url), "utf8"),
+    readFile(new URL("../app/api/data/route.ts", import.meta.url), "utf8"),
+    readFile(new URL("../social/server.mjs", import.meta.url), "utf8"),
+    readFile(new URL("../social/sql-server.mjs", import.meta.url), "utf8"),
+  ]);
+
+  assert.doesNotMatch(page, /seedLeads|safe seed view/i);
+  assert.doesNotMatch(page, /alicia@mail\.com|jordan@mail\.com|samira@mail\.com/i);
+  assert.match(page, /useState<Lead\[\]>\(\[\]\)/);
+  assert.match(page, /fetch\("\/api\/data", \{ cache: "no-store" \}\)/);
+  assert.match(page, /setDataError\(message\)/);
+  assert.match(page, /setLeads\(\[\]\)/);
+  assert.match(dataRoute, /proxySocialRequest\("\/leads\?limit=100"\)/);
+  assert.match(dataRoute, /proxySocialRequest\("\/content"\)/);
+  assert.match(listener, /SqlServerRepository\.connectFromEnv/);
+  assert.match(repository, /openSqlConnection\(env\)/);
+  assert.match(repository, /SocialLead_GetRecent/);
+  assert.match(repository, /CRMContent_GetAll/);
+});

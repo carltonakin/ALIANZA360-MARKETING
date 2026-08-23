@@ -220,52 +220,6 @@ const nav = [
   ["⚙", "Settings"],
 ];
 
-// Seed data for demo purposes
-const seedLeads: Lead[] = [
-  {
-    id: -1,
-    name: "Alicia Morgan",
-    email: "alicia@mail.com",
-    phone: "(305) 555-0142",
-    social: "@aliciam",
-    facebook: "",
-    instagram: "@aliciam",
-    x: "",
-    source: "Instagram",
-    status: "Hot",
-    value: 1250,
-    createdAt: "2026-08-16",
-  },
-  {
-    id: -2,
-    name: "Jordan Reed",
-    email: "jordan@mail.com",
-    phone: "",
-    social: "",
-    facebook: "Jordan Reed",
-    instagram: "",
-    x: "",
-    source: "Facebook",
-    status: "Engaged",
-    value: 840,
-    createdAt: "2026-08-16",
-  },
-  {
-    id: -3,
-    name: "Samira Khan",
-    email: "samira@mail.com",
-    phone: "",
-    social: "@samirak",
-    facebook: "",
-    instagram: "",
-    x: "@samirak",
-    source: "X / Twitter",
-    status: "New",
-    value: 620,
-    createdAt: "2026-08-15",
-  },
-];
-
 export default function Home() {
   const [active, setActive] = useState("Overview");
   const [collapsed, setCollapsed] = useState(false);
@@ -278,12 +232,13 @@ export default function Home() {
   const [busy, setBusy] = useState(false);
   const [toast, setToast] = useState("");
 
-  const [leads, setLeads] = useState<Lead[]>(seedLeads);
+  const [leads, setLeads] = useState<Lead[]>([]);
   const [campaigns, setCampaigns] = useState<Campaign[]>([]);
   const [pages, setPages] = useState<Landing[]>([]);
   const [webinars, setWebinars] = useState<WebinarRecord[]>([]);
   const [socialIntegrations, setSocialIntegrations] = useState<SocialIntegration[]>([]);
   const [integrationActions, setIntegrationActions] = useState<IntegrationAction[]>([]);
+  const [dataError, setDataError] = useState("");
   const [connected, setConnected] = useState(false);
 
   const [testMessage, setTestMessage] = useState("Not tested");
@@ -429,49 +384,54 @@ export default function Home() {
 
   const load = async () => {
     try {
-      const [crmResponse, socialResponse, contentResponse, integrationResponse] = await Promise.all([
-        fetch("/api/data"),
-        fetch("/api/social/leads", { cache: "no-store" }),
-        fetch("/api/social/content", { cache: "no-store" }),
+      const [crmResponse, integrationResponse] = await Promise.all([
+        fetch("/api/data", { cache: "no-store" }),
         fetch("/api/social/integrations?limit=50", { cache: "no-store" }),
       ]);
-      const d = crmResponse.ok ? (await crmResponse.json()) as {
+      if (!crmResponse.ok) {
+        const errorData = await crmResponse.json().catch(() => ({})) as { error?: string; message?: string };
+        throw new Error(errorData.message || errorData.error || "Production data could not be loaded from SQL Server.");
+      }
+      const d = (await crmResponse.json()) as {
         leads?: Lead[];
-        campaigns?: Campaign[];
-        pages?: Landing[];
-      } : {};
-      const socialData = socialResponse.ok ? (await socialResponse.json()) as {
-        leads?: Lead[];
-      } : {};
-      const sqlContent = contentResponse.ok ? (await contentResponse.json()) as {
         campaigns?: Campaign[];
         pages?: Landing[];
         webinars?: WebinarRecord[];
-      } : {};
-      const integrationData = integrationResponse.ok ? (await integrationResponse.json()) as {
-        integrations?: SocialIntegration[];
-        actions?: IntegrationAction[];
-      } : {};
+      };
       const normalizeLead = (lead: Lead): Lead => ({
         ...lead,
         facebook: lead.facebook || (lead.source?.toLowerCase().includes("facebook") ? lead.social || "" : ""),
         instagram: lead.instagram || (lead.source?.toLowerCase().includes("instagram") ? lead.social || "" : ""),
         x: lead.x || (/^(x|x \/ twitter|twitter)$/i.test(lead.source || "") ? lead.social || "" : ""),
       });
-      const crmLeads = (d.leads?.length ? d.leads : seedLeads).map(normalizeLead);
-      const socialLeads = (socialData.leads || []).map(normalizeLead);
-      const socialEmails = new Set(socialLeads.map((lead) => lead.email.toLowerCase()).filter(Boolean));
-      setLeads([
-        ...socialLeads,
-        ...crmLeads.filter((lead) => !socialEmails.has(lead.email.toLowerCase())),
-      ]);
-      setCampaigns(sqlContent.campaigns ?? d.campaigns ?? []);
-      setPages(sqlContent.pages ?? d.pages ?? []);
-      setWebinars(sqlContent.webinars ?? []);
-      setSocialIntegrations(integrationData.integrations ?? []);
-      setIntegrationActions(integrationData.actions ?? []);
-    } catch {
-      // The dashboard keeps its safe seed view when the CRM store is unavailable.
+      setLeads((d.leads ?? []).map(normalizeLead));
+      setCampaigns(d.campaigns ?? []);
+      setPages(d.pages ?? []);
+      setWebinars(d.webinars ?? []);
+      setDataError("");
+
+      if (integrationResponse.ok) {
+        const integrationData = (await integrationResponse.json()) as {
+          integrations?: SocialIntegration[];
+          actions?: IntegrationAction[];
+        };
+        setSocialIntegrations(integrationData.integrations ?? []);
+        setIntegrationActions(integrationData.actions ?? []);
+      } else {
+        setSocialIntegrations([]);
+        setIntegrationActions([]);
+        notify("Integration activity could not be loaded from SQL Server.");
+      }
+    } catch (error) {
+      setLeads([]);
+      setCampaigns([]);
+      setPages([]);
+      setWebinars([]);
+      setSocialIntegrations([]);
+      setIntegrationActions([]);
+      const message = error instanceof Error ? error.message : "Production data could not be loaded from SQL Server.";
+      setDataError(message);
+      notify(message);
     }
   };
 
@@ -783,6 +743,7 @@ export default function Home() {
           </div>
         </header>
         <div className="content">
+          {dataError && <p className="backend-config-message" role="alert">{dataError}</p>}
           {active === "Overview" && (
             <Overview
               leads={leads}
