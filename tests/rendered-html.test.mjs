@@ -1,26 +1,73 @@
 import assert from "node:assert/strict";
+import { spawn } from "node:child_process";
 import { readFile } from "node:fs/promises";
+import net from "node:net";
+import path from "node:path";
 import test from "node:test";
+import { fileURLToPath } from "node:url";
 
-async function render() {
-  const workerUrl = new URL("../dist/server/index.js", import.meta.url);
-  workerUrl.searchParams.set("test", `${process.pid}-${Date.now()}`);
-  const { default: worker } = await import(workerUrl.href);
+const projectRoot = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "..");
+const nextCli = path.join(projectRoot, "node_modules", "next", "dist", "bin", "next");
+let productionServer;
+let dashboardUrl;
+let serverOutput = "";
 
-  return worker.fetch(
-    new Request("http://localhost/", {
-      headers: { accept: "text/html" },
-    }),
+async function reservePort() {
+  const server = net.createServer();
+  await new Promise((resolve, reject) => {
+    server.once("error", reject);
+    server.listen(0, "127.0.0.1", resolve);
+  });
+  const address = server.address();
+  const port = typeof address === "object" && address ? address.port : null;
+  await new Promise((resolve) => server.close(resolve));
+  if (!port) throw new Error("Could not reserve a local port for the Next.js render test.");
+  return port;
+}
+
+test.before(async () => {
+  const port = await reservePort();
+  dashboardUrl = `http://127.0.0.1:${port}`;
+  productionServer = spawn(
+    process.execPath,
+    [nextCli, "start", "--hostname", "127.0.0.1", "--port", String(port)],
     {
-      ASSETS: {
-        fetch: async () => new Response("Not found", { status: 404 }),
-      },
-    },
-    {
-      waitUntil() {},
-      passThroughOnException() {},
+      cwd: projectRoot,
+      env: { ...process.env, NODE_ENV: "production" },
+      stdio: ["ignore", "pipe", "pipe"],
+      windowsHide: true,
     },
   );
+  productionServer.stdout.on("data", (chunk) => { serverOutput += chunk; });
+  productionServer.stderr.on("data", (chunk) => { serverOutput += chunk; });
+
+  const deadline = Date.now() + 30_000;
+  while (Date.now() < deadline) {
+    if (productionServer.exitCode !== null) {
+      throw new Error(`Next.js exited before the render test. ${serverOutput.slice(-1000)}`);
+    }
+    try {
+      const response = await fetch(dashboardUrl);
+      if (response.ok) return;
+    } catch {
+      // The server is still starting.
+    }
+    await new Promise((resolve) => setTimeout(resolve, 200));
+  }
+  throw new Error(`Timed out waiting for Next.js. ${serverOutput.slice(-1000)}`);
+});
+
+test.after(async () => {
+  if (!productionServer || productionServer.exitCode !== null) return;
+  productionServer.kill("SIGTERM");
+  await Promise.race([
+    new Promise((resolve) => productionServer.once("exit", resolve)),
+    new Promise((resolve) => setTimeout(resolve, 5_000)),
+  ]);
+});
+
+async function render() {
+  return fetch(dashboardUrl, { headers: { accept: "text/html" } });
 }
 
 test("server-renders the CRM dashboard shell", async () => {

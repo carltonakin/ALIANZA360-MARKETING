@@ -2030,8 +2030,9 @@ function ChannelConfigurationManager({ onChanged }: { onChanged: () => Promise<v
         }),
       });
       const data = await response.json() as { channel?: StoredChannelConfiguration; message?: string };
-      if (!response.ok || !data.channel) throw new Error(data.message || "Channel configuration could not be saved.");
-      setForms((current) => ({ ...current, [channel]: hydrateStoredChannel(data.channel) }));
+      const savedChannel = data.channel;
+      if (!response.ok || !savedChannel) throw new Error(data.message || "Channel configuration could not be saved.");
+      setForms((current) => ({ ...current, [channel]: hydrateStoredChannel(savedChannel) }));
       setSecrets((current) => ({ ...current, [channel]: {} }));
       setMessage((current) => ({ ...current, [channel]: data.message || "Saved. Test the provider identity next." }));
       await onChanged();

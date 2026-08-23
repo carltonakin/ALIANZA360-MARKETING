@@ -1,6 +1,6 @@
 # CRM 360 form-to-table mapping
 
-The browser never connects to SQL Server. Forms call Vinext route handlers; those handlers authenticate to the TypeScript backend service, which alone owns the `mssql` connection pool.
+The browser never connects to SQL Server. Forms call Next.js route handlers; those handlers authenticate to the Node.js backend service, which alone owns the `mssql` connection pool.
 
 | Application form | Backend operation | Primary table | Field mapping |
 |---|---|---|---|
