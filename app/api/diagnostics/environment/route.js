@@ -40,6 +40,31 @@ function nodeEnvironment(env) {
   return hasNonEmptyValue(env.NODE_ENV) ? env.NODE_ENV.trim() : "unknown";
 }
 
+function diagnosticTimestamp(value) {
+  if (value instanceof Date && !Number.isNaN(value.getTime())) return value.toISOString();
+  if (typeof value === "string") return value.slice(0, 64);
+  return null;
+}
+
+export function redactDiagnosticLead(row, index) {
+  return {
+    rowNumber: index + 1,
+    status: typeof row?.Status === "string" ? row.Status.slice(0, 50) : null,
+    createdAt: diagnosticTimestamp(row?.CreatedAt),
+    updatedAt: diagnosticTimestamp(row?.UpdatedAt),
+    piiRedacted: true,
+  };
+}
+
+function leadsNotRun(message) {
+  return {
+    leadsQuerySucceeded: false,
+    leadsReturned: 0,
+    leads: [],
+    leadsMessage: message,
+  };
+}
+
 async function checkDatabase(env, variables) {
   if (!REQUIRED_DATABASE_VARIABLES.every((name) => variables[name])) {
     return {
@@ -47,23 +72,40 @@ async function checkDatabase(env, variables) {
       databaseName: null,
       databaseMessage:
         "Database connectivity check was skipped because required database environment variables are missing.",
+      ...leadsNotRun("The leads query was not run because database configuration is missing."),
     };
   }
 
   let pool;
   try {
     ({ pool } = await openSqlConnection(env));
-    const result = await pool.request().query("SELECT DB_NAME() AS databaseName");
-    const databaseName = result.recordset?.[0]?.databaseName;
-    return {
-      databaseConnected: true,
-      databaseName: typeof databaseName === "string" ? databaseName : null,
-    };
+    const databaseResult = await pool.request().query("SELECT DB_NAME() AS databaseName");
+    const databaseName = databaseResult.recordset?.[0]?.databaseName;
+
+    try {
+      const leadsResult = await pool.request().query("SELECT TOP 5 * FROM dbo.leads");
+      const rows = Array.isArray(leadsResult.recordset) ? leadsResult.recordset : [];
+      const leads = rows.map(redactDiagnosticLead);
+      return {
+        databaseConnected: true,
+        databaseName: typeof databaseName === "string" ? databaseName : null,
+        leadsQuerySucceeded: true,
+        leadsReturned: leads.length,
+        leads,
+      };
+    } catch {
+      return {
+        databaseConnected: true,
+        databaseName: typeof databaseName === "string" ? databaseName : null,
+        ...leadsNotRun("The read-only dbo.leads diagnostic query failed."),
+      };
+    }
   } catch {
     return {
       databaseConnected: false,
       databaseName: null,
       databaseMessage: "Database connectivity check failed.",
+      ...leadsNotRun("The leads query was not run because the database connection failed."),
     };
   } finally {
     if (pool) await pool.close().catch(() => {});

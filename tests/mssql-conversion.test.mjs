@@ -4,6 +4,7 @@ import test from "node:test";
 import {
   environmentVariablePresence,
   PRESENCE_ENVIRONMENT_VARIABLES,
+  redactDiagnosticLead,
 } from "../app/api/diagnostics/environment/route.js";
 const read=(path)=>readFile(new URL(path,import.meta.url),"utf8");
 test("all CRM browser routes proxy to the server and no longer import D1",async()=>{const [data,register,landing,config,hosting]=await Promise.all([read("../app/api/data/route.ts"),read("../app/api/register/route.ts"),read("../app/landing/[slug]/page.tsx"),read("../app/api/social/_config.ts"),read("../.openai/hosting.json")]);for(const source of [data,register,landing,config])assert.doesNotMatch(source,/drizzle|D1Database|getDb|\.prepare\(/);assert.match(data,/proxySocialRequest/);assert.match(register,/routine-leads/);assert.match(landing,/resolveSocialListenerConfig/);assert.match(hosting,/"d1": null/)});
@@ -26,9 +27,18 @@ test("temporary environment diagnostic reports presence without exposing values"
  assert.equal(presence.DB_TRUST_SERVER_CERTIFICATE,false);
  assert.doesNotMatch(JSON.stringify(presence),new RegExp(secretMarker));
 });
-test("temporary diagnostic uses the shared MSSQL path and a harmless database query",async()=>{
+test("temporary diagnostic redacts lead PII with an explicit output allowlist",()=>{
+ const secretMarker="lead-pii-must-never-be-returned";
+ const lead=redactDiagnosticLead({LeadId:42,Name:secretMarker,Email:secretMarker,Phone:secretMarker,SocialUsername:secretMarker,Facebook:secretMarker,Instagram:secretMarker,X:secretMarker,Source:secretMarker,EstimatedValue:999,Status:"Qualified",CreatedAt:new Date("2026-01-02T03:04:05.000Z"),UpdatedAt:new Date("2026-02-03T04:05:06.000Z"),UnexpectedSensitiveColumn:secretMarker},0);
+ assert.deepEqual(Object.keys(lead),["rowNumber","status","createdAt","updatedAt","piiRedacted"]);
+ assert.equal(lead.rowNumber,1);assert.equal(lead.status,"Qualified");assert.equal(lead.piiRedacted,true);
+ assert.doesNotMatch(JSON.stringify(lead),new RegExp(secretMarker));
+});
+test("temporary diagnostic uses one shared MSSQL path for database and read-only lead queries",async()=>{
  const source=await read("../app/api/diagnostics/environment/route.js");
  assert.match(source,/openSqlConnection/);
  assert.match(source,/SELECT DB_NAME\(\) AS databaseName/);
+ assert.match(source,/SELECT TOP 5 \* FROM dbo\.leads/);
+ assert.equal(source.match(/openSqlConnection\(env\)/g)?.length,1);
  assert.doesNotMatch(source,/Response\.json\(\s*process\.env/);
 });
