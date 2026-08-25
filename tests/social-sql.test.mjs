@@ -7,6 +7,8 @@ const migrationUrl = new URL("../sql/001_social_listener.sql", import.meta.url);
 const automationMigrationUrl = new URL("../sql/003_social_crm_automation.sql", import.meta.url);
 const channelReadinessMigrationUrl = new URL("../sql/004_social_channel_production_readiness.sql", import.meta.url);
 const integrationOrchestrationMigrationUrl = new URL("../sql/005_crm_integration_orchestration.sql", import.meta.url);
+const bufferCampaignMigrationUrl = new URL("../sql/006_buffer_campaign_integration.sql", import.meta.url);
+const campaignEditingMigrationUrl = new URL("../sql/007_campaign_post_types_media_editing.sql", import.meta.url);
 
 class FakeRequest {
   constructor(executions, result = { recordset: [] }) {
@@ -170,6 +172,41 @@ test("CRM integration migration creates an idempotent action ledger, workflow ru
   assert.match(sql, /RequestJson NVARCHAR\(MAX\)/i);
   assert.match(sql, /ResponseJson NVARCHAR\(MAX\)/i);
   assert.doesNotMatch(sql, /AccessToken|ClientSecret|ApiToken|BearerToken/i);
+});
+
+test("Buffer campaign migration persists campaign requirements and complete post lifecycle state", async () => {
+  const sql = await readFile(bufferCampaignMigrationUrl, "utf8");
+  for (const column of [
+    "CampaignObjective", "PostText", "MediaType", "MediaUrl", "PublishDateTime",
+    "HighIntentKeywords", "AIReplyEnabled", "TargetSocialChannelsJson",
+  ]) assert.match(sql, new RegExp(`COL_LENGTH\\(N'dbo\\.Campaigns', N'${column}'\\)`, "i"));
+  assert.match(sql, /CREATE TABLE dbo\.CampaignPosts/i);
+  for (const column of [
+    "CampaignPostId", "CampaignId", "Platform", "BufferChannelId", "BufferPostId",
+    "ScheduledAt", "PublishedAt", "PostStatus", "ExternalPostId", "PostUrl",
+    "LastCheckedAt", "ErrorSource", "ErrorMessage", "LastAttemptAt",
+  ]) assert.match(sql, new RegExp(`\\b${column}\\b`, "i"));
+  assert.match(sql, /PostStatus IN \(N'DRAFT', N'SCHEDULED', N'QUEUED', N'PUBLISHED', N'FAILED'\)/i);
+  for (const procedure of [
+    "BufferCampaignPost_Create", "BufferCampaignPost_ApplyStatus", "BufferCampaignPost_Fail",
+    "BufferCampaignPost_RecordAttemptError", "BufferCampaignPost_Get", "BufferCampaign_SetMode",
+  ]) assert.match(sql, new RegExp(`PROCEDURE dbo\\.${procedure}`, "i"));
+  assert.match(sql, /Every Buffer campaign post must be scheduled before production mode/i);
+  assert.doesNotMatch(sql, /BUFFER_API_KEY|Authorization\s*:\s*Bearer/i);
+});
+
+test("campaign editing migration preserves post identity and adds media and post-type fields", async () => {
+  const sql = await readFile(campaignEditingMigrationUrl, "utf8");
+  for (const column of ["PostType", "MediaOriginalName", "MediaMimeType", "MediaSizeBytes"]) {
+    assert.match(sql, new RegExp(`COL_LENGTH\\(N'dbo\\.Campaigns', N'${column}'\\)`, "i"));
+  }
+  assert.match(sql, /COL_LENGTH\(N'dbo\.CampaignPosts', N'IsActive'\)/i);
+  assert.match(sql, /PostType IN \(N'POST', N'REEL', N'STORY'\)/i);
+  assert.match(sql, /PROCEDURE dbo\.BufferCampaignPost_Upsert/i);
+  assert.match(sql, /PROCEDURE dbo\.BufferCampaignPost_DeactivateMissingDrafts/i);
+  assert.match(sql, /WHERE CampaignId = @CampaignId AND BufferChannelId = @BufferChannelId/i);
+  assert.match(sql, /BufferPostId IS NULL/i);
+  assert.doesNotMatch(sql, /DROP TABLE|TRUNCATE TABLE|BUFFER_API_KEY|Authorization\s*:\s*Bearer/i);
 });
 
 test("SQL Server repository parameterizes event and lead persistence", async () => {
@@ -470,6 +507,49 @@ test("SQL Server repository parameterizes campaign, page, webinar, mode, and rou
   assert.equal(executions[2].parameters.get("LandingPageId").value, 8);
   assert.equal(executions[3].parameters.get("CampaignId").value, 1);
   assert.equal(executions[4].parameters.get("ExternalEventId").value, "registration-1");
+});
+
+test("SQL Server repository parameterizes Buffer campaign and post lifecycle procedures", async () => {
+  const { repository, executions } = fakeRepository({ recordset: [] });
+  await repository.saveCampaign({
+    name: "Buffer campaign", platform: "instagram", audience: "Registrations", message: "Join now",
+    budget: 0, status: "draft", createdByAi: false, campaignObjective: "Registrations",
+    postText: "Join now", mediaType: "image", mediaUrl: "https://cdn.example.com/post.jpg",
+    postType: "STORY", mediaOriginalName: "post.jpg", mediaMimeType: "image/jpeg", mediaSizeBytes: 2048,
+    publishDateTime: "2030-08-26T15:00:00.000Z", highIntentKeywords: "pricing, demo",
+    aiReplyEnabled: true, targetSocialChannels: [{ id: "channel-1", service: "instagram" }],
+  });
+  await repository.createCampaignPost({
+    campaignId: "campaign:7", platform: "instagram", bufferChannelId: "channel-1",
+    scheduledAt: "2030-08-26T15:00:00.000Z",
+  });
+  await repository.deactivateMissingCampaignPosts("campaign:7", ["channel-1"]);
+  await repository.applyCampaignPostStatus(9, {
+    bufferPostId: "buffer-post-9", scheduledAt: "2030-08-26T15:00:00.000Z",
+    postStatus: "SCHEDULED", postUrl: null,
+  });
+  await repository.failCampaignPost(10, "Buffer rejected this post.");
+  await repository.recordCampaignPostAttemptError(9, "Temporary Buffer status error.");
+  await repository.getCampaignPosts({ campaignId: "campaign:7", syncableOnly: true });
+  await repository.setBufferCampaignMode("campaign:7", "production");
+  assert.deepEqual(executions.map((item) => item.procedure), [
+    "dbo.Campaign_Save",
+    "dbo.BufferCampaignPost_Upsert",
+    "dbo.BufferCampaignPost_DeactivateMissingDrafts",
+    "dbo.BufferCampaignPost_ApplyStatus",
+    "dbo.BufferCampaignPost_Fail",
+    "dbo.BufferCampaignPost_RecordAttemptError",
+    "dbo.BufferCampaignPost_Get",
+    "dbo.BufferCampaign_SetMode",
+  ]);
+  assert.equal(executions[0].parameters.get("MediaUrl").value, "https://cdn.example.com/post.jpg");
+  assert.equal(executions[0].parameters.get("PostType").value, "STORY");
+  assert.equal(executions[0].parameters.get("MediaMimeType").value, "image/jpeg");
+  assert.equal(executions[0].parameters.get("AIReplyEnabled").value, 1);
+  assert.equal(executions[1].parameters.get("BufferChannelId").value, "channel-1");
+  assert.equal(executions[3].parameters.get("BufferPostId").value, "buffer-post-9");
+  assert.equal(executions[6].parameters.get("SyncableOnly").value, 1);
+  assert.equal(executions[6].parameters.get("ActiveOnly").value, 0);
 });
 
 const hasSqlServer = Boolean(process.env.SQL_SERVER_CONNECTION_STRING || (process.env.DB_SERVER && process.env.DB_NAME && process.env.DB_USER && process.env.DB_PASSWORD));

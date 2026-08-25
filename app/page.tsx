@@ -1,7 +1,10 @@
 "use client";
 import {
+  type ChangeEvent,
+  type DragEvent,
   type FormEvent,
   useEffect,
+  useRef,
   useState,
 } from "react";
 
@@ -56,6 +59,69 @@ type Campaign = {
   maxRetries?: number;
   currentMetrics?: Record<string, unknown> | null;
   lastProcessed?: number;
+  campaignObjective?: string;
+  postText?: string;
+  postType?: "POST" | "REEL" | "STORY";
+  mediaType?: "image" | "video" | null;
+  mediaUrl?: string | null;
+  mediaOriginalName?: string | null;
+  mediaMimeType?: string | null;
+  mediaSizeBytes?: number | null;
+  publishDateTime?: string | null;
+  highIntentKeywords?: string;
+  aiReplyEnabled?: boolean;
+  targetSocialChannels?: BufferChannel[];
+  campaignPosts?: CampaignPost[];
+};
+
+type CampaignPost = {
+  id: number;
+  campaignId: number | string | null;
+  platform: string;
+  bufferChannelId: string;
+  bufferPostId: string | null;
+  scheduledAt: string | null;
+  publishedAt: string | null;
+  postStatus: "DRAFT" | "SCHEDULED" | "QUEUED" | "PUBLISHED" | "FAILED";
+  externalPostId: string | null;
+  postUrl: string | null;
+  lastCheckedAt: string | null;
+  errorSource: "BUFFER" | null;
+  errorMessage: string | null;
+  lastAttemptAt: string | null;
+  isActive?: boolean;
+};
+
+type BufferChannel = {
+  id: string;
+  name: string;
+  displayName: string;
+  service: string;
+  avatar: string | null;
+  isQueuePaused: boolean;
+};
+
+type BufferConnection = {
+  provider: "buffer";
+  configured: boolean;
+  status: string;
+  reason: string;
+  checkedAt?: string | null;
+  missing?: string[];
+};
+
+type CampaignMediaUpload = {
+  mediaType: "image" | "video";
+  mediaUrl: string;
+  mediaOriginalName: string;
+  mediaMimeType: string;
+  mediaSizeBytes: number;
+};
+
+type CampaignMediaReference = Omit<CampaignMediaUpload, "mediaOriginalName" | "mediaMimeType" | "mediaSizeBytes"> & {
+  mediaOriginalName: string | null;
+  mediaMimeType: string | null;
+  mediaSizeBytes: number | null;
 };
 
 type UnifiedLead = {
@@ -165,49 +231,6 @@ type SocialBackendConfig = {
   updatedAt: string | null;
 };
 
-type StoredChannelConfiguration = {
-  channel: "instagram" | "facebook" | "x";
-  enabled: boolean;
-  environment: string;
-  accountId: string;
-  pageId: string;
-  adAccountId: string;
-  businessId: string;
-  appId: string;
-  clientId: string;
-  loginMode: string;
-  tokenType: string;
-  accessTokenExpiresAt: string | null;
-  refreshTokenExpiresAt: string | null;
-  lastTokenRefreshAt: string | null;
-  nextTokenRefreshAt: string | null;
-  webhookUrl: string;
-  callbackUrl: string;
-  scopes: string;
-  requiredScopes: string;
-  grantedScopes: string;
-  permissionsValidatedAt: string | null;
-  webhookSubscribedFields: string;
-  webhookSubscriptionId: string;
-  webhookSubscribedAt: string | null;
-  lastWebhookReceivedAt: string | null;
-  apiVersion: string;
-  appMode: string;
-  advancedAccessStatus: string;
-  businessVerificationStatus: string;
-  secretsStored: boolean;
-  secretFields: string[];
-  status: string;
-  lastTestedAt: string | null;
-  lastSuccessAt: string | null;
-  lastError: string | null;
-  productionReadiness: {
-    ready: boolean;
-    missing: string[];
-    missingScopes: string[];
-  };
-};
-
 // Navigation configuration
 const nav = [
   ["⌂", "Overview"],
@@ -240,6 +263,16 @@ export default function Home() {
   const [integrationActions, setIntegrationActions] = useState<IntegrationAction[]>([]);
   const [dataError, setDataError] = useState("");
   const [connected, setConnected] = useState(false);
+  const [bufferChannels, setBufferChannels] = useState<BufferChannel[]>([]);
+  const [bufferConnection, setBufferConnection] = useState<BufferConnection>({
+    provider: "buffer",
+    configured: false,
+    status: "missing_configuration",
+    reason: "Buffer has not been checked yet.",
+    checkedAt: null,
+    missing: ["BUFFER_API_KEY", "BUFFER_ORGANIZATION_ID"],
+  });
+  const [campaignPublishDefault, setCampaignPublishDefault] = useState("");
 
   const [testMessage, setTestMessage] = useState("Not tested");
   const [testing, setTesting] = useState(false);
@@ -435,6 +468,35 @@ export default function Home() {
     }
   };
 
+  const loadBufferChannels = async () => {
+    try {
+      const response = await fetch("/api/buffer/channels", { cache: "no-store" });
+      const data = await response.json() as {
+        connection?: BufferConnection;
+        channels?: BufferChannel[];
+        error?: string;
+        message?: string;
+      };
+      setBufferChannels(data.channels || []);
+      setBufferConnection(data.connection || {
+        provider: "buffer",
+        configured: false,
+        status: response.ok ? "disconnected" : "error",
+        reason: data.error || data.message || "Buffer channels could not be loaded.",
+      });
+      return response.ok;
+    } catch {
+      setBufferChannels([]);
+      setBufferConnection({
+        provider: "buffer",
+        configured: false,
+        status: "error",
+        reason: "The Buffer campaign service could not be reached.",
+      });
+      return false;
+    }
+  };
+
   const loadSocialStatus = async () => {
     try {
       const response = await fetch("/api/social/status", { cache: "no-store" });
@@ -455,6 +517,7 @@ export default function Home() {
     const initialLoad = window.setTimeout(() => {
       void load();
       void loadSocialStatus();
+      void loadBufferChannels();
     }, 0);
     return () => window.clearTimeout(initialLoad);
     // Initial server state is loaded once when the dashboard mounts.
@@ -488,6 +551,108 @@ export default function Home() {
       notify(entity ? `${updating ? "Changes saved" : "Record created"} successfully` : "Saved successfully");
     } catch (err) {
       notify(err instanceof Error ? err.message : "Could not save");
+    } finally {
+      setBusy(false);
+    }
+  };
+
+  const saveBufferCampaign = async (
+    event: FormEvent<HTMLFormElement>,
+    campaign: Campaign | null,
+    mediaFile: File | null,
+    removeMedia: boolean,
+  ) => {
+    event.preventDefault();
+    setBusy(true);
+    const form = new FormData(event.currentTarget);
+    const localPublishDate = new Date(String(form.get("publishDateTime") || ""));
+    try {
+      if (Number.isNaN(localPublishDate.getTime())) throw new Error("Choose a valid publish date and time.");
+      let media: CampaignMediaReference | null = removeMedia ? null : campaign?.mediaUrl ? {
+        mediaType: campaign.mediaType || "image",
+        mediaUrl: campaign.mediaUrl,
+        mediaOriginalName: campaign.mediaOriginalName || null,
+        mediaMimeType: campaign.mediaMimeType || null,
+        mediaSizeBytes: campaign.mediaSizeBytes || null,
+      } : null;
+      if (mediaFile) {
+        const uploadForm = new FormData();
+        uploadForm.append("media", mediaFile);
+        const uploadResponse = await fetch("/api/media", { method: "POST", body: uploadForm });
+        const uploadData = await uploadResponse.json() as { media?: CampaignMediaUpload; error?: string };
+        if (!uploadResponse.ok || !uploadData.media) throw new Error(uploadData.error || "The campaign media could not be uploaded.");
+        media = uploadData.media;
+      }
+
+      const response = await fetch("/api/buffer/campaigns", {
+        method: campaign ? "PUT" : "POST",
+        headers: { "content-type": "application/json" },
+        body: JSON.stringify({
+          ...(campaign ? { campaignId: campaign.id } : {}),
+          campaignName: form.get("campaignName"),
+          campaignObjective: form.get("campaignObjective"),
+          postText: form.get("postText"),
+          postType: form.get("postType"),
+          mediaType: media?.mediaType || null,
+          mediaUrl: media?.mediaUrl || null,
+          mediaOriginalName: media?.mediaOriginalName || null,
+          mediaMimeType: media?.mediaMimeType || null,
+          mediaSizeBytes: media?.mediaSizeBytes || null,
+          targetSocialChannels: form.getAll("targetSocialChannels"),
+          publishDateTime: localPublishDate.toISOString(),
+          campaignStatus: form.get("campaignStatus"),
+          highIntentKeywords: form.get("highIntentKeywords"),
+          aiReplyEnabled: form.get("aiReplyEnabled") === "true",
+          createdByAi: campaign?.createdByAi || false,
+        }),
+      });
+      const data = await response.json() as {
+        error?: string;
+        message?: string;
+        scheduledCount?: number;
+        syncedCount?: number;
+        failedCount?: number;
+        campaign?: Campaign;
+      };
+      if (!response.ok && response.status !== 207 && !data.campaign) {
+        throw new Error(data.error || data.message || "The Buffer campaign could not be scheduled.");
+      }
+      await load();
+      setModal("");
+      setEditingCampaign(null);
+      const completedCount = campaign ? data.syncedCount : data.scheduledCount;
+      notify(data.campaign?.status?.toLowerCase() === "draft" && !data.failedCount
+        ? "Campaign draft saved to SQL. No Buffer post was created."
+        : data.failedCount && !completedCount
+        ? `The campaign was saved, but all ${data.failedCount} Buffer posts failed. Review the stored errors.`
+        : data.failedCount
+        ? `${completedCount || 0} Buffer posts synchronized; ${data.failedCount} failed and were saved for review.`
+        : campaign
+        ? `${completedCount || 0} Buffer posts synchronized without creating duplicates.`
+        : `${completedCount || 0} Buffer posts scheduled. Campaign is in production mode.`);
+    } catch (error) {
+      notify(error instanceof Error ? error.message : "The Buffer campaign could not be scheduled.");
+    } finally {
+      setBusy(false);
+    }
+  };
+
+  const syncBufferPosts = async (campaignId?: number | string) => {
+    setBusy(true);
+    try {
+      const response = await fetch("/api/buffer/posts/status", {
+        method: "POST",
+        headers: { "content-type": "application/json" },
+        body: JSON.stringify({ campaignId: campaignId || null }),
+      });
+      const data = await response.json() as { checked?: number; error?: string; message?: string };
+      if (!response.ok && response.status !== 207) {
+        throw new Error(data.error || data.message || "Buffer post status could not be synchronized.");
+      }
+      await load();
+      notify(`Synchronized ${data.checked || 0} Buffer post${data.checked === 1 ? "" : "s"}.`);
+    } catch (error) {
+      notify(error instanceof Error ? error.message : "Buffer post status could not be synchronized.");
     } finally {
       setBusy(false);
     }
@@ -583,55 +748,6 @@ export default function Home() {
       setModal("lead360");
     } catch (error) {
       notify(error instanceof Error ? error.message : "Could not load the lead timeline");
-    } finally {
-      setBusy(false);
-    }
-  };
-
-  const campaignAutomationAction = async (campaign: Campaign, action: "start" | "pause" | "resume" | "stop") => {
-    setBusy(true);
-    try {
-      const response = await fetch("/api/social/automation", {
-        method: "POST",
-        headers: { "content-type": "application/json" },
-        body: JSON.stringify({ id: campaign.id, action }),
-      });
-      const data = await response.json() as { message?: string; error?: string };
-      if (!response.ok) throw new Error(data.message || data.error || "Campaign automation could not be updated");
-      await load();
-      notify(`Campaign automation ${action === "start" || action === "resume" ? "started" : action === "pause" ? "paused" : "stopped"}`);
-    } catch (error) {
-      notify(error instanceof Error ? error.message : "Campaign automation could not be updated");
-    } finally {
-      setBusy(false);
-    }
-  };
-
-  const createSproutDraft = async (campaign: Campaign) => {
-    setBusy(true);
-    try {
-      const text = [campaign.message, campaign.contentReference].filter(Boolean).join("\n\n");
-      const response = await fetch("/api/social/actions", {
-        method: "POST",
-        headers: { "content-type": "application/json" },
-        body: JSON.stringify({
-          provider: "sprout",
-          actionType: "PUBLISH_POST",
-          campaignId: campaign.id,
-          channel: campaign.platform,
-          text,
-          executeNow: true,
-          idempotencyKey: `campaign-${String(campaign.id)}-${crypto.randomUUID()}`,
-        }),
-      });
-      const data = await response.json() as { action?: IntegrationAction; message?: string; error?: string };
-      if (!response.ok || !data.action) throw new Error(data.message || data.error || "The Sprout draft could not be created");
-      await load();
-      notify(data.action.status === "SUCCEEDED"
-        ? `Sprout draft created (${data.action.externalStatus || "PENDING"})`
-        : data.action.lastError || `CRM action ${data.action.status.toLowerCase().replaceAll("_", " ")}`);
-    } catch (error) {
-      notify(error instanceof Error ? error.message : "The Sprout draft could not be created");
     } finally {
       setBusy(false);
     }
@@ -772,16 +888,15 @@ export default function Home() {
               rows={campaigns}
               onCreate={() => {
                 setEditingCampaign(null);
+                setCampaignPublishDefault(datetimeLocalValue(new Date(Date.now() + 24 * 60 * 60 * 1000).toISOString()));
                 setModal("campaign");
               }}
               onEdit={(campaign) => {
                 setEditingCampaign(campaign);
+                setCampaignPublishDefault(datetimeLocalValue(campaign.publishDateTime));
                 setModal("campaign");
               }}
-              changeStatus={changeStatus}
-              automationAction={campaignAutomationAction}
-              createSproutDraft={createSproutDraft}
-              integrationActions={integrationActions}
+              syncBuffer={syncBufferPosts}
               busy={busy}
             />
           )}
@@ -833,15 +948,11 @@ export default function Home() {
           )}
           {active === "Settings" && (
             <Settings
-              connected={connected}
-              socialChannels={socialChannels}
-              testMessage={testMessage}
-              onTestConnection={handleTestConnection}
-              testing={testing}
-              onTestChannel={handleTestChannel}
-              channelTestResults={channelTestResults}
+              bufferConnection={bufferConnection}
+              bufferChannels={bufferChannels}
+              onRefreshBuffer={loadBufferChannels}
               onBackendConfigured={async () => {
-                await Promise.all([load(), loadSocialStatus()]);
+                await Promise.all([load(), loadSocialStatus(), loadBufferChannels()]);
               }}
             />
           )}
@@ -870,7 +981,17 @@ export default function Home() {
                 busy={busy}
               />
             )}
-            {modal === "campaign" && <CampaignForm key={editingCampaign?.id || "new"} campaign={editingCampaign} submit={submit} busy={busy} />}
+            {modal === "campaign" && (
+              <CampaignForm
+                key={editingCampaign?.id || "new"}
+                campaign={editingCampaign}
+                bufferChannels={bufferChannels}
+                bufferConnection={bufferConnection}
+                defaultPublishTime={campaignPublishDefault}
+                save={saveBufferCampaign}
+                busy={busy}
+              />
+            )}
             {modal === "page" && <PageForm key={editingPage?.id || "new"} page={editingPage} campaigns={campaigns} submit={submit} busy={busy} />}
             {modal === "webinar" && <WebinarForm key={editingWebinar?.id || "new"} webinar={editingWebinar} submit={submit} busy={busy} campaigns={campaigns} pages={pages} />}
             {modal === "ai" && <AiDraftForm busy={busy} setBusy={setBusy} onSaved={async (message) => { await load(); setModal(""); notify(message); }} />}
@@ -1086,110 +1207,92 @@ function Campaigns({
   rows,
   onCreate,
   onEdit,
-  changeStatus,
-  automationAction,
-  createSproutDraft,
-  integrationActions,
+  syncBuffer,
   busy,
 }: {
   rows: Campaign[];
   onCreate: () => void;
   onEdit: (campaign: Campaign) => void;
-  changeStatus: (t: string, id: number | string, s: string) => void;
-  automationAction: (campaign: Campaign, action: "start" | "pause" | "resume" | "stop") => Promise<void>;
-  createSproutDraft: (campaign: Campaign) => Promise<void>;
-  integrationActions: IntegrationAction[];
+  syncBuffer: (campaignId?: number | string) => Promise<void>;
   busy: boolean;
 }) {
   return (
     <>
       <ModuleHead
         title="Campaign Studio"
-        sub="Create AI-assisted ads and control delivery across social channels"
-        action="✦ New AI campaign"
+        sub="Create SQL-backed campaigns and schedule every social post through Buffer"
+        action="New Buffer campaign"
         click={onCreate}
       />
       {!rows.length ? (
         <Empty
           icon="◎"
           title="No campaigns yet"
-          text="Create your first AI-assisted social campaign. It will stay in draft until you connect and approve a publishing channel."
+          text="Connect Buffer, select live channels, and schedule your first campaign. SQL remains the source of truth for every post."
           action="Create campaign"
           click={onCreate}
         />
       ) : (
         <div className="card-grid">
           {rows.map((c) => {
-            const delivery = integrationActions.find((action) =>
-              action.direction === "OUTBOUND" && String(action.campaignId) === String(c.id));
+            const posts = c.campaignPosts || [];
+            const activePosts = posts.filter((post) => post.isActive !== false);
             return (
             <article className="panel campaign-card" key={c.id}>
               <div>
-                <span className="platform">{c.platform} · {c.sourceType || "ORGANIC"}</span>
+                <span className="platform">Buffer · {c.postType || "POST"} · {c.platform || "No channels"}</span>
                 <b className={`status ${c.status.toLowerCase()}`}>
                   {c.status}
                 </b>
               </div>
               <h3>{c.name}</h3>
-              <p>{c.message}</p>
-              <small>Target: {c.audience}</small>
+              <p>{c.postText || c.message}</p>
+              <small>Objective: {c.campaignObjective || c.audience}</small>
               <div className="campaign-metrics">
                 <span>
-                  <b>{c.impressions}</b> impressions
+                  <b>{activePosts.length}</b> active channel posts
                 </span>
                 <span>
-                  <b>{c.clicks}</b> clicks
+                  <b>{formatSocialTime(c.publishDateTime || posts[0]?.scheduledAt || null)}</b> publish time
                 </span>
                 <span>
-                  <b>${c.budget}</b> budget
+                  <b>{c.aiReplyEnabled ? "On" : "Off"}</b> AI reply
                 </span>
               </div>
-              <div className="campaign-automation">
-                <span><strong>{c.automationStatus || "DRAFT"}</strong> automation</span>
-                <span>Last run: {formatSocialTime(c.lastRunAt || null)}</span>
-                <span>Next run: {formatSocialTime(c.nextRunAt || null)}</span>
-                <span>{c.lastProcessed || 0} interactions · retry {c.retryCount || 0}/{c.maxRetries ?? 3}</span>
-                {c.lastError && <em title={c.lastError}>{c.lastError}</em>}
-              </div>
-              {delivery && (
-                <div className={`integration-delivery ${delivery.status.toLowerCase()}`}>
-                  <span><strong>Sprout delivery</strong>{delivery.status.replaceAll("_", " ")}</span>
-                  <span><strong>External state</strong>{delivery.externalStatus || "Not assigned"}</span>
-                  <span><strong>Attempts</strong>{delivery.attemptCount}/{delivery.maxAttempts}</span>
-                  {delivery.externalId && <small>Sprout post ID {delivery.externalId}</small>}
-                  {delivery.lastError && <small className="delivery-error">{delivery.lastError}</small>}
+              {c.mediaUrl && (
+                <div className="campaign-media-summary">
+                  {c.mediaType === "video" ? (
+                    <video src={c.mediaUrl} controls muted preload="metadata" />
+                  ) : (
+                    <div className="campaign-media-image" role="img" aria-label={c.mediaOriginalName || "Campaign image"} style={{ backgroundImage: `url(${c.mediaUrl})` }} />
+                  )}
+                  <small>{c.mediaOriginalName || c.mediaMimeType || "Campaign media"}{c.mediaSizeBytes ? ` · ${formatFileSize(c.mediaSizeBytes)}` : ""}</small>
                 </div>
               )}
+              {c.highIntentKeywords && <small>High-intent keywords: {c.highIntentKeywords}</small>}
+              {posts.length ? (
+                <div className="buffer-post-list">
+                  {posts.map((post) => (
+                    <div key={post.id} className={`buffer-post ${post.postStatus.toLowerCase()}${post.isActive === false ? " inactive" : ""}`}>
+                      <span>
+                        <strong>{post.platform === "twitter" ? "X" : post.platform}</strong>
+                        <b>{post.isActive === false ? `HISTORY · ${post.postStatus}` : post.postStatus}</b>
+                      </span>
+                      <small>Buffer post: {post.bufferPostId || "Not created"}</small>
+                      <small>{post.publishedAt ? `Published ${formatSocialTime(post.publishedAt)}` : `Scheduled ${formatSocialTime(post.scheduledAt)}`}</small>
+                      {post.postUrl && <a href={post.postUrl} target="_blank" rel="noreferrer">Open published post</a>}
+                      {post.errorMessage && <em>{post.errorSource}: {post.errorMessage}</em>}
+                    </div>
+                  ))}
+                </div>
+              ) : (
+                <div className="buffer-post-list"><small>This legacy campaign has no Buffer post records.</small></div>
+              )}
               <div className="card-actions">
-                <button type="button" onClick={() => onEdit(c)}>Edit campaign</button>
-                <button type="button" disabled={busy} onClick={() => void createSproutDraft(c)}>
-                  Create Sprout draft
+                <button type="button" disabled={busy} onClick={() => onEdit(c)}>Edit campaign</button>
+                <button type="button" disabled={busy || !posts.some((post) => post.bufferPostId && post.postStatus !== "PUBLISHED")} onClick={() => void syncBuffer(c.id)}>
+                  Refresh Buffer status
                 </button>
-                <button
-                  type="button"
-                  onClick={() =>
-                    changeStatus(
-                      "campaign",
-                      c.id,
-                      c.status.toLowerCase() === "production" ? "paused" : "production"
-                    )
-                  }
-                >
-                  {c.status.toLowerCase() === "production" ? "Pause" : "Validate & move to production"}
-                </button>
-                {(c.automationStatus || "DRAFT") === "RUNNING" ? (
-                  <>
-                    <button type="button" onClick={() => void automationAction(c, "pause")}>Pause automation</button>
-                    <button type="button" onClick={() => void automationAction(c, "stop")}>Stop</button>
-                  </>
-                ) : (c.automationStatus || "DRAFT") === "PAUSED" ? (
-                  <>
-                    <button type="button" onClick={() => void automationAction(c, "resume")}>Resume automation</button>
-                    <button type="button" onClick={() => void automationAction(c, "stop")}>Stop</button>
-                  </>
-                ) : (
-                  <button type="button" onClick={() => void automationAction(c, "start")}>Start automation</button>
-                )}
               </div>
             </article>
           );})}
@@ -1654,22 +1757,14 @@ function Social({
 }
 
 function Settings({
-  connected,
-  socialChannels,
-  testMessage,
-  onTestConnection,
-  testing,
-  onTestChannel,
-  channelTestResults,
+  bufferConnection,
+  bufferChannels,
+  onRefreshBuffer,
   onBackendConfigured,
 }: {
-  connected: boolean;
-  socialChannels: SocialChannelConfig[];
-  testMessage: string;
-  onTestConnection: () => Promise<string>;
-  testing: boolean;
-  onTestChannel: (channelName: string) => Promise<void>;
-  channelTestResults: { [key: string]: string };
+  bufferConnection: BufferConnection;
+  bufferChannels: BufferChannel[];
+  onRefreshBuffer: () => Promise<boolean>;
   onBackendConfigured: () => Promise<void>;
 }) {
   return (
@@ -1677,50 +1772,27 @@ function Settings({
       <ModuleHead title="Settings" sub="Configure and verify the server-side services that power your funnel" />
       <div className="settings-grid">
         <BackendServiceConfiguration onConfigured={onBackendConfigured} />
-        <ChannelConfigurationManager onChanged={onBackendConfigured} />
-        <article className="panel">
-          <h3>Channel connections</h3>
-          <p>Secrets are loaded by the listener service and are never returned to this browser.</p>
-          {socialChannels.map((channel) => (
-            <div
-              key={channel.channel}
-              style={{
-                display: "grid",
-                gap: "8px",
-                marginTop: "14px",
-                paddingTop: "14px",
-                borderTop: "1px solid #f0f0ed",
-              }}
-            >
-              <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", gap: "10px" }}>
-                <div>
-                  <strong>{channel.name}</strong>
-                  <small style={{ display: "block", color: "#7a7f89", marginTop: "3px" }}>
-                    {channel.status.replaceAll("_", " ")}
-                  </small>
-                </div>
-                <button
-                  className={channel.status === "connected" ? "success-button" : "primary"}
-                  onClick={() => void onTestChannel(channel.name)}
-                  disabled={channelTestResults[channel.name] === "Testing..."}
-                >
-                  {channelTestResults[channel.name] === "Testing..." ? "Testing..." : "Test"}
-                </button>
-              </div>
-              <small style={{ color: "#7a7f89", lineHeight: 1.45 }}>{channel.reason}</small>
-              <small style={{ color: "#7a7f89" }}>Required: {channelRequirement(channel.channel)}</small>
+        <article className="panel buffer-settings">
+          <div className="panel-head">
+            <div>
+              <h3>Buffer publishing</h3>
+              <p>Campaign channels come directly from Buffer. Credentials remain in server environment variables.</p>
             </div>
-          ))}
-          <div style={{ marginTop: "18px", display: "grid", gap: "9px" }}>
-            <button
-              className={connected ? "success-button" : "primary"}
-              onClick={() => void onTestConnection()}
-              disabled={testing}
-            >
-              {testing ? "Testing..." : connected ? "✓ Listener active" : "Test all channels"}
-            </button>
-            <small style={{ color: connected ? "#1f8a5d" : "#6e727c" }}>{testMessage}</small>
+            <span className={`integration-state ${bufferConnection.status === "connected" ? "connected" : ""}`}>
+              {bufferConnection.status.replaceAll("_", " ")}
+            </span>
           </div>
+          <p>{bufferConnection.reason}</p>
+          <div className="buffer-channel-grid">
+            {bufferChannels.length ? bufferChannels.map((channel) => (
+              <div key={channel.id}>
+                <strong>{channel.displayName}</strong>
+                <small>{channel.service === "twitter" ? "X" : channel.service} · {channel.isQueuePaused ? "queue paused" : "available"}</small>
+              </div>
+            )) : <small>No live Buffer channels are available.</small>}
+          </div>
+          <button className="primary" type="button" onClick={() => void onRefreshBuffer()}>Test Buffer and refresh channels</button>
+          <small className="config-state">Required on the server: BUFFER_API_KEY and BUFFER_ORGANIZATION_ID</small>
         </article>
         <article className="panel">
           <h3>SQL Server persistence</h3>
@@ -1871,6 +1943,7 @@ function BackendServiceConfiguration({ onConfigured }: { onConfigured: () => Pro
   );
 }
 
+/* Removed from the active UI: direct provider credential forms were replaced by server-only Buffer publishing.
 const defaultRequiredScopes = (channel: StoredChannelConfiguration["channel"]) => channel === "instagram"
   ? "pages_show_list instagram_basic instagram_manage_comments instagram_manage_messages instagram_content_publish instagram_manage_insights pages_read_engagement pages_manage_metadata ads_read ads_management"
   : channel === "facebook"
@@ -2130,6 +2203,7 @@ function ChannelConfigurationManager({ onChanged }: { onChanged: () => Promise<v
   );
 }
 
+*/
 function ModuleHead({
   title,
   sub,
@@ -2290,73 +2364,208 @@ type ContentSubmit = (
 
 function CampaignForm({
   campaign,
-  submit,
+  bufferChannels,
+  bufferConnection,
+  defaultPublishTime,
+  save,
   busy,
 }: {
   campaign: Campaign | null;
-  submit: ContentSubmit;
+  bufferChannels: BufferChannel[];
+  bufferConnection: BufferConnection;
+  defaultPublishTime: string;
+  save: (event: FormEvent<HTMLFormElement>, campaign: Campaign | null, mediaFile: File | null, removeMedia: boolean) => Promise<void>;
   busy: boolean;
 }) {
+  const savedChannelIds = (campaign?.targetSocialChannels?.length
+    ? campaign.targetSocialChannels.map((channel) => channel.id)
+    : campaign?.campaignPosts?.filter((post) => post.isActive !== false).map((post) => post.bufferChannelId)) || [];
+  const [postType, setPostType] = useState<"POST" | "REEL" | "STORY">(campaign?.postType || "POST");
+  const [campaignStatus, setCampaignStatus] = useState(campaign?.status?.toLowerCase() === "draft" ? "DRAFT" : "PRODUCTION");
+  const [selectedChannels, setSelectedChannels] = useState<string[]>(savedChannelIds);
+  const [mediaFile, setMediaFile] = useState<File | null>(null);
+  const [mediaPreview, setMediaPreview] = useState(campaign?.mediaUrl || "");
+  const [mediaRemoved, setMediaRemoved] = useState(false);
+  const [mediaError, setMediaError] = useState("");
+  const previewObjectUrl = useRef<string | null>(null);
+
+  useEffect(() => () => {
+    if (previewObjectUrl.current) URL.revokeObjectURL(previewObjectUrl.current);
+  }, []);
+
+  const formChannels = [
+    ...bufferChannels,
+    ...(campaign?.targetSocialChannels || [])
+      .filter((saved) => !bufferChannels.some((channel) => channel.id === saved.id))
+      .map((saved) => ({ ...saved, name: saved.displayName, avatar: null, isQueuePaused: true })),
+  ];
+  const effectiveMediaType = mediaFile
+    ? mediaFile.type.startsWith("video/") ? "video" : "image"
+    : mediaRemoved ? null : campaign?.mediaType || null;
+  const selectedServices = formChannels
+    .filter((channel) => selectedChannels.includes(channel.id))
+    .map((channel) => channel.service);
+  const compatibilityError = postType !== "POST" && selectedServices.some((service) => !["instagram", "facebook"].includes(service))
+    ? `${postType} is available only for connected Instagram or Facebook channels.`
+    : postType === "REEL" && effectiveMediaType !== "video"
+    ? "A Reel requires an MP4 or MOV video."
+    : postType === "STORY" && !effectiveMediaType
+    ? "A Story requires an image or video."
+    : "";
+
+  const selectMedia = (file: File | null) => {
+    if (!file) return;
+    const allowed = new Set(["image/jpeg", "image/png", "image/webp", "image/gif", "video/mp4", "video/quicktime"]);
+    if (!allowed.has(file.type)) {
+      setMediaError("Choose a JPEG, PNG, WebP, GIF, MP4, or MOV file.");
+      return;
+    }
+    if (file.size < 1 || file.size > 100 * 1024 * 1024) {
+      setMediaError("Media must be larger than 0 bytes and no more than 100 MB.");
+      return;
+    }
+    if (previewObjectUrl.current) URL.revokeObjectURL(previewObjectUrl.current);
+    previewObjectUrl.current = URL.createObjectURL(file);
+    setMediaFile(file);
+    setMediaPreview(previewObjectUrl.current);
+    setMediaRemoved(false);
+    setMediaError("");
+  };
+
+  const removeMedia = () => {
+    if (previewObjectUrl.current) URL.revokeObjectURL(previewObjectUrl.current);
+    previewObjectUrl.current = null;
+    setMediaFile(null);
+    setMediaPreview("");
+    setMediaRemoved(true);
+    setMediaError("");
+  };
+
+  const onMediaChange = (event: ChangeEvent<HTMLInputElement>) => selectMedia(event.target.files?.[0] || null);
+  const onMediaDrop = (event: DragEvent<HTMLLabelElement>) => {
+    event.preventDefault();
+    selectMedia(event.dataTransfer.files?.[0] || null);
+  };
+
   return (
-    <form onSubmit={(e) => submit(e, campaign ? "campaign.update" : "campaign.create", campaign?.id, campaign?.createdByAi)}>
-      <span className="insight-tag">CAMPAIGN DRAFT</span>
-      <h2>{campaign ? "Edit campaign" : "Create a campaign"}</h2>
-      <p>
-        {campaign
-          ? "Update this campaign without changing its production approval state."
-          : "Describe the offer and audience. The draft can be reviewed before any social publishing."}
-      </p>
-      <Field label="Campaign name" name="name" placeholder="Scale Without Burnout" required defaultValue={campaign?.name} />
-      <label>
-        Platform
-        <select name="platform" defaultValue={campaign?.platform || "Instagram"}>
-          <option>Instagram</option>
-          <option>Facebook</option>
-          <option>X / Twitter</option>
-          <option>Multi-channel</option>
-        </select>
-      </label>
+    <form onSubmit={(event) => void save(event, campaign, mediaFile, mediaRemoved)}>
+      <span className="insight-tag">BUFFER · SQL AUTHORITATIVE</span>
+      <h2>{campaign ? "Edit campaign" : "Create and schedule a campaign"}</h2>
+      <p>{campaign
+        ? "Values are loaded from SQL. Eligible scheduled posts are updated through Buffer editPost without creating duplicates."
+        : "The CRM saves the campaign and one post row per channel before Buffer receives any publishing request."}</p>
+      <Field label="Campaign name" name="campaignName" placeholder="Scale Without Burnout" required defaultValue={campaign?.name} />
       <Field
-        label="Target audience"
-        name="audience"
-        placeholder="Wellness founders with teams of 5–30"
+        label="Campaign objective"
+        name="campaignObjective"
+        placeholder="Register qualified founders for the webinar"
         required
-        defaultValue={campaign?.audience}
+        defaultValue={campaign?.campaignObjective || campaign?.audience}
       />
       <label>
-        Core message
+        Post text <span style={{ color: "#ba3d3d" }}> *</span>
         <textarea
-          name="message"
+          name="postText"
           placeholder="Join our free webinar to build a business that grows without burning out."
           required
-          defaultValue={campaign?.message}
+          defaultValue={campaign?.postText || campaign?.message}
         />
       </label>
-      <Field label="Daily budget" name="budget" type="number" placeholder="50" defaultValue={campaign ? String(campaign.budget) : undefined} />
       <div className="form-grid">
         <label>
-          Source type
-          <select name="sourceType" defaultValue={campaign?.sourceType || "ORGANIC"}>
-            <option value="ORGANIC">Organic social</option>
-            <option value="PAID">Paid advertisement</option>
+          Post type
+          <select name="postType" value={postType} onChange={(event) => setPostType(event.target.value as "POST" | "REEL" | "STORY")} required>
+            <option value="POST">Post</option>
+            <option value="REEL">Reel</option>
+            <option value="STORY">Story</option>
           </select>
         </label>
-        <Field label="Provider campaign ID" name="externalCampaignId" placeholder="Meta or X campaign ID" defaultValue={campaign?.externalCampaignId || undefined} />
-        <Field label="Advertisement ID" name="advertisementId" placeholder="Ad or promoted-post ID" defaultValue={campaign?.advertisementId || undefined} />
-        <Field label="Lead form ID" name="leadFormId" placeholder="Meta instant-form ID" defaultValue={campaign?.leadFormId || undefined} />
-        <Field label="Content reference URL" name="contentReference" type="url" placeholder="https://..." defaultValue={campaign?.contentReference || undefined} />
-        <Field label="Schedule" name="schedule" placeholder="continuous" defaultValue={campaign?.schedule || "continuous"} />
-        <Field label="Poll every (minutes)" name="cadenceMinutes" type="number" placeholder="60" defaultValue={String(campaign?.cadenceMinutes || 60)} />
-        <Field label="Maximum retries" name="maxRetries" type="number" placeholder="3" defaultValue={String(campaign?.maxRetries ?? 3)} />
-        <Field label="First/next run" name="nextRunAt" type="datetime-local" defaultValue={datetimeLocalValue(campaign?.nextRunAt)} />
+        <label>
+          Campaign status
+          <select name="campaignStatus" value={campaignStatus} onChange={(event) => setCampaignStatus(event.target.value)}>
+            <option value="PRODUCTION">Schedule / synchronize in Buffer</option>
+            <option value="DRAFT">Save SQL draft only</option>
+          </select>
+        </label>
+        <Field label="Publish date and time" name="publishDateTime" type="datetime-local" required defaultValue={defaultPublishTime} />
+        <Field label="High-intent keywords" name="highIntentKeywords" placeholder="pricing, webinar, demo" defaultValue={campaign?.highIntentKeywords} />
         <label className="checkbox-field">
-          <input type="checkbox" name="automationEnabled" value="true" defaultChecked={campaign?.automationEnabled} />
-          Enable continuous automation after saving
+          <input type="checkbox" name="aiReplyEnabled" value="true" defaultChecked={campaign?.aiReplyEnabled} />
+          Enable AI reply handling for this campaign
         </label>
       </div>
-      <input type="hidden" name="status" value={campaign?.status || "draft"} />
-      <button className="primary submit" disabled={busy}>
-        {busy ? "Saving..." : campaign ? "Save campaign changes" : "Save SQL draft"}
+      <section className="campaign-media-editor">
+        <div>
+          <strong>Image or video</strong>
+          <small>Buffer requires a stable public URL. Files are validated on the server and binaries are not stored in SQL.</small>
+        </div>
+        <label
+          className={`campaign-media-drop${mediaPreview ? " has-media" : ""}`}
+          onDragOver={(event) => event.preventDefault()}
+          onDrop={onMediaDrop}
+        >
+          <input type="file" accept="image/jpeg,image/png,image/webp,image/gif,video/mp4,video/quicktime,.jpg,.jpeg,.png,.webp,.gif,.mp4,.mov" onChange={onMediaChange} />
+          {mediaPreview ? (
+            effectiveMediaType === "video" ? (
+              <video src={mediaPreview} controls muted preload="metadata" />
+            ) : (
+              <span className="campaign-media-image" role="img" aria-label={mediaFile?.name || campaign?.mediaOriginalName || "Campaign image preview"} style={{ backgroundImage: `url(${mediaPreview})` }} />
+            )
+          ) : (
+            <span><b>Drop media here</b><small>or click to browse · JPEG, PNG, WebP, GIF, MP4, MOV · up to 100 MB</small></span>
+          )}
+        </label>
+        {mediaPreview && (
+          <div className="campaign-media-details">
+            <span>{mediaFile?.name || campaign?.mediaOriginalName || "Saved campaign media"}{(mediaFile?.size || campaign?.mediaSizeBytes) ? ` · ${formatFileSize(mediaFile?.size || campaign?.mediaSizeBytes || 0)}` : ""}</span>
+            <button type="button" onClick={removeMedia}>Remove media</button>
+          </div>
+        )}
+        {mediaError && <small className="form-error">{mediaError}</small>}
+      </section>
+      <fieldset className="buffer-channel-picker">
+        <legend>Target social channels</legend>
+        {formChannels.length ? formChannels.map((channel, index) => (
+          <div key={channel.id} className="checkbox-field">
+            <input
+              id={`buffer-channel-${index}`}
+              aria-label={`Select ${channel.displayName}`}
+              type="checkbox"
+              name="targetSocialChannels"
+              value={channel.id}
+              disabled={channel.isQueuePaused}
+              checked={selectedChannels.includes(channel.id)}
+              onChange={(event) => setSelectedChannels((current) => event.target.checked
+                ? [...new Set([...current, channel.id])]
+                : current.filter((id) => id !== channel.id))}
+            />
+            {channel.isQueuePaused && selectedChannels.includes(channel.id) && <input type="hidden" name="targetSocialChannels" value={channel.id} />}
+            <span>
+              <strong>{channel.displayName}</strong>
+              <small>{channel.service === "twitter" ? "X" : channel.service}{channel.isQueuePaused ? " · Buffer queue paused" : ""}</small>
+            </span>
+          </div>
+        )) : <small>{bufferConnection.reason}</small>}
+      </fieldset>
+      {(compatibilityError || !selectedChannels.length) && (
+        <small className="form-error">{compatibilityError || "Select at least one Buffer channel."}</small>
+      )}
+      <div className="buffer-ai-limit">
+        <button type="button" disabled>Buffer AI Assist unavailable via public API</button>
+        <small>Buffer exposes the aiAssisted tracking flag, but no public content-generation operation. No substitute or fabricated endpoint is used.</small>
+      </div>
+      <div className="buffer-production-note">
+        <strong>{campaignStatus === "DRAFT" ? "Campaign remains a SQL draft" : "Campaign status: Draft → Production"}</strong>
+        <small>{campaignStatus === "DRAFT"
+          ? "No Buffer post is created until you reopen the campaign and choose scheduling."
+          : "Production is set only after every selected channel returns a scheduled or synchronized Buffer post."}</small>
+      </div>
+      <button className="primary submit" disabled={busy || bufferConnection.status !== "connected" || !selectedChannels.length || Boolean(compatibilityError) || Boolean(mediaError)}>
+        {busy
+          ? "Saving campaign..."
+          : campaign
+          ? campaignStatus === "DRAFT" ? "Save campaign draft" : "Save changes and synchronize Buffer"
+          : campaignStatus === "DRAFT" ? "Save SQL draft" : "Save to SQL and schedule in Buffer"}
       </button>
     </form>
   );
@@ -2441,6 +2650,13 @@ function datetimeLocalValue(value: string | null | undefined) {
   if (Number.isNaN(parsed.getTime())) return "";
   const local = new Date(parsed.getTime() - parsed.getTimezoneOffset() * 60_000);
   return local.toISOString().slice(0, 16);
+}
+
+function formatFileSize(value: number) {
+  if (!Number.isFinite(value) || value <= 0) return "Unknown size";
+  if (value < 1024) return `${value} B`;
+  if (value < 1024 * 1024) return `${Math.round(value / 1024)} KB`;
+  return `${(value / 1024 / 1024).toFixed(value >= 10 * 1024 * 1024 ? 0 : 1)} MB`;
 }
 
 function WebinarForm({

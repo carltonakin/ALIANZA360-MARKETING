@@ -113,8 +113,32 @@ function mapChannelConfiguration(row, encryptionKey) {
   return configuration;
 }
 
+function mapCampaignPost(row) {
+  return {
+    id: Number(row.CampaignPostId),
+    campaignId: row.CampaignId ? `campaign:${row.CampaignId}` : null,
+    platform: row.Platform,
+    bufferChannelId: row.BufferChannelId,
+    bufferPostId: row.BufferPostId || null,
+    scheduledAt: iso(row.ScheduledAt),
+    publishedAt: iso(row.PublishedAt),
+    postStatus: row.PostStatus || "DRAFT",
+    externalPostId: row.ExternalPostId || null,
+    postUrl: row.PostUrl || null,
+    lastCheckedAt: iso(row.LastCheckedAt),
+    errorSource: row.ErrorSource || null,
+    errorMessage: row.ErrorMessage || null,
+    lastAttemptAt: iso(row.LastAttemptAt),
+    isActive: row.IsActive === undefined ? true : Boolean(row.IsActive),
+    createdAt: iso(row.CreatedAt),
+    updatedAt: iso(row.UpdatedAt),
+  };
+}
+
 function mapCampaign(row) {
   const currentMetrics = jsonValue(row.CurrentMetricsJson, null);
+  const campaignPostRows = jsonValue(row.CampaignPostsJson, []);
+  const campaignPosts = Array.isArray(campaignPostRows) ? campaignPostRows.map(mapCampaignPost) : [];
   return {
     id: `campaign:${row.CampaignId}`,
     name: row.Name,
@@ -124,6 +148,19 @@ function mapCampaign(row) {
     budget: Number(row.Budget || 0),
     status: row.Mode,
     createdByAi: Boolean(row.CreatedByAi),
+    campaignObjective: row.CampaignObjective || row.Audience || "",
+    postText: row.PostText || row.Message || "",
+    postType: row.PostType || "POST",
+    mediaType: row.MediaType || null,
+    mediaUrl: row.MediaUrl || null,
+    mediaOriginalName: row.MediaOriginalName || null,
+    mediaMimeType: row.MediaMimeType || null,
+    mediaSizeBytes: row.MediaSizeBytes == null ? null : Number(row.MediaSizeBytes),
+    publishDateTime: iso(row.PublishDateTime),
+    highIntentKeywords: row.HighIntentKeywords || "",
+    aiReplyEnabled: Boolean(row.AIReplyEnabled),
+    targetSocialChannels: jsonValue(row.TargetSocialChannelsJson, []),
+    campaignPosts,
     lastReadinessCheckAt: iso(row.LastReadinessCheckAt),
     lastReadinessError: row.LastReadinessError || null,
     createdAt: iso(row.CreatedAt),
@@ -478,7 +515,89 @@ export class SqlServerRepository {
     request.input("Budget", this.sql.Decimal(19, 4), input.budget);
     request.input("Mode", this.sql.NVarChar(32), input.status || "draft");
     request.input("CreatedByAi", this.sql.Bit, input.createdByAi ? 1 : 0);
+    request.input("CampaignObjective", this.sql.NVarChar(2000), input.campaignObjective || null);
+    request.input("PostText", this.sql.NVarChar(this.sql.MAX), input.postText || null);
+    request.input("PostType", this.sql.NVarChar(16), input.postType || "POST");
+    request.input("MediaType", this.sql.NVarChar(16), input.mediaType || null);
+    request.input("MediaUrl", this.sql.NVarChar(2048), input.mediaUrl || null);
+    request.input("MediaOriginalName", this.sql.NVarChar(255), input.mediaOriginalName || null);
+    request.input("MediaMimeType", this.sql.NVarChar(127), input.mediaMimeType || null);
+    request.input("MediaSizeBytes", this.sql.BigInt, input.mediaSizeBytes == null ? null : Number(input.mediaSizeBytes));
+    request.input("PublishDateTime", this.sql.DateTime2, input.publishDateTime ? new Date(input.publishDateTime) : null);
+    request.input("HighIntentKeywords", this.sql.NVarChar(2000), input.highIntentKeywords || null);
+    request.input("AIReplyEnabled", this.sql.Bit, input.aiReplyEnabled ? 1 : 0);
+    request.input("TargetSocialChannelsJson", this.sql.NVarChar(this.sql.MAX),
+      input.targetSocialChannels ? JSON.stringify(input.targetSocialChannels) : null);
     const response = await request.execute("dbo.Campaign_Save");
+    return response.recordset?.[0] ? mapCampaign(response.recordset[0]) : null;
+  }
+
+  async createCampaignPost(input) {
+    return this.upsertCampaignPost(input);
+  }
+
+  async upsertCampaignPost(input) {
+    const request = this.request();
+    request.input("CampaignId", this.sql.BigInt, numericId(input.campaignId));
+    request.input("Platform", this.sql.NVarChar(64), input.platform);
+    request.input("BufferChannelId", this.sql.NVarChar(255), input.bufferChannelId);
+    request.input("ScheduledAt", this.sql.DateTime2, new Date(input.scheduledAt));
+    const response = await request.execute("dbo.BufferCampaignPost_Upsert");
+    return response.recordset?.[0] ? mapCampaignPost(response.recordset[0]) : null;
+  }
+
+  async deactivateMissingCampaignPosts(campaignId, selectedChannelIds) {
+    const request = this.request();
+    request.input("CampaignId", this.sql.BigInt, numericId(campaignId));
+    request.input("SelectedChannelIdsJson", this.sql.NVarChar(this.sql.MAX), JSON.stringify(selectedChannelIds || []));
+    const response = await request.execute("dbo.BufferCampaignPost_DeactivateMissingDrafts");
+    return (response.recordset || []).map(mapCampaignPost);
+  }
+
+  async applyCampaignPostStatus(campaignPostId, input) {
+    const request = this.request();
+    request.input("CampaignPostId", this.sql.BigInt, numericId(campaignPostId));
+    request.input("BufferPostId", this.sql.NVarChar(255), input.bufferPostId || null);
+    request.input("ScheduledAt", this.sql.DateTime2, input.scheduledAt ? new Date(input.scheduledAt) : null);
+    request.input("PublishedAt", this.sql.DateTime2, input.publishedAt ? new Date(input.publishedAt) : null);
+    request.input("PostStatus", this.sql.NVarChar(16), input.postStatus);
+    request.input("ExternalPostId", this.sql.NVarChar(255), input.externalPostId || null);
+    request.input("PostUrl", this.sql.NVarChar(2048), input.postUrl || null);
+    request.input("ErrorMessage", this.sql.NVarChar(1000), input.errorMessage || null);
+    const response = await request.execute("dbo.BufferCampaignPost_ApplyStatus");
+    return response.recordset?.[0] ? mapCampaignPost(response.recordset[0]) : null;
+  }
+
+  async failCampaignPost(campaignPostId, message) {
+    const request = this.request();
+    request.input("CampaignPostId", this.sql.BigInt, numericId(campaignPostId));
+    request.input("ErrorMessage", this.sql.NVarChar(1000), message);
+    const response = await request.execute("dbo.BufferCampaignPost_Fail");
+    return response.recordset?.[0] ? mapCampaignPost(response.recordset[0]) : null;
+  }
+
+  async recordCampaignPostAttemptError(campaignPostId, message) {
+    const request = this.request();
+    request.input("CampaignPostId", this.sql.BigInt, numericId(campaignPostId));
+    request.input("ErrorMessage", this.sql.NVarChar(1000), message);
+    const response = await request.execute("dbo.BufferCampaignPost_RecordAttemptError");
+    return response.recordset?.[0] ? mapCampaignPost(response.recordset[0]) : null;
+  }
+
+  async getCampaignPosts({ campaignId = null, syncableOnly = false, activeOnly = false } = {}) {
+    const request = this.request();
+    request.input("CampaignId", this.sql.BigInt, numericId(campaignId));
+    request.input("SyncableOnly", this.sql.Bit, syncableOnly ? 1 : 0);
+    request.input("ActiveOnly", this.sql.Bit, activeOnly ? 1 : 0);
+    const response = await request.execute("dbo.BufferCampaignPost_Get");
+    return (response.recordset || []).map(mapCampaignPost);
+  }
+
+  async setBufferCampaignMode(id, mode) {
+    const request = this.request();
+    request.input("CampaignId", this.sql.BigInt, numericId(id));
+    request.input("Mode", this.sql.NVarChar(32), mode);
+    const response = await request.execute("dbo.BufferCampaign_SetMode");
     return response.recordset?.[0] ? mapCampaign(response.recordset[0]) : null;
   }
 

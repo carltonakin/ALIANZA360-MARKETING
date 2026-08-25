@@ -25,6 +25,8 @@ import {
 } from "./intelligence.mjs";
 import { SqlServerRepository } from "./sql-server.mjs";
 import { createSproutAdapterFromEnv } from "./sprout.mjs";
+import { createBufferAdapterFromEnv } from "./buffer-adapter.mjs";
+import { BufferCampaignService } from "./buffer-campaigns.mjs";
 
 /*
 |--------------------------------------------------------------------------
@@ -1154,6 +1156,8 @@ export async function createSocialListenerApp({
   repository,
   adapters,
   sproutAdapter,
+  bufferAdapter,
+  bufferCampaignService,
   orchestrator,
   fetchImpl,
   logger = console,
@@ -1248,6 +1252,27 @@ export async function createSocialListenerApp({
 
       sprout:
         activeSproutAdapter,
+
+      logger,
+    });
+
+  const activeBufferAdapter =
+    bufferAdapter ||
+    createBufferAdapterFromEnv(
+      env,
+      {
+        fetchImpl,
+      }
+    );
+
+  const activeBufferCampaignService =
+    bufferCampaignService ||
+    new BufferCampaignService({
+      repository:
+        activeRepository,
+
+      bufferAdapter:
+        activeBufferAdapter,
 
       logger,
     });
@@ -1813,6 +1838,194 @@ export async function createSocialListenerApp({
           channels:
             await listener.getStatuses(),
         });
+      }
+
+      /*
+      |--------------------------------------------------------------------------
+      | BUFFER CAMPAIGNS
+      |--------------------------------------------------------------------------
+      */
+
+      if (
+        request.method ===
+          "GET" &&
+        url.pathname ===
+          "/buffer/channels"
+      ) {
+        try {
+          return json({
+            ok: true,
+
+            ...(await activeBufferCampaignService.getChannels()),
+          });
+        } catch (error) {
+          return json(
+            {
+              ok: false,
+
+              connection:
+                activeBufferCampaignService.configurationStatus(),
+
+              channels: [],
+
+              error:
+                safeMessage(error),
+            },
+
+            Number.isInteger(error?.statusCode)
+              ? error.statusCode
+              : 502
+          );
+        }
+      }
+
+      if (
+        request.method ===
+          "GET" &&
+        url.pathname ===
+          "/buffer/campaigns"
+      ) {
+        return json({
+          ok: true,
+
+          campaigns:
+            await activeBufferCampaignService.getCampaigns(),
+        });
+      }
+
+      if (
+        request.method ===
+          "POST" &&
+        url.pathname ===
+          "/buffer/campaigns"
+      ) {
+        try {
+          const result =
+            await activeBufferCampaignService.scheduleCampaign(
+              await readJson(
+                request
+              )
+            );
+
+          return json(
+            result,
+
+            result.statusCode
+          );
+        } catch (error) {
+          return json(
+            {
+              ok: false,
+
+              error:
+                safeMessage(error),
+            },
+
+            Number.isInteger(error?.statusCode)
+              ? error.statusCode
+              : 500
+          );
+        }
+      }
+
+      if (
+        request.method ===
+          "PUT" &&
+        url.pathname ===
+          "/buffer/campaigns"
+      ) {
+        try {
+          const body =
+            await readJson(
+              request
+            );
+
+          const result =
+            await activeBufferCampaignService.updateCampaign(
+              body.campaignId,
+              body
+            );
+
+          return json(
+            result,
+
+            result.statusCode
+          );
+        } catch (error) {
+          return json(
+            {
+              ok: false,
+
+              error:
+                safeMessage(error),
+            },
+
+            Number.isInteger(error?.statusCode)
+              ? error.statusCode
+              : 500
+          );
+        }
+      }
+
+      if (
+        request.method ===
+          "GET" &&
+        url.pathname ===
+          "/buffer/posts/status"
+      ) {
+        return json({
+          ok: true,
+
+          posts:
+            await activeRepository.getCampaignPosts({
+              campaignId:
+                url.searchParams.get(
+                  "campaignId"
+                ) || null,
+            }),
+        });
+      }
+
+      if (
+        request.method ===
+          "POST" &&
+        url.pathname ===
+          "/buffer/posts/sync"
+      ) {
+        try {
+          const body =
+            await readJson(
+              request
+            );
+
+          const result =
+            await activeBufferCampaignService.syncPosts({
+              campaignId:
+                body.campaignId ||
+                null,
+            });
+
+          return json(
+            result,
+
+            result.ok
+              ? 200
+              : 207
+          );
+        } catch (error) {
+          return json(
+            {
+              ok: false,
+
+              error:
+                safeMessage(error),
+            },
+
+            Number.isInteger(error?.statusCode)
+              ? error.statusCode
+              : 502
+          );
+        }
       }
 
       /*
@@ -3437,6 +3650,9 @@ export async function createSocialListenerApp({
     automationEngine,
 
     socialOrchestrator,
+
+    bufferCampaignService:
+      activeBufferCampaignService,
 
     close: () =>
       ownsRepository

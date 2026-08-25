@@ -1,0 +1,262 @@
+.buffer-post-list {
+  display: grid;
+  gap: 8px;
+  margin: 14px 0;
+}
+
+.buffer-post {
+  display: grid;
+  gap: 4px;
+  padding: 10px;
+  border: 1px solid #eceae3;
+  border-radius: 10px;
+  background: #fafaf8;
+}
+
+.buffer-post > span {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  text-transform: capitalize;
+}
+
+.buffer-post strong,
+.buffer-post b {
+  font-size: 9px;
+}
+
+.buffer-post small,
+.buffer-post a,
+.buffer-post em {
+  font-size: 8px;
+  line-height: 1.4;
+}
+
+.buffer-post a {
+  color: #6658d3;
+  font-weight: 700;
+}
+
+.buffer-post em {
+  color: #a03d3d;
+  font-style: normal;
+}
+
+.buffer-post.published {
+  border-color: #bfe8d4;
+  background: #effaf4;
+}
+
+.buffer-post.failed {
+  border-color: #f0c5c5;
+  background: #fff5f5;
+}
+
+.buffer-post.inactive {
+  opacity: 0.68;
+  border-style: dashed;
+}
+
+.campaign-media-summary,
+.campaign-media-editor {
+  display: grid;
+  gap: 9px;
+  margin-top: 14px;
+}
+
+.campaign-media-summary video,
+.campaign-media-summary .campaign-media-image {
+  width: 100%;
+  height: 160px;
+  border-radius: 10px;
+  background: #ecebe6 center / cover no-repeat;
+  object-fit: cover;
+}
+
+.campaign-media-summary small,
+.campaign-media-editor > div > small {
+  color: #777c87;
+  font-size: 8px;
+  line-height: 1.5;
+}
+
+.campaign-media-editor {
+  padding: 14px;
+  border: 1px solid #e5e4df;
+  border-radius: 12px;
+}
+
+.campaign-media-editor > div:first-child {
+  display: grid;
+  gap: 3px;
+}
+
+.campaign-media-editor strong {
+  font-size: 10px;
+}
+
+.campaign-media-drop {
+  display: grid;
+  min-height: 128px;
+  place-items: center;
+  overflow: hidden;
+  border: 1px dashed #bbb7cf;
+  border-radius: 10px;
+  background: #faf9ff;
+  color: #6459b7;
+  cursor: pointer;
+}
+
+.campaign-media-drop input {
+  position: absolute;
+  width: 1px;
+  height: 1px;
+  opacity: 0;
+  pointer-events: none;
+}
+
+.campaign-media-drop > span:not(.campaign-media-image) {
+  display: grid;
+  gap: 5px;
+  padding: 20px;
+  text-align: center;
+}
+
+.campaign-media-drop small {
+  color: #7b7f89;
+  font-size: 8px;
+}
+
+.campaign-media-drop video,
+.campaign-media-drop .campaign-media-image {
+  display: block;
+  width: 100%;
+  height: 210px;
+  background: #1f2230 center / contain no-repeat;
+  object-fit: contain;
+}
+
+.campaign-media-details {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+  color: #6b707c;
+  font-size: 8px;
+}
+
+.campaign-media-details button,
+.buffer-ai-limit button {
+  border: 1px solid #ddd9f7;
+  border-radius: 8px;
+  background: #f6f4ff;
+  color: #6255c7;
+  padding: 7px 10px;
+  font-size: 8px;
+  font-weight: 700;
+}
+
+.buffer-ai-limit {
+  display: grid;
+  gap: 5px;
+  margin: 13px 0;
+  padding: 11px;
+  border: 1px solid #e9e6dc;
+  border-radius: 10px;
+  background: #fbfaf5;
+}
+
+.buffer-ai-limit button {
+  justify-self: start;
+  opacity: 0.72;
+}
+
+.buffer-ai-limit small {
+  color: #777c87;
+  font-size: 8px;
+  line-height: 1.5;
+}
+
+.buffer-channel-picker {
+  display: grid;
+  gap: 8px;
+  margin: 16px 0;
+  padding: 14px;
+  border: 1px solid #e5e4df;
+  border-radius: 12px;
+}
+
+.buffer-channel-picker legend {
+  padding: 0 6px;
+  font-size: 10px;
+  font-weight: 800;
+}
+
+.buffer-channel-picker .checkbox-field {
+  margin-top: 0;
+  padding: 10px;
+  border: 1px solid #efeee9;
+  border-radius: 9px;
+}
+
+.buffer-channel-picker .checkbox-field span {
+  display: grid;
+  gap: 2px;
+}
+
+.buffer-channel-picker small {
+  color: #7a7f89;
+  font-size: 8px;
+}
+
+.buffer-production-note {
+  display: grid;
+  gap: 4px;
+  padding: 12px;
+  border-radius: 10px;
+  color: #5146a7;
+  background: #f1efff;
+}
+
+.buffer-production-note strong {
+  font-size: 10px;
+}
+
+.buffer-production-note small {
+  font-size: 8px;
+}
+
+.buffer-settings {
+  display: grid;
+  gap: 12px;
+}
+
+.buffer-channel-grid {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: 8px;
+}
+
+.buffer-channel-grid > div {
+  display: grid;
+  gap: 3px;
+  padding: 10px;
+  border: 1px solid #eceae3;
+  border-radius: 9px;
+}
+
+.buffer-channel-grid strong {
+  font-size: 9px;
+}
+
+.buffer-channel-grid small {
+  color: #7a7f89;
+  font-size: 8px;
+  text-transform: capitalize;
+}
+
+@media (max-width: 700px) {
+  .buffer-channel-grid {
+    grid-template-columns: 1fr;
+  }
+}

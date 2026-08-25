@@ -58,12 +58,27 @@ DB_PASSWORD=<database password>
 DB_ENCRYPT=true
 DB_TRUST_SERVER_CERTIFICATE=false
 CHANNEL_CONFIG_ENCRYPTION_KEY=<strong-random-encryption-key>
+BUFFER_API_KEY=<Buffer API key>
+BUFFER_ORGANIZATION_ID=<Buffer organization ID>
+BUFFER_API_URL=https://api.buffer.com
+CAMPAIGN_MEDIA_DIRECTORY=<persistent writable media directory>
+CAMPAIGN_MEDIA_PUBLIC_BASE_URL=https://<your SmarterASP app domain>
+CAMPAIGN_MEDIA_MAX_BYTES=104857600
 ```
 
 Do not set `PORT`; the host injects it when the process starts. The launcher
 passes that port only to Next.js and uses `SOCIAL_LISTENER_PORT` for the private
 listener. Use `.env.production.example` only as a non-secret checklist. Provider
-tokens and webhook secrets remain server-side control-panel values.
+tokens and webhook secrets remain server-side control-panel values. Apply all
+SQL migrations with `npm run db:setup:mssql` before using the campaign studio;
+the Buffer lifecycle and campaign editing procedures are installed by
+migrations 006 and 007. Grant the Node.js application write access to
+`CAMPAIGN_MEDIA_DIRECTORY` and keep that directory persistent across GitHub
+deployments. `CAMPAIGN_MEDIA_PUBLIC_BASE_URL` must be the stable HTTPS origin
+that Buffer can reach without authentication. The included `web.config` allows
+the documented 100 MB media limit plus multipart overhead. If the account-level
+IIS request limit is lower, raise it in the SmarterASP control panel or ask the
+host to allow the same limit.
 
 If `SOCIAL_LISTENER_ADMIN_EMAIL` is used, the reverse proxy or authentication
 layer must supply the corresponding trusted user-email header. Otherwise leave

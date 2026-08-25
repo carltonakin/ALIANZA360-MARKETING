@@ -52,3 +52,4 @@ yarn-error.log*
 /.sites-stage/
 /*.tar.gz
 /tsconfig.tsbuildinfo
+/var/campaign-media/

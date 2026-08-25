@@ -635,6 +635,7 @@ export class InMemorySocialRepository {
     this.metrics = new Map();
     this.channelConfigurations = new Map();
     this.campaigns = new Map();
+    this.campaignPosts = new Map();
     this.pages = new Map();
     this.webinars = new Map();
     this.routineEvents = new Map();
@@ -981,7 +982,12 @@ export class InMemorySocialRepository {
 
   async getContent() {
     return {
-      campaigns: [...this.campaigns.values()].map((item) => structuredClone(item)),
+      campaigns: [...this.campaigns.values()].map((item) => ({
+        ...structuredClone(item),
+        campaignPosts: [...this.campaignPosts.values()]
+          .filter((post) => post.campaignId === item.id)
+          .map((post) => structuredClone(post)),
+      })),
       pages: [...this.pages.values()].map((item) => structuredClone(item)),
       webinars: [...this.webinars.values()].map((item) => structuredClone(item)),
     };
@@ -1018,6 +1024,140 @@ export class InMemorySocialRepository {
     };
     this.campaigns.set(id, item);
     return structuredClone(item);
+  }
+
+  async createCampaignPost(input) {
+    return this.upsertCampaignPost(input);
+  }
+
+  async upsertCampaignPost(input) {
+    const existing = [...this.campaignPosts.values()].find((post) =>
+      post.campaignId === input.campaignId && post.bufferChannelId === input.bufferChannelId);
+    if (existing) {
+      const updated = {
+        ...existing,
+        platform: input.platform,
+        scheduledAt: input.scheduledAt || existing.scheduledAt,
+        isActive: true,
+        updatedAt: new Date().toISOString(),
+      };
+      this.campaignPosts.set(existing.id, updated);
+      return structuredClone(updated);
+    }
+    const id = this.campaignPosts.size + 1;
+    const now = new Date().toISOString();
+    const item = {
+      id,
+      campaignId: input.campaignId,
+      platform: input.platform,
+      bufferChannelId: input.bufferChannelId,
+      bufferPostId: null,
+      scheduledAt: input.scheduledAt || null,
+      publishedAt: null,
+      postStatus: "DRAFT",
+      externalPostId: null,
+      postUrl: null,
+      lastCheckedAt: null,
+      errorSource: null,
+      errorMessage: null,
+      lastAttemptAt: null,
+      isActive: true,
+      createdAt: now,
+      updatedAt: now,
+    };
+    this.campaignPosts.set(id, item);
+    return structuredClone(item);
+  }
+
+  async deactivateMissingCampaignPosts(campaignId, selectedChannelIds) {
+    const selected = new Set(selectedChannelIds || []);
+    for (const [id, post] of this.campaignPosts.entries()) {
+      if (post.campaignId === campaignId && !post.bufferPostId && !selected.has(post.bufferChannelId)) {
+        this.campaignPosts.set(id, { ...post, isActive: false, updatedAt: new Date().toISOString() });
+      }
+    }
+    return this.getCampaignPosts({ campaignId });
+  }
+
+  async applyCampaignPostStatus(campaignPostId, input) {
+    const id = Number(campaignPostId);
+    const current = this.campaignPosts.get(id);
+    if (!current) return null;
+    const now = new Date().toISOString();
+    const updated = {
+      ...current,
+      bufferPostId: input.bufferPostId || current.bufferPostId,
+      scheduledAt: input.scheduledAt || current.scheduledAt,
+      publishedAt: input.publishedAt || current.publishedAt,
+      postStatus: input.postStatus,
+      externalPostId: input.externalPostId || current.externalPostId,
+      postUrl: input.postUrl || current.postUrl,
+      lastCheckedAt: now,
+      lastAttemptAt: now,
+      errorSource: input.postStatus === "FAILED" ? "BUFFER" : null,
+      errorMessage: input.postStatus === "FAILED" ? input.errorMessage || "Buffer reported a publishing failure." : null,
+      updatedAt: now,
+    };
+    this.campaignPosts.set(id, updated);
+    return structuredClone(updated);
+  }
+
+  async failCampaignPost(campaignPostId, message) {
+    const id = Number(campaignPostId);
+    const current = this.campaignPosts.get(id);
+    if (!current) return null;
+    const now = new Date().toISOString();
+    const updated = {
+      ...current,
+      postStatus: "FAILED",
+      errorSource: "BUFFER",
+      errorMessage: message,
+      lastCheckedAt: now,
+      lastAttemptAt: now,
+      updatedAt: now,
+    };
+    this.campaignPosts.set(id, updated);
+    return structuredClone(updated);
+  }
+
+  async recordCampaignPostAttemptError(campaignPostId, message) {
+    const id = Number(campaignPostId);
+    const current = this.campaignPosts.get(id);
+    if (!current) return null;
+    const now = new Date().toISOString();
+    const updated = {
+      ...current,
+      errorSource: "BUFFER",
+      errorMessage: message,
+      lastCheckedAt: now,
+      lastAttemptAt: now,
+      updatedAt: now,
+    };
+    this.campaignPosts.set(id, updated);
+    return structuredClone(updated);
+  }
+
+  async getCampaignPosts({ campaignId = null, syncableOnly = false, activeOnly = false } = {}) {
+    return [...this.campaignPosts.values()]
+      .filter((post) => !campaignId || post.campaignId === campaignId)
+      .filter((post) => !activeOnly || post.isActive !== false)
+      .filter((post) => !syncableOnly || (post.isActive !== false && post.bufferPostId && post.postStatus !== "PUBLISHED"))
+      .map((post) => structuredClone(post));
+  }
+
+  async setBufferCampaignMode(id, mode) {
+    const campaign = this.campaigns.get(id);
+    if (!campaign) return null;
+    const posts = [...this.campaignPosts.values()].filter((post) => post.campaignId === id && post.isActive !== false);
+    if (mode === "production" && (!posts.length || posts.some((post) =>
+      !new Set(["SCHEDULED", "QUEUED", "PUBLISHED"]).has(post.postStatus)))) {
+      const error = new Error("Every Buffer campaign post must be scheduled before production mode.");
+      error.statusCode = 409;
+      throw error;
+    }
+    const updated = { ...campaign, status: mode, updatedAt: new Date().toISOString() };
+    this.campaigns.set(id, updated);
+    return structuredClone(updated);
   }
 
   async saveLandingPage(input) {
