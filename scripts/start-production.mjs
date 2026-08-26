@@ -44,6 +44,45 @@ function missingDatabaseConfiguration(env) {
     .map(([preferred]) => preferred);
 }
 
+function requiredPublicBaseUrl(env) {
+  const value = clean(env.PUBLIC_BASE_URL);
+  if (!value || /^<[^>]+>$/.test(value)) {
+    throw new Error("PUBLIC_BASE_URL is required with the public HTTPS app origin.");
+  }
+  let parsed;
+  try {
+    parsed = new URL(value);
+  } catch {
+    throw new Error("PUBLIC_BASE_URL must be a valid HTTPS origin.");
+  }
+  const hostname = parsed.hostname.toLowerCase().replace(/^\[|\]$/g, "");
+  const privateHost = hostname === "localhost" || hostname.endsWith(".local") || hostname === "::1" ||
+    hostname === "0.0.0.0" || hostname.startsWith("127.") || hostname.startsWith("10.") ||
+    hostname.startsWith("192.168.") || hostname.startsWith("169.254.") ||
+    /^172\.(1[6-9]|2\d|3[01])\./.test(hostname) || /^f[cd][0-9a-f]{2}:/i.test(hostname) ||
+    /^fe[89ab][0-9a-f]:/i.test(hostname);
+  if (
+    parsed.protocol !== "https:" ||
+    privateHost ||
+    parsed.username ||
+    parsed.password ||
+    parsed.search ||
+    parsed.hash ||
+    !["", "/"].includes(parsed.pathname)
+  ) {
+    throw new Error("PUBLIC_BASE_URL must contain only the public HTTPS app origin.");
+  }
+  return parsed.origin;
+}
+
+function requiredCampaignMediaPublicPath(env) {
+  const value = clean(env.CAMPAIGN_MEDIA_PUBLIC_PATH) || "/uploads/campaigns";
+  if (value.replace(/\/$/, "") !== "/uploads/campaigns") {
+    throw new Error("CAMPAIGN_MEDIA_PUBLIC_PATH must be /uploads/campaigns.");
+  }
+  return "/uploads/campaigns";
+}
+
 function serviceSelection(env) {
   const value = clean(env.SOCIAL_LISTENER_SERVICE_URL).replace(/\/$/, "");
   if (!value) return { mode: "internal", port: null };
@@ -71,6 +110,8 @@ function serviceSelection(env) {
 
 export function resolveProductionTopology(env = process.env) {
   const appPort = parsePort(env.PORT, "PORT", 3000);
+  const publicBaseUrl = requiredPublicBaseUrl(env);
+  const mediaPublicPath = requiredCampaignMediaPublicPath(env);
   const selection = serviceSelection(env);
 
   if (selection.mode === "external") {
@@ -88,6 +129,8 @@ export function resolveProductionTopology(env = process.env) {
         ...env,
         NODE_ENV: "production",
         PORT: String(appPort),
+        PUBLIC_BASE_URL: publicBaseUrl,
+        CAMPAIGN_MEDIA_PUBLIC_PATH: mediaPublicPath,
         SOCIAL_LISTENER_SERVICE_URL: selection.serviceUrl,
         SOCIAL_LISTENER_SERVICE_TOKEN: serviceToken,
       },
@@ -122,12 +165,16 @@ export function resolveProductionTopology(env = process.env) {
       ...env,
       NODE_ENV: "production",
       PORT: String(listenerPort),
+      PUBLIC_BASE_URL: publicBaseUrl,
+      CAMPAIGN_MEDIA_PUBLIC_PATH: mediaPublicPath,
       SERVICE_AUTH_TOKEN: serviceToken,
     },
     dashboardEnv: {
       ...env,
       NODE_ENV: "production",
       PORT: String(appPort),
+      PUBLIC_BASE_URL: publicBaseUrl,
+      CAMPAIGN_MEDIA_PUBLIC_PATH: mediaPublicPath,
       SOCIAL_LISTENER_SERVICE_URL: serviceUrl,
       SOCIAL_LISTENER_SERVICE_TOKEN: serviceToken,
     },

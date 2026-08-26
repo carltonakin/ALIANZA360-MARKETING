@@ -50,6 +50,49 @@ export async function proxySocialRequest(
   }
 }
 
+export async function proxySocialStream(
+  path: string,
+  init: RequestInit = {},
+  { requiresServiceToken = true }: { requiresServiceToken?: boolean } = {},
+) {
+  let config;
+  try {
+    config = await resolveSocialListenerConfig();
+  } catch {
+    return configurationError();
+  }
+  if (!config || (requiresServiceToken && !config.serviceToken)) return configurationError();
+
+  try {
+    const headers = new Headers(init.headers);
+    if (requiresServiceToken) headers.set("authorization", `Bearer ${config.serviceToken}`);
+    const response = await fetch(`${config.serviceUrl}${path}`, { ...init, headers });
+    const forwardedHeaders = new Headers();
+    for (const name of [
+      "accept-ranges",
+      "cache-control",
+      "content-length",
+      "content-range",
+      "content-type",
+      "etag",
+      "last-modified",
+      "x-content-type-options",
+    ]) {
+      const value = response.headers.get(name);
+      if (value) forwardedHeaders.set(name, value);
+    }
+    return new Response(init.method === "HEAD" ? null : response.body, {
+      status: response.status,
+      headers: forwardedHeaders,
+    });
+  } catch {
+    return Response.json(
+      { ok: false, error: "Campaign media could not be reached." },
+      { status: 502, headers: { "cache-control": "no-store" } },
+    );
+  }
+}
+
 export async function forwardJson(request: Request, path: string) {
   let body: unknown;
   try {

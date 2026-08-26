@@ -7,6 +7,8 @@ const databaseEnv = {
   DB_NAME: "crm360",
   DB_USER: "crm_user",
   DB_PASSWORD: "not-a-real-password",
+  PUBLIC_BASE_URL: "https://crm.example.com",
+  CAMPAIGN_MEDIA_PUBLIC_PATH: "/uploads/campaigns",
 };
 
 test("SmarterASP single-app mode starts an internal MSSQL listener", () => {
@@ -24,6 +26,7 @@ test("SmarterASP single-app mode starts an internal MSSQL listener", () => {
   assert.equal(topology.dashboardEnv.SOCIAL_LISTENER_SERVICE_TOKEN, "test-service-token");
   assert.equal(topology.listenerEnv.SERVICE_AUTH_TOKEN, "test-service-token");
   assert.equal(topology.listenerEnv.DB_NAME, "crm360");
+  assert.equal(topology.listenerEnv.CAMPAIGN_MEDIA_PUBLIC_PATH, "/uploads/campaigns");
 });
 
 test("a local service URL remains internal during production startup", () => {
@@ -42,6 +45,7 @@ test("a local service URL remains internal during production startup", () => {
 test("an explicit external HTTPS listener remains supported", () => {
   const topology = resolveProductionTopology({
     PORT: "43131",
+    PUBLIC_BASE_URL: "https://crm.example.com",
     SOCIAL_LISTENER_SERVICE_URL: "https://listener.example.com",
     SOCIAL_LISTENER_SERVICE_TOKEN: "external-test-token",
   });
@@ -53,7 +57,7 @@ test("an explicit external HTTPS listener remains supported", () => {
 
 test("production cannot silently start internal mode without MSSQL configuration", () => {
   assert.throws(
-    () => resolveProductionTopology({ PORT: "43131", SERVICE_AUTH_TOKEN: "test-service-token" }),
+    () => resolveProductionTopology({ PORT: "43131", PUBLIC_BASE_URL: "https://crm.example.com", SERVICE_AUTH_TOKEN: "test-service-token" }),
     /Missing production MSSQL configuration: DB_SERVER, DB_NAME, DB_USER, DB_PASSWORD/,
   );
 });
@@ -62,9 +66,29 @@ test("an external production listener must use HTTPS", () => {
   assert.throws(
     () => resolveProductionTopology({
       PORT: "43131",
+      PUBLIC_BASE_URL: "https://crm.example.com",
       SOCIAL_LISTENER_SERVICE_URL: "http://listener.example.com",
       SOCIAL_LISTENER_SERVICE_TOKEN: "external-test-token",
     }),
     /must use HTTPS/,
+  );
+});
+
+test("production requires an explicit public HTTPS media origin", () => {
+  assert.throws(
+    () => resolveProductionTopology({ ...databaseEnv, PUBLIC_BASE_URL: "", SERVICE_AUTH_TOKEN: "test-service-token" }),
+    /PUBLIC_BASE_URL is required/,
+  );
+  assert.throws(
+    () => resolveProductionTopology({ ...databaseEnv, PUBLIC_BASE_URL: "http://crm.example.com", SERVICE_AUTH_TOKEN: "test-service-token" }),
+    /public HTTPS app origin/,
+  );
+  assert.throws(
+    () => resolveProductionTopology({ ...databaseEnv, PUBLIC_BASE_URL: "https://127.0.0.1", SERVICE_AUTH_TOKEN: "test-service-token" }),
+    /public HTTPS app origin/,
+  );
+  assert.throws(
+    () => resolveProductionTopology({ ...databaseEnv, CAMPAIGN_MEDIA_PUBLIC_PATH: "/media/upload", SERVICE_AUTH_TOKEN: "test-service-token" }),
+    /CAMPAIGN_MEDIA_PUBLIC_PATH must be \/uploads\/campaigns/,
   );
 });

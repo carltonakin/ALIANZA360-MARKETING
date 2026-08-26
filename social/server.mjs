@@ -1,4 +1,5 @@
 import { createRequire } from "node:module";
+import path from "node:path";
 import { pathToFileURL } from "node:url";
 import {
   SOCIAL_CHANNELS,
@@ -27,6 +28,12 @@ import { SqlServerRepository } from "./sql-server.mjs";
 import { createSproutAdapterFromEnv } from "./sprout.mjs";
 import { createBufferAdapterFromEnv } from "./buffer-adapter.mjs";
 import { BufferCampaignService } from "./buffer-campaigns.mjs";
+import {
+  campaignMediaDirectory,
+  campaignMediaMaximumBytes,
+  campaignMediaPublicPath,
+  storeCampaignMediaBuffer,
+} from "../lib/campaign-media.mjs";
 
 /*
 |--------------------------------------------------------------------------
@@ -41,6 +48,7 @@ import { BufferCampaignService } from "./buffer-campaigns.mjs";
 
 const require = createRequire(import.meta.url);
 const express = require("express");
+const multer = require("multer");
 
 const app = express();
 
@@ -124,6 +132,120 @@ function authorized(request, env) {
       ?.replace(/^Bearer\s+/i, "") || "";
 
   return equalToken(provided, expected);
+}
+
+function authorizedExpressRequest(request, env) {
+  const provided = String(request.headers.authorization || "").replace(/^Bearer\s+/i, "");
+  return equalToken(provided, env.SERVICE_AUTH_TOKEN);
+}
+
+function uploadErrorStatus(error) {
+  if (error?.code === "LIMIT_FILE_SIZE") return 413;
+  if (error instanceof multer.MulterError) return 400;
+  return Number.isInteger(error?.statusCode) ? error.statusCode : 500;
+}
+
+export function registerCampaignMediaExpressRoutes(expressApp, {
+  env = process.env,
+  logger = console,
+  storeMedia = storeCampaignMediaBuffer,
+} = {}) {
+  const mediaDirectory = campaignMediaDirectory(env);
+  const mediaPublicPath = campaignMediaPublicPath(env);
+  const upload = multer({
+    storage: multer.memoryStorage(),
+    limits: {
+      fileSize: campaignMediaMaximumBytes(env),
+      files: 1,
+      fields: 30,
+      parts: 31,
+      fieldSize: 4096,
+    },
+  }).single("media");
+
+  expressApp.post(
+    "/api/media",
+    (request, response) => {
+      if (!authorizedExpressRequest(request, env)) {
+        response.status(401).json({ ok: false, error: "Unauthorized." });
+        return;
+      }
+
+      upload(request, response, async (uploadError) => {
+        try {
+          if (uploadError) throw uploadError;
+          if (!request.file) {
+            const error = new Error("Choose an image or video file to upload.");
+            error.statusCode = 400;
+            throw error;
+          }
+          const requestedServices = Array.isArray(request.body.targetServices)
+            ? request.body.targetServices
+            : [request.body.targetServices];
+          const media = await storeMedia({
+            filename: request.file.originalname,
+            mimeType: request.file.mimetype,
+            size: request.file.size,
+            bytes: request.file.buffer,
+          }, {
+            requestUrl: `${request.protocol}://${request.get("host")}${request.originalUrl}`,
+            env,
+            postType: String(request.body.postType || "POST"),
+            targetServices: requestedServices.map((value) => String(value || "").trim().toLowerCase()).filter(Boolean),
+          });
+          logger.info?.(JSON.stringify({
+            component: "campaign_media",
+            operation: "express_upload",
+            status: "stored",
+            mediaDirectory,
+            originalFileName: media.originalFileName,
+            mimeType: media.mimeType,
+            size: media.size,
+            storedFileName: media.storedFileName,
+            diskPath: path.join(mediaDirectory, media.storedFileName),
+            mediaUrl: media.mediaUrl,
+          }));
+          response.status(201).json({
+            ok: true,
+            originalFileName: media.originalFileName,
+            storedFileName: media.storedFileName,
+            mimeType: media.mimeType,
+            size: media.size,
+            mediaUrl: media.mediaUrl,
+            media,
+          });
+        } catch (error) {
+          const status = uploadErrorStatus(error);
+          logger.error?.(JSON.stringify({
+            component: "campaign_media",
+            operation: "express_upload",
+            status: "failed",
+            statusCode: status,
+            error: safeMessage(error),
+          }));
+          response.status(status).json({
+            ok: false,
+            error: status < 500 ? safeMessage(error) : "The campaign media could not be stored.",
+          });
+        }
+      });
+    },
+  );
+
+  expressApp.use(
+    mediaPublicPath,
+    express.static(mediaDirectory, {
+      index: false,
+      dotfiles: "deny",
+      fallthrough: false,
+      immutable: true,
+      maxAge: "1y",
+      setHeaders(response) {
+        response.setHeader("x-content-type-options", "nosniff");
+        response.setHeader("content-disposition", "inline");
+      },
+    }),
+  );
 }
 
 async function readJson(request) {
@@ -1275,6 +1397,10 @@ export async function createSocialListenerApp({
         activeBufferAdapter,
 
       logger,
+
+      env,
+
+      fetchImpl,
     });
 
   async function refreshConfiguredAdapters() {
@@ -1644,6 +1770,16 @@ export async function createSocialListenerApp({
     }
 
     try {
+      const mediaDeleteMatch = request.method === "DELETE"
+        ? url.pathname.match(/^\/api\/media\/([^/]+)$/)
+        : null;
+      if (mediaDeleteMatch) {
+        const result = await activeBufferCampaignService.deleteMediaIfUnreferenced(
+          decodeURIComponent(mediaDeleteMatch[1]),
+        );
+        return json({ ok: true, ...result });
+      }
+
       /*
       |--------------------------------------------------------------------------
       | CHANNEL CONFIGURATIONS
@@ -3729,6 +3865,10 @@ async function start() {
 
   const socialListenerApp =
     await createSocialListenerApp();
+
+  registerCampaignMediaExpressRoutes(app, {
+    env: process.env,
+  });
 
   const automationIntervalMs =
     Math.max(

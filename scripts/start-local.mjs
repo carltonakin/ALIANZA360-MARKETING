@@ -146,14 +146,23 @@ async function main() {
   }
 
   const listenerUrl = `http://127.0.0.1:${listenerPort}`;
+  const publicBaseUrl = env.LOCAL_PUBLIC_BASE_URL?.trim() || `http://localhost:${appPort}`;
+  const mediaPublicPath = (env.CAMPAIGN_MEDIA_PUBLIC_PATH?.trim() || "/uploads/campaigns").replace(/\/$/, "");
+  if (mediaPublicPath !== "/uploads/campaigns") {
+    throw new Error("CAMPAIGN_MEDIA_PUBLIC_PATH must be /uploads/campaigns.");
+  }
   const listenerEnv = {
     ...env,
     NODE_ENV: "development",
     PORT: String(listenerPort),
+    PUBLIC_BASE_URL: publicBaseUrl,
+    CAMPAIGN_MEDIA_PUBLIC_PATH: mediaPublicPath,
   };
   const dashboardEnv = {
     ...env,
     NODE_ENV: "development",
+    PUBLIC_BASE_URL: publicBaseUrl,
+    CAMPAIGN_MEDIA_PUBLIC_PATH: mediaPublicPath,
     SOCIAL_LISTENER_SERVICE_URL: listenerUrl,
     // Both local processes use the listener's token from the same ignored .env.
     SOCIAL_LISTENER_SERVICE_TOKEN: env.SERVICE_AUTH_TOKEN,

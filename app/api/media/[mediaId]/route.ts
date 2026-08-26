@@ -1,18 +1,13 @@
-import { readCampaignMedia } from "../../../../lib/campaign-media.mjs";
+import { campaignMediaPublicUrl } from "../../../../lib/campaign-media.mjs";
+import { isSocialConfigAdmin } from "../../social/_config";
+import { proxySocialRequest } from "../../social/_proxy";
 
 export const runtime = "nodejs";
 
-export async function GET(_request: Request, context: RouteContext<"/api/media/[mediaId]">) {
+async function legacyRedirect(request: Request, context: RouteContext<"/api/media/[mediaId]">) {
   try {
     const { mediaId } = await context.params;
-    const media = await readCampaignMedia(mediaId, process.env);
-    return new Response(media.bytes, {
-      headers: {
-        "content-type": media.mimeType,
-        "cache-control": "public, max-age=31536000, immutable",
-        "x-content-type-options": "nosniff",
-      },
-    });
+    return Response.redirect(campaignMediaPublicUrl(mediaId, request.url, process.env), 308);
   } catch (error) {
     const status = Number.isInteger((error as { statusCode?: number })?.statusCode)
       ? (error as { statusCode: number }).statusCode
@@ -21,3 +16,18 @@ export async function GET(_request: Request, context: RouteContext<"/api/media/[
   }
 }
 
+export async function GET(request: Request, context: RouteContext<"/api/media/[mediaId]">) {
+  return legacyRedirect(request, context);
+}
+
+export async function HEAD(request: Request, context: RouteContext<"/api/media/[mediaId]">) {
+  return legacyRedirect(request, context);
+}
+
+export async function DELETE(request: Request, context: RouteContext<"/api/media/[mediaId]">) {
+  if (!isSocialConfigAdmin(request)) {
+    return Response.json({ ok: false, error: "Only the site owner can remove campaign media." }, { status: 403 });
+  }
+  const { mediaId } = await context.params;
+  return proxySocialRequest(`/api/media/${encodeURIComponent(mediaId)}`, { method: "DELETE" });
+}

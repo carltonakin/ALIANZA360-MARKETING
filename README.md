@@ -82,9 +82,10 @@ CHANNEL_CONFIG_ENCRYPTION_KEY=<strong-random-key>
 BUFFER_API_KEY=<Buffer API key>
 BUFFER_ORGANIZATION_ID=<Buffer organization ID>
 BUFFER_API_URL=https://api.buffer.com
-CAMPAIGN_MEDIA_DIRECTORY=<persistent writable directory>
-CAMPAIGN_MEDIA_PUBLIC_BASE_URL=https://<public app domain>
-CAMPAIGN_MEDIA_MAX_BYTES=104857600
+CAMPAIGN_MEDIA_DIRECTORY=App_Data/campaign-media
+PUBLIC_BASE_URL=https://carlitoh-001-site7.dtempurl.com
+CAMPAIGN_MEDIA_PUBLIC_PATH=/uploads/campaigns
+CAMPAIGN_MEDIA_MAX_BYTES=314572800
 ```
 
 An independently deployed listener remains supported by setting an external
@@ -100,17 +101,34 @@ saves the campaign and a draft `CampaignPosts` row for every selected channel,
 and only then sends exact `customScheduled` UTC requests to Buffer. The CRM
 stores Buffer IDs, lifecycle state, publish times, platform URLs, and safe
 failures in SQL Server. Use `npm run db:setup:mssql` after pulling this version
-to apply migrations 006 and 007.
+to apply migrations 006 through 009.
 
 Buffer requires `BUFFER_API_KEY` and `BUFFER_ORGANIZATION_ID` in the listener
 environment. Keep both server-only; never prefix them with `NEXT_PUBLIC_` or
 commit them. The campaign editor accepts drag/drop or file browsing for JPEG,
 PNG, WebP, GIF, MP4, and MOV media. Files are signature-, extension-, MIME-,
-and size-validated on the server, written to `CAMPAIGN_MEDIA_DIRECTORY`, and
-served from the stable HTTPS origin in `CAMPAIGN_MEDIA_PUBLIC_BASE_URL`. SQL
-stores only the media URL and metadata, never the large binary. Use a persistent
-writable SmarterASP directory so scheduled media remains available until Buffer
-publishes it.
+and size-validated by the Express listener, written to
+`CAMPAIGN_MEDIA_DIRECTORY`, and served without authentication at
+`PUBLIC_BASE_URL/uploads/campaigns/<stored-filename>`. `PUBLIC_BASE_URL` is
+required in production and must be the public HTTPS app origin. SQL stores only
+the media URL and verified metadata, never the large binary. Immediately before
+Buffer scheduling, the app verifies that the saved URL returns the expected
+image/video content instead of HTML. Production storage defaults to
+`App_Data/campaign-media`, which must remain writable and persistent so
+scheduled media remains available until Buffer publishes it.
+
+`POST /api/media` is the sole multipart upload endpoint and uses the `media`
+form field. `/uploads/campaigns/<stored-filename>` is GET/HEAD-only; it exposes
+only the resolved campaign-media directory and never all of `App_Data`.
+
+Instagram video is inspected from the stored MP4/MOV bytes before the SQL save;
+client-supplied metadata is never authoritative. Reel and Story video must use
+H.264 with AAC audio when audio is present, 23-60 FPS, no more than 25 Mbps
+video or 128 kbps audio, and no more than 300 MB. Reel aspect ratio must
+be from 9:16 through 4:5; 9:16 remains the recommended Story format. Reels are
+5 seconds through 15 minutes and Stories are 3 through 60 seconds. Unsupported
+video returns a non-success response and the editor keeps the entered campaign
+and actionable error visible.
 
 Campaigns support POST, REEL, and STORY. Instagram and Facebook receive their
 documented channel-specific `metadata.<service>.type` values; Reel requires

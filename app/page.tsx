@@ -7,6 +7,7 @@ import {
   useRef,
   useState,
 } from "react";
+import { browserVideoValidationErrors, INSTAGRAM_VIDEO_MAX_BYTES } from "../lib/instagram-video-validation.mjs";
 
 // Type definitions
 type Lead = {
@@ -67,6 +68,16 @@ type Campaign = {
   mediaOriginalName?: string | null;
   mediaMimeType?: string | null;
   mediaSizeBytes?: number | null;
+  mediaId?: string | null;
+  mediaWidth?: number | null;
+  mediaHeight?: number | null;
+  mediaDurationSeconds?: number | null;
+  mediaFrameRate?: number | null;
+  mediaVideoCodec?: string | null;
+  mediaAudioCodec?: string | null;
+  mediaAudioSampleRate?: number | null;
+  mediaVideoBitrate?: number | null;
+  mediaAudioBitrate?: number | null;
   publishDateTime?: string | null;
   highIntentKeywords?: string;
   aiReplyEnabled?: boolean;
@@ -111,17 +122,34 @@ type BufferConnection = {
 };
 
 type CampaignMediaUpload = {
+  mediaId: string;
   mediaType: "image" | "video";
   mediaUrl: string;
   mediaOriginalName: string;
   mediaMimeType: string;
   mediaSizeBytes: number;
+  mediaWidth: number | null;
+  mediaHeight: number | null;
+  mediaDurationSeconds: number | null;
+  mediaFrameRate: number | null;
+  mediaVideoCodec: string | null;
+  mediaAudioCodec: string | null;
+  mediaAudioSampleRate: number | null;
+  mediaVideoBitrate: number | null;
+  mediaAudioBitrate: number | null;
 };
 
-type CampaignMediaReference = Omit<CampaignMediaUpload, "mediaOriginalName" | "mediaMimeType" | "mediaSizeBytes"> & {
+type CampaignMediaReference = Omit<CampaignMediaUpload, "mediaId" | "mediaOriginalName" | "mediaMimeType" | "mediaSizeBytes"> & {
+  mediaId: string | null;
   mediaOriginalName: string | null;
   mediaMimeType: string | null;
   mediaSizeBytes: number | null;
+};
+
+type ClientVideoMetadata = {
+  width: number;
+  height: number;
+  durationSeconds: number;
 };
 
 type UnifiedLead = {
@@ -254,6 +282,7 @@ export default function Home() {
   const [unifiedLead, setUnifiedLead] = useState<UnifiedLead | null>(null);
   const [busy, setBusy] = useState(false);
   const [toast, setToast] = useState("");
+  const [campaignSaveError, setCampaignSaveError] = useState("");
 
   const [leads, setLeads] = useState<Lead[]>([]);
   const [campaigns, setCampaigns] = useState<Campaign[]>([]);
@@ -563,25 +592,44 @@ export default function Home() {
     removeMedia: boolean,
   ) => {
     event.preventDefault();
+    setCampaignSaveError("");
     setBusy(true);
     const form = new FormData(event.currentTarget);
     const localPublishDate = new Date(String(form.get("publishDateTime") || ""));
+    let uploadedMediaId: string | null = null;
+    let uploadedMediaPersisted = false;
     try {
       if (Number.isNaN(localPublishDate.getTime())) throw new Error("Choose a valid publish date and time.");
       let media: CampaignMediaReference | null = removeMedia ? null : campaign?.mediaUrl ? {
+        mediaId: campaign.mediaId || null,
         mediaType: campaign.mediaType || "image",
         mediaUrl: campaign.mediaUrl,
         mediaOriginalName: campaign.mediaOriginalName || null,
         mediaMimeType: campaign.mediaMimeType || null,
         mediaSizeBytes: campaign.mediaSizeBytes || null,
+        mediaWidth: campaign.mediaWidth || null,
+        mediaHeight: campaign.mediaHeight || null,
+        mediaDurationSeconds: campaign.mediaDurationSeconds || null,
+        mediaFrameRate: campaign.mediaFrameRate || null,
+        mediaVideoCodec: campaign.mediaVideoCodec || null,
+        mediaAudioCodec: campaign.mediaAudioCodec || null,
+        mediaAudioSampleRate: campaign.mediaAudioSampleRate || null,
+        mediaVideoBitrate: campaign.mediaVideoBitrate || null,
+        mediaAudioBitrate: campaign.mediaAudioBitrate || null,
       } : null;
       if (mediaFile) {
         const uploadForm = new FormData();
         uploadForm.append("media", mediaFile);
+        uploadForm.append("postType", String(form.get("postType") || "POST"));
+        const selectedIds = form.getAll("targetSocialChannels").map(String);
+        bufferChannels
+          .filter((channel) => selectedIds.includes(channel.id))
+          .forEach((channel) => uploadForm.append("targetServices", channel.service));
         const uploadResponse = await fetch("/api/media", { method: "POST", body: uploadForm });
-        const uploadData = await uploadResponse.json() as { media?: CampaignMediaUpload; error?: string };
+        const uploadData = await uploadResponse.json().catch(() => ({})) as { media?: CampaignMediaUpload; error?: string };
         if (!uploadResponse.ok || !uploadData.media) throw new Error(uploadData.error || "The campaign media could not be uploaded.");
         media = uploadData.media;
+        uploadedMediaId = media.mediaId;
       }
 
       const response = await fetch("/api/buffer/campaigns", {
@@ -593,11 +641,21 @@ export default function Home() {
           campaignObjective: form.get("campaignObjective"),
           postText: form.get("postText"),
           postType: form.get("postType"),
+          mediaId: media?.mediaId || null,
           mediaType: media?.mediaType || null,
           mediaUrl: media?.mediaUrl || null,
           mediaOriginalName: media?.mediaOriginalName || null,
           mediaMimeType: media?.mediaMimeType || null,
           mediaSizeBytes: media?.mediaSizeBytes || null,
+          mediaWidth: media?.mediaWidth || null,
+          mediaHeight: media?.mediaHeight || null,
+          mediaDurationSeconds: media?.mediaDurationSeconds || null,
+          mediaFrameRate: media?.mediaFrameRate || null,
+          mediaVideoCodec: media?.mediaVideoCodec || null,
+          mediaAudioCodec: media?.mediaAudioCodec || null,
+          mediaAudioSampleRate: media?.mediaAudioSampleRate || null,
+          mediaVideoBitrate: media?.mediaVideoBitrate || null,
+          mediaAudioBitrate: media?.mediaAudioBitrate || null,
           targetSocialChannels: form.getAll("targetSocialChannels"),
           publishDateTime: localPublishDate.toISOString(),
           campaignStatus: form.get("campaignStatus"),
@@ -606,7 +664,7 @@ export default function Home() {
           createdByAi: campaign?.createdByAi || false,
         }),
       });
-      const data = await response.json() as {
+      const data = await response.json().catch(() => ({})) as {
         error?: string;
         message?: string;
         scheduledCount?: number;
@@ -614,10 +672,24 @@ export default function Home() {
         failedCount?: number;
         campaign?: Campaign;
       };
-      if (!response.ok && response.status !== 207 && !data.campaign) {
+      const persistedBufferFailure = Boolean(data.campaign) && Boolean(data.failedCount);
+      uploadedMediaPersisted = Boolean(data.campaign);
+      if (!response.ok && response.status !== 207 && !persistedBufferFailure) {
         throw new Error(data.error || data.message || "The Buffer campaign could not be scheduled.");
       }
       await load();
+      if (response.status === 207 || persistedBufferFailure) {
+        const completedCount = campaign ? data.syncedCount : data.scheduledCount;
+        setCampaignSaveError(data.failedCount && !completedCount
+          ? `Campaign saved to SQL, but all ${data.failedCount} Buffer posts failed. Review the stored channel errors, correct the problem, and retry.`
+          : `Campaign saved to SQL and ${completedCount || 0} Buffer posts succeeded, but ${data.failedCount || 0} failed. Review the stored channel errors, correct the problem, and retry.`);
+        if (data.campaign) {
+          setEditingCampaign(data.campaign);
+          setCampaignPublishDefault(datetimeLocalValue(data.campaign.publishDateTime));
+        }
+        return;
+      }
+      setCampaignSaveError("");
       setModal("");
       setEditingCampaign(null);
       const completedCount = campaign ? data.syncedCount : data.scheduledCount;
@@ -631,7 +703,10 @@ export default function Home() {
         ? `${completedCount || 0} Buffer posts synchronized without creating duplicates.`
         : `${completedCount || 0} Buffer posts scheduled. Campaign is in production mode.`);
     } catch (error) {
-      notify(error instanceof Error ? error.message : "The Buffer campaign could not be scheduled.");
+      if (uploadedMediaId && !uploadedMediaPersisted) {
+        await fetch(`/api/media/${encodeURIComponent(uploadedMediaId)}`, { method: "DELETE" }).catch(() => null);
+      }
+      setCampaignSaveError(error instanceof Error ? error.message : "The Buffer campaign could not be scheduled.");
     } finally {
       setBusy(false);
     }
@@ -887,11 +962,13 @@ export default function Home() {
             <Campaigns
               rows={campaigns}
               onCreate={() => {
+                setCampaignSaveError("");
                 setEditingCampaign(null);
                 setCampaignPublishDefault(datetimeLocalValue(new Date(Date.now() + 24 * 60 * 60 * 1000).toISOString()));
                 setModal("campaign");
               }}
               onEdit={(campaign) => {
+                setCampaignSaveError("");
                 setEditingCampaign(campaign);
                 setCampaignPublishDefault(datetimeLocalValue(campaign.publishDateTime));
                 setModal("campaign");
@@ -963,13 +1040,19 @@ export default function Home() {
           className="modal-backdrop"
           role="presentation"
           onMouseDown={(event) => {
-            if (event.target === event.currentTarget) setModal("");
+            if (event.target === event.currentTarget) {
+              setModal("");
+              setCampaignSaveError("");
+            }
           }}
         >
           <div className="modal">
             <button
               className="modal-close"
-              onClick={() => setModal("")}
+              onClick={() => {
+                setModal("");
+                setCampaignSaveError("");
+              }}
             >
               ×
             </button>
@@ -989,6 +1072,8 @@ export default function Home() {
                 bufferConnection={bufferConnection}
                 defaultPublishTime={campaignPublishDefault}
                 save={saveBufferCampaign}
+                saveError={campaignSaveError}
+                dismissSaveError={() => setCampaignSaveError("")}
                 busy={busy}
               />
             )}
@@ -2368,6 +2453,8 @@ function CampaignForm({
   bufferConnection,
   defaultPublishTime,
   save,
+  saveError,
+  dismissSaveError,
   busy,
 }: {
   campaign: Campaign | null;
@@ -2375,6 +2462,8 @@ function CampaignForm({
   bufferConnection: BufferConnection;
   defaultPublishTime: string;
   save: (event: FormEvent<HTMLFormElement>, campaign: Campaign | null, mediaFile: File | null, removeMedia: boolean) => Promise<void>;
+  saveError: string;
+  dismissSaveError: () => void;
   busy: boolean;
 }) {
   const savedChannelIds = (campaign?.targetSocialChannels?.length
@@ -2387,6 +2476,8 @@ function CampaignForm({
   const [mediaPreview, setMediaPreview] = useState(campaign?.mediaUrl || "");
   const [mediaRemoved, setMediaRemoved] = useState(false);
   const [mediaError, setMediaError] = useState("");
+  const [clientVideoMetadata, setClientVideoMetadata] = useState<ClientVideoMetadata | null>(null);
+  const [mediaInspectionPending, setMediaInspectionPending] = useState(false);
   const previewObjectUrl = useRef<string | null>(null);
 
   useEffect(() => () => {
@@ -2405,23 +2496,43 @@ function CampaignForm({
   const selectedServices = formChannels
     .filter((channel) => selectedChannels.includes(channel.id))
     .map((channel) => channel.service);
+  const clientVideoError = mediaFile?.type.startsWith("video/") && clientVideoMetadata
+    ? browserVideoValidationErrors(clientVideoMetadata, {
+        postType,
+        services: selectedServices,
+        sizeBytes: mediaFile.size,
+      }).join(" ")
+    : "";
+  const effectiveMediaError = mediaError || clientVideoError;
   const compatibilityError = postType !== "POST" && selectedServices.some((service) => !["instagram", "facebook"].includes(service))
     ? `${postType} is available only for connected Instagram or Facebook channels.`
+    : postType === "POST" && effectiveMediaType === "video" && selectedServices.includes("instagram")
+    ? "Instagram no longer accepts a standard video Post through Buffer. Choose Reel or Story."
     : postType === "REEL" && effectiveMediaType !== "video"
     ? "A Reel requires an MP4 or MOV video."
     : postType === "STORY" && !effectiveMediaType
     ? "A Story requires an image or video."
+    : clientVideoError
+    ? clientVideoError
     : "";
 
   const selectMedia = (file: File | null) => {
     if (!file) return;
-    const allowed = new Set(["image/jpeg", "image/png", "image/webp", "image/gif", "video/mp4", "video/quicktime"]);
-    if (!allowed.has(file.type)) {
+    const allowed = new Map([
+      ["image/jpeg", new Set(["jpg", "jpeg"])],
+      ["image/png", new Set(["png"])],
+      ["image/webp", new Set(["webp"])],
+      ["image/gif", new Set(["gif"])],
+      ["video/mp4", new Set(["mp4"])],
+      ["video/quicktime", new Set(["mov"])],
+    ]);
+    const extension = file.name.split(".").pop()?.toLowerCase() || "";
+    if (!allowed.has(file.type) || !allowed.get(file.type)?.has(extension)) {
       setMediaError("Choose a JPEG, PNG, WebP, GIF, MP4, or MOV file.");
       return;
     }
-    if (file.size < 1 || file.size > 100 * 1024 * 1024) {
-      setMediaError("Media must be larger than 0 bytes and no more than 100 MB.");
+    if (file.size < 1 || file.size > INSTAGRAM_VIDEO_MAX_BYTES) {
+      setMediaError("Media must be larger than 0 bytes and no more than 300 MB.");
       return;
     }
     if (previewObjectUrl.current) URL.revokeObjectURL(previewObjectUrl.current);
@@ -2429,7 +2540,31 @@ function CampaignForm({
     setMediaFile(file);
     setMediaPreview(previewObjectUrl.current);
     setMediaRemoved(false);
+    setClientVideoMetadata(null);
     setMediaError("");
+    if (file.type.startsWith("video/")) {
+      const objectUrl = previewObjectUrl.current;
+      setMediaInspectionPending(true);
+      const probe = document.createElement("video");
+      probe.preload = "metadata";
+      probe.onloadedmetadata = () => {
+        if (previewObjectUrl.current !== objectUrl) return;
+        setClientVideoMetadata({
+          width: probe.videoWidth,
+          height: probe.videoHeight,
+          durationSeconds: probe.duration,
+        });
+        setMediaInspectionPending(false);
+      };
+      probe.onerror = () => {
+        if (previewObjectUrl.current !== objectUrl) return;
+        setMediaError("This browser could not read the video metadata. Export the file as MP4 with H.264 video and AAC audio, then try again.");
+        setMediaInspectionPending(false);
+      };
+      probe.src = objectUrl;
+    } else {
+      setMediaInspectionPending(false);
+    }
   };
 
   const removeMedia = () => {
@@ -2438,6 +2573,8 @@ function CampaignForm({
     setMediaFile(null);
     setMediaPreview("");
     setMediaRemoved(true);
+    setClientVideoMetadata(null);
+    setMediaInspectionPending(false);
     setMediaError("");
   };
 
@@ -2512,16 +2649,21 @@ function CampaignForm({
               <span className="campaign-media-image" role="img" aria-label={mediaFile?.name || campaign?.mediaOriginalName || "Campaign image preview"} style={{ backgroundImage: `url(${mediaPreview})` }} />
             )
           ) : (
-            <span><b>Drop media here</b><small>or click to browse · JPEG, PNG, WebP, GIF, MP4, MOV · up to 100 MB</small></span>
+            <span><b>Drop media here</b><small>or click to browse · JPEG, PNG, WebP, GIF, MP4, MOV · up to 300 MB</small></span>
           )}
         </label>
         {mediaPreview && (
           <div className="campaign-media-details">
-            <span>{mediaFile?.name || campaign?.mediaOriginalName || "Saved campaign media"}{(mediaFile?.size || campaign?.mediaSizeBytes) ? ` · ${formatFileSize(mediaFile?.size || campaign?.mediaSizeBytes || 0)}` : ""}</span>
+            <span>
+              {mediaFile?.name || campaign?.mediaOriginalName || "Saved campaign media"}
+              {(mediaFile?.size || campaign?.mediaSizeBytes) ? ` · ${formatFileSize(mediaFile?.size || campaign?.mediaSizeBytes || 0)}` : ""}
+              {clientVideoMetadata ? ` · ${clientVideoMetadata.width}×${clientVideoMetadata.height} · ${clientVideoMetadata.durationSeconds.toFixed(1)}s` : ""}
+              {mediaInspectionPending ? " · checking video…" : ""}
+            </span>
             <button type="button" onClick={removeMedia}>Remove media</button>
           </div>
         )}
-        {mediaError && <small className="form-error">{mediaError}</small>}
+        {effectiveMediaError && <small className="form-error">{effectiveMediaError}</small>}
       </section>
       <fieldset className="buffer-channel-picker">
         <legend>Target social channels</legend>
@@ -2554,13 +2696,22 @@ function CampaignForm({
         <button type="button" disabled>Buffer AI Assist unavailable via public API</button>
         <small>Buffer exposes the aiAssisted tracking flag, but no public content-generation operation. No substitute or fabricated endpoint is used.</small>
       </div>
+      {saveError && (
+        <div className="campaign-save-error" role="alert" aria-live="assertive">
+          <div>
+            <strong>Campaign save needs attention</strong>
+            <span>{saveError}</span>
+          </div>
+          <button type="button" onClick={dismissSaveError} aria-label="Dismiss campaign save error">Dismiss</button>
+        </div>
+      )}
       <div className="buffer-production-note">
         <strong>{campaignStatus === "DRAFT" ? "Campaign remains a SQL draft" : "Campaign status: Draft → Production"}</strong>
         <small>{campaignStatus === "DRAFT"
           ? "No Buffer post is created until you reopen the campaign and choose scheduling."
           : "Production is set only after every selected channel returns a scheduled or synchronized Buffer post."}</small>
       </div>
-      <button className="primary submit" disabled={busy || bufferConnection.status !== "connected" || !selectedChannels.length || Boolean(compatibilityError) || Boolean(mediaError)}>
+      <button className="primary submit" disabled={busy || mediaInspectionPending || bufferConnection.status !== "connected" || !selectedChannels.length || Boolean(compatibilityError) || Boolean(effectiveMediaError)}>
         {busy
           ? "Saving campaign..."
           : campaign

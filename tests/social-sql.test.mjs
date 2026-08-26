@@ -9,6 +9,8 @@ const channelReadinessMigrationUrl = new URL("../sql/004_social_channel_producti
 const integrationOrchestrationMigrationUrl = new URL("../sql/005_crm_integration_orchestration.sql", import.meta.url);
 const bufferCampaignMigrationUrl = new URL("../sql/006_buffer_campaign_integration.sql", import.meta.url);
 const campaignEditingMigrationUrl = new URL("../sql/007_campaign_post_types_media_editing.sql", import.meta.url);
+const campaignVideoMigrationUrl = new URL("../sql/008_campaign_video_validation_metadata.sql", import.meta.url);
+const campaignMediaUrlMigrationUrl = new URL("../sql/009_campaign_media_public_url_consistency.sql", import.meta.url);
 
 class FakeRequest {
   constructor(executions, result = { recordset: [] }) {
@@ -207,6 +209,36 @@ test("campaign editing migration preserves post identity and adds media and post
   assert.match(sql, /WHERE CampaignId = @CampaignId AND BufferChannelId = @BufferChannelId/i);
   assert.match(sql, /BufferPostId IS NULL/i);
   assert.doesNotMatch(sql, /DROP TABLE|TRUNCATE TABLE|BUFFER_API_KEY|Authorization\s*:\s*Bearer/i);
+});
+
+test("campaign video migration persists verified metadata and makes Campaign_Save transactional", async () => {
+  const sql = await readFile(campaignVideoMigrationUrl, "utf8");
+  for (const column of [
+    "MediaId", "MediaWidth", "MediaHeight", "MediaDurationSeconds", "MediaFrameRate",
+    "MediaVideoCodec", "MediaAudioCodec", "MediaAudioSampleRate", "MediaVideoBitrate", "MediaAudioBitrate",
+  ]) {
+    assert.match(sql, new RegExp(`COL_LENGTH\\(N'dbo\\.Campaigns', N'${column}'\\)`, "i"));
+  }
+  const procedure = sql.slice(sql.indexOf("CREATE OR ALTER PROCEDURE dbo.Campaign_Save"));
+  assert.match(procedure, /SET XACT_ABORT ON/i);
+  assert.match(procedure, /BEGIN TRANSACTION/i);
+  assert.match(procedure, /COMMIT TRANSACTION/i);
+  assert.match(procedure, /IF XACT_STATE\(\) <> 0 ROLLBACK TRANSACTION/i);
+  assert.match(procedure, /MediaSizeBytes > 314572800/i);
+  assert.match(sql, /CREATE OR ALTER PROCEDURE dbo\.CRMContent_GetAll/i);
+  assert.doesNotMatch(sql, /DROP TABLE|TRUNCATE TABLE|BUFFER_API_KEY|Authorization\s*:\s*Bearer/i);
+});
+
+test("campaign media URL migration replaces only legacy stored route segments transactionally", async () => {
+  const sql = await readFile(campaignMediaUrlMigrationUrl, "utf8");
+  assert.match(sql, /UPDATE dbo\.Campaigns/i);
+  assert.match(sql, /CHARINDEX\(N'\/api\/media\/', MediaUrl\)/i);
+  assert.match(sql, /N'\/uploads\/campaigns\/'/i);
+  assert.match(sql, /RIGHT\(MediaUrl, LEN\(MediaId\)\) = MediaId/i);
+  assert.match(sql, /BEGIN TRANSACTION/i);
+  assert.match(sql, /COMMIT TRANSACTION/i);
+  assert.match(sql, /ROLLBACK TRANSACTION/i);
+  assert.doesNotMatch(sql, /DROP TABLE|TRUNCATE TABLE|VARBINARY|BUFFER_API_KEY/i);
 });
 
 test("SQL Server repository parameterizes event and lead persistence", async () => {
@@ -514,8 +546,12 @@ test("SQL Server repository parameterizes Buffer campaign and post lifecycle pro
   await repository.saveCampaign({
     name: "Buffer campaign", platform: "instagram", audience: "Registrations", message: "Join now",
     budget: 0, status: "draft", createdByAi: false, campaignObjective: "Registrations",
-    postText: "Join now", mediaType: "image", mediaUrl: "https://cdn.example.com/post.jpg",
-    postType: "STORY", mediaOriginalName: "post.jpg", mediaMimeType: "image/jpeg", mediaSizeBytes: 2048,
+    postText: "Join now", mediaId: "12345678-1234-1234-1234-123456789abc.mp4",
+    mediaType: "video", mediaUrl: "https://crm.example.com/uploads/campaigns/12345678-1234-1234-1234-123456789abc.mp4",
+    postType: "STORY", mediaOriginalName: "story.mp4", mediaMimeType: "video/mp4", mediaSizeBytes: 2048,
+    mediaWidth: 1080, mediaHeight: 1920, mediaDurationSeconds: 30, mediaFrameRate: 30,
+    mediaVideoCodec: "avc1.640028", mediaAudioCodec: "mp4a.40.2", mediaAudioSampleRate: 48000,
+    mediaVideoBitrate: 8000000, mediaAudioBitrate: 128000,
     publishDateTime: "2030-08-26T15:00:00.000Z", highIntentKeywords: "pricing, demo",
     aiReplyEnabled: true, targetSocialChannels: [{ id: "channel-1", service: "instagram" }],
   });
@@ -542,9 +578,13 @@ test("SQL Server repository parameterizes Buffer campaign and post lifecycle pro
     "dbo.BufferCampaignPost_Get",
     "dbo.BufferCampaign_SetMode",
   ]);
-  assert.equal(executions[0].parameters.get("MediaUrl").value, "https://cdn.example.com/post.jpg");
+  assert.equal(executions[0].parameters.get("MediaUrl").value, "https://crm.example.com/uploads/campaigns/12345678-1234-1234-1234-123456789abc.mp4");
   assert.equal(executions[0].parameters.get("PostType").value, "STORY");
-  assert.equal(executions[0].parameters.get("MediaMimeType").value, "image/jpeg");
+  assert.equal(executions[0].parameters.get("MediaId").value, "12345678-1234-1234-1234-123456789abc.mp4");
+  assert.equal(executions[0].parameters.get("MediaMimeType").value, "video/mp4");
+  assert.equal(executions[0].parameters.get("MediaWidth").value, 1080);
+  assert.equal(executions[0].parameters.get("MediaDurationSeconds").value, 30);
+  assert.equal(executions[0].parameters.get("MediaVideoCodec").value, "avc1.640028");
   assert.equal(executions[0].parameters.get("AIReplyEnabled").value, 1);
   assert.equal(executions[1].parameters.get("BufferChannelId").value, "channel-1");
   assert.equal(executions[3].parameters.get("BufferPostId").value, "buffer-post-9");

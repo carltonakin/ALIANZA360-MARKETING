@@ -151,11 +151,21 @@ function mapCampaign(row) {
     campaignObjective: row.CampaignObjective || row.Audience || "",
     postText: row.PostText || row.Message || "",
     postType: row.PostType || "POST",
+    mediaId: row.MediaId || null,
     mediaType: row.MediaType || null,
     mediaUrl: row.MediaUrl || null,
     mediaOriginalName: row.MediaOriginalName || null,
     mediaMimeType: row.MediaMimeType || null,
     mediaSizeBytes: row.MediaSizeBytes == null ? null : Number(row.MediaSizeBytes),
+    mediaWidth: row.MediaWidth == null ? null : Number(row.MediaWidth),
+    mediaHeight: row.MediaHeight == null ? null : Number(row.MediaHeight),
+    mediaDurationSeconds: row.MediaDurationSeconds == null ? null : Number(row.MediaDurationSeconds),
+    mediaFrameRate: row.MediaFrameRate == null ? null : Number(row.MediaFrameRate),
+    mediaVideoCodec: row.MediaVideoCodec || null,
+    mediaAudioCodec: row.MediaAudioCodec || null,
+    mediaAudioSampleRate: row.MediaAudioSampleRate == null ? null : Number(row.MediaAudioSampleRate),
+    mediaVideoBitrate: row.MediaVideoBitrate == null ? null : Number(row.MediaVideoBitrate),
+    mediaAudioBitrate: row.MediaAudioBitrate == null ? null : Number(row.MediaAudioBitrate),
     publishDateTime: iso(row.PublishDateTime),
     highIntentKeywords: row.HighIntentKeywords || "",
     aiReplyEnabled: Boolean(row.AIReplyEnabled),
@@ -518,11 +528,21 @@ export class SqlServerRepository {
     request.input("CampaignObjective", this.sql.NVarChar(2000), input.campaignObjective || null);
     request.input("PostText", this.sql.NVarChar(this.sql.MAX), input.postText || null);
     request.input("PostType", this.sql.NVarChar(16), input.postType || "POST");
+    request.input("MediaId", this.sql.NVarChar(100), input.mediaId || null);
     request.input("MediaType", this.sql.NVarChar(16), input.mediaType || null);
     request.input("MediaUrl", this.sql.NVarChar(2048), input.mediaUrl || null);
     request.input("MediaOriginalName", this.sql.NVarChar(255), input.mediaOriginalName || null);
     request.input("MediaMimeType", this.sql.NVarChar(127), input.mediaMimeType || null);
     request.input("MediaSizeBytes", this.sql.BigInt, input.mediaSizeBytes == null ? null : Number(input.mediaSizeBytes));
+    request.input("MediaWidth", this.sql.Int, input.mediaWidth == null ? null : Number(input.mediaWidth));
+    request.input("MediaHeight", this.sql.Int, input.mediaHeight == null ? null : Number(input.mediaHeight));
+    request.input("MediaDurationSeconds", this.sql.Decimal(12, 3), input.mediaDurationSeconds == null ? null : Number(input.mediaDurationSeconds));
+    request.input("MediaFrameRate", this.sql.Decimal(8, 3), input.mediaFrameRate == null ? null : Number(input.mediaFrameRate));
+    request.input("MediaVideoCodec", this.sql.NVarChar(64), input.mediaVideoCodec || null);
+    request.input("MediaAudioCodec", this.sql.NVarChar(64), input.mediaAudioCodec || null);
+    request.input("MediaAudioSampleRate", this.sql.Int, input.mediaAudioSampleRate == null ? null : Number(input.mediaAudioSampleRate));
+    request.input("MediaVideoBitrate", this.sql.BigInt, input.mediaVideoBitrate == null ? null : Number(input.mediaVideoBitrate));
+    request.input("MediaAudioBitrate", this.sql.BigInt, input.mediaAudioBitrate == null ? null : Number(input.mediaAudioBitrate));
     request.input("PublishDateTime", this.sql.DateTime2, input.publishDateTime ? new Date(input.publishDateTime) : null);
     request.input("HighIntentKeywords", this.sql.NVarChar(2000), input.highIntentKeywords || null);
     request.input("AIReplyEnabled", this.sql.Bit, input.aiReplyEnabled ? 1 : 0);

@@ -1,5 +1,6 @@
 import { isSocialConfigAdmin } from "../social/_config";
-import { storeCampaignMedia } from "../../../lib/campaign-media.mjs";
+import { proxySocialRequest } from "../social/_proxy";
+import { DEFAULT_CAMPAIGN_MEDIA_MAX_BYTES } from "../../../lib/campaign-media.mjs";
 
 export const runtime = "nodejs";
 
@@ -8,28 +9,27 @@ export async function POST(request: Request) {
     return Response.json({ ok: false, error: "Only the site owner can upload campaign media." }, { status: 403 });
   }
 
-  const configuredLimit = Number(process.env.CAMPAIGN_MEDIA_MAX_BYTES || 100 * 1024 * 1024);
+  const configuredLimit = Number(process.env.CAMPAIGN_MEDIA_MAX_BYTES || DEFAULT_CAMPAIGN_MEDIA_MAX_BYTES);
   const contentLength = Number(request.headers.get("content-length") || 0);
   if (contentLength && contentLength > configuredLimit + 1024 * 1024) {
     return Response.json({ ok: false, error: "The campaign media upload is too large." }, { status: 413 });
   }
 
-  try {
-    const form = await request.formData();
-    const file = form.get("media");
-    if (!(file instanceof File)) {
-      return Response.json({ ok: false, error: "Choose an image or video file to upload." }, { status: 400 });
-    }
-    const media = await storeCampaignMedia(file, { requestUrl: request.url, env: process.env });
-    return Response.json({ ok: true, media }, { status: 201 });
-  } catch (error) {
-    const status = Number.isInteger((error as { statusCode?: number })?.statusCode)
-      ? (error as { statusCode: number }).statusCode
-      : 500;
-    return Response.json({
-      ok: false,
-      error: status < 500 && error instanceof Error ? error.message : "The campaign media could not be stored.",
-    }, { status });
+  const contentType = request.headers.get("content-type") || "";
+  if (!contentType.toLowerCase().startsWith("multipart/form-data;")) {
+    return Response.json({ ok: false, error: "Campaign media uploads must use multipart/form-data." }, { status: 415 });
   }
-}
+  if (!request.body) {
+    return Response.json({ ok: false, error: "Choose an image or video file to upload." }, { status: 400 });
+  }
 
+  const headers = new Headers({ "content-type": contentType });
+  if (contentLength) headers.set("content-length", String(contentLength));
+  const uploadRequest: RequestInit & { duplex: "half" } = {
+    method: "POST",
+    headers,
+    body: request.body,
+    duplex: "half",
+  };
+  return proxySocialRequest("/api/media", uploadRequest);
+}

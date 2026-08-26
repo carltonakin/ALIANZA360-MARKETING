@@ -107,7 +107,8 @@ for (const name of [
   "DB_TRUST_SERVER_CERTIFICATE",
   "CHANNEL_CONFIG_ENCRYPTION_KEY",
   "CAMPAIGN_MEDIA_DIRECTORY",
-  "CAMPAIGN_MEDIA_PUBLIC_BASE_URL",
+  "PUBLIC_BASE_URL",
+  "CAMPAIGN_MEDIA_PUBLIC_PATH",
   "CAMPAIGN_MEDIA_MAX_BYTES",
 ]) {
   assert.match(
@@ -153,8 +154,8 @@ assert.match(
 );
 assert.match(
   webConfig,
-  /maxAllowedContentLength="105906176"/i,
-  "web.config must allow the documented 100 MB campaign media upload plus multipart overhead.",
+  /maxAllowedContentLength="315621376"/i,
+  "web.config must allow the documented 300 MB campaign media upload plus multipart overhead.",
 );
 
 const nextExecutable = process.platform === "win32"

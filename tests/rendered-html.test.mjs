@@ -108,6 +108,18 @@ test("dashboard exposes social listener configuration and live diagnostics", asy
   assert.match(page, /value=\{values\.x\}/i);
   assert.match(page, /Lead updated successfully/i);
   assert.match(page, /Save to SQL and schedule in Buffer/i);
+  assert.match(page, /campaignSaveError/i);
+  assert.match(page, /setCampaignSaveError\(error instanceof Error/i);
+  assert.match(page, /className="campaign-save-error" role="alert"/i);
+  assert.match(page, /Dismiss campaign save error/i);
+  assert.match(page, /Campaign saved to SQL, but all/i);
+  assert.match(page, /persistedBufferFailure/i);
+  const saveFailureBlock = page.match(/const saveBufferCampaign[\s\S]+?catch \(error\) \{([\s\S]+?)\} finally \{([\s\S]+?)\}/i);
+  assert.ok(saveFailureBlock, "Campaign save catch/finally blocks must remain inspectable.");
+  assert.match(saveFailureBlock[1], /setCampaignSaveError/i);
+  assert.doesNotMatch(saveFailureBlock[1], /setModal|setEditingCampaign/i);
+  assert.doesNotMatch(saveFailureBlock[2], /setCampaignSaveError|setModal|setEditingCampaign/i);
+  assert.match(page, /no more than 300 MB/i);
   assert.match(page, /<option value="POST">Post<\/option>/i);
   assert.match(page, /<option value="REEL">Reel<\/option>/i);
   assert.match(page, /<option value="STORY">Story<\/option>/i);
