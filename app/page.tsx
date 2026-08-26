@@ -69,6 +69,10 @@ type Campaign = {
   mediaMimeType?: string | null;
   mediaSizeBytes?: number | null;
   mediaId?: string | null;
+  cloudinaryAssetId?: string | null;
+  cloudinaryPublicId?: string | null;
+  cloudinaryResourceType?: "image" | "video" | null;
+  cloudinaryFormat?: string | null;
   mediaWidth?: number | null;
   mediaHeight?: number | null;
   mediaDurationSeconds?: number | null;
@@ -123,6 +127,10 @@ type BufferConnection = {
 
 type CampaignMediaUpload = {
   mediaId: string;
+  assetId: string;
+  publicId: string;
+  resourceType: "image" | "video";
+  format: string;
   mediaType: "image" | "video";
   mediaUrl: string;
   mediaOriginalName: string;
@@ -139,8 +147,12 @@ type CampaignMediaUpload = {
   mediaAudioBitrate: number | null;
 };
 
-type CampaignMediaReference = Omit<CampaignMediaUpload, "mediaId" | "mediaOriginalName" | "mediaMimeType" | "mediaSizeBytes"> & {
+type CampaignMediaReference = Omit<CampaignMediaUpload, "mediaId" | "assetId" | "publicId" | "resourceType" | "format" | "mediaOriginalName" | "mediaMimeType" | "mediaSizeBytes"> & {
   mediaId: string | null;
+  assetId: string | null;
+  publicId: string | null;
+  resourceType: "image" | "video" | null;
+  format: string | null;
   mediaOriginalName: string | null;
   mediaMimeType: string | null;
   mediaSizeBytes: number | null;
@@ -596,12 +608,16 @@ export default function Home() {
     setBusy(true);
     const form = new FormData(event.currentTarget);
     const localPublishDate = new Date(String(form.get("publishDateTime") || ""));
-    let uploadedMediaId: string | null = null;
+    let uploadedMedia: CampaignMediaUpload | null = null;
     let uploadedMediaPersisted = false;
     try {
       if (Number.isNaN(localPublishDate.getTime())) throw new Error("Choose a valid publish date and time.");
       let media: CampaignMediaReference | null = removeMedia ? null : campaign?.mediaUrl ? {
         mediaId: campaign.mediaId || null,
+        assetId: campaign.cloudinaryAssetId || null,
+        publicId: campaign.cloudinaryPublicId || null,
+        resourceType: campaign.cloudinaryResourceType || null,
+        format: campaign.cloudinaryFormat || null,
         mediaType: campaign.mediaType || "image",
         mediaUrl: campaign.mediaUrl,
         mediaOriginalName: campaign.mediaOriginalName || null,
@@ -628,8 +644,8 @@ export default function Home() {
         const uploadResponse = await fetch("/api/media", { method: "POST", body: uploadForm });
         const uploadData = await uploadResponse.json().catch(() => ({})) as { media?: CampaignMediaUpload; error?: string };
         if (!uploadResponse.ok || !uploadData.media) throw new Error(uploadData.error || "The campaign media could not be uploaded.");
-        media = uploadData.media;
-        uploadedMediaId = media.mediaId;
+        uploadedMedia = uploadData.media;
+        media = uploadedMedia;
       }
 
       const response = await fetch("/api/buffer/campaigns", {
@@ -642,6 +658,10 @@ export default function Home() {
           postText: form.get("postText"),
           postType: form.get("postType"),
           mediaId: media?.mediaId || null,
+          cloudinaryAssetId: media?.assetId || null,
+          cloudinaryPublicId: media?.publicId || null,
+          cloudinaryResourceType: media?.resourceType || null,
+          cloudinaryFormat: media?.format || null,
           mediaType: media?.mediaType || null,
           mediaUrl: media?.mediaUrl || null,
           mediaOriginalName: media?.mediaOriginalName || null,
@@ -703,8 +723,15 @@ export default function Home() {
         ? `${completedCount || 0} Buffer posts synchronized without creating duplicates.`
         : `${completedCount || 0} Buffer posts scheduled. Campaign is in production mode.`);
     } catch (error) {
-      if (uploadedMediaId && !uploadedMediaPersisted) {
-        await fetch(`/api/media/${encodeURIComponent(uploadedMediaId)}`, { method: "DELETE" }).catch(() => null);
+      if (uploadedMedia && !uploadedMediaPersisted) {
+        await fetch(`/api/media/${encodeURIComponent(uploadedMedia.assetId)}`, {
+          method: "DELETE",
+          headers: { "content-type": "application/json" },
+          body: JSON.stringify({
+            publicId: uploadedMedia.publicId,
+            resourceType: uploadedMedia.resourceType,
+          }),
+        }).catch(() => null);
       }
       setCampaignSaveError(error instanceof Error ? error.message : "The Buffer campaign could not be scheduled.");
     } finally {

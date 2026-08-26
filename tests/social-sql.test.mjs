@@ -10,7 +10,7 @@ const integrationOrchestrationMigrationUrl = new URL("../sql/005_crm_integration
 const bufferCampaignMigrationUrl = new URL("../sql/006_buffer_campaign_integration.sql", import.meta.url);
 const campaignEditingMigrationUrl = new URL("../sql/007_campaign_post_types_media_editing.sql", import.meta.url);
 const campaignVideoMigrationUrl = new URL("../sql/008_campaign_video_validation_metadata.sql", import.meta.url);
-const campaignMediaUrlMigrationUrl = new URL("../sql/009_campaign_media_public_url_consistency.sql", import.meta.url);
+const cloudinaryCampaignMediaMigrationUrl = new URL("../sql/010_cloudinary_campaign_media.sql", import.meta.url);
 
 class FakeRequest {
   constructor(executions, result = { recordset: [] }) {
@@ -229,16 +229,17 @@ test("campaign video migration persists verified metadata and makes Campaign_Sav
   assert.doesNotMatch(sql, /DROP TABLE|TRUNCATE TABLE|BUFFER_API_KEY|Authorization\s*:\s*Bearer/i);
 });
 
-test("campaign media URL migration replaces only legacy stored route segments transactionally", async () => {
-  const sql = await readFile(campaignMediaUrlMigrationUrl, "utf8");
-  assert.match(sql, /UPDATE dbo\.Campaigns/i);
-  assert.match(sql, /CHARINDEX\(N'\/api\/media\/', MediaUrl\)/i);
-  assert.match(sql, /N'\/uploads\/campaigns\/'/i);
-  assert.match(sql, /RIGHT\(MediaUrl, LEN\(MediaId\)\) = MediaId/i);
+test("Cloudinary migration persists provider identifiers without media binaries", async () => {
+  const sql = await readFile(cloudinaryCampaignMediaMigrationUrl, "utf8");
+  for (const column of ["CloudinaryAssetId", "CloudinaryPublicId", "CloudinaryResourceType", "CloudinaryFormat"]) {
+    assert.match(sql, new RegExp(`COL_LENGTH\\(N'dbo\\.Campaigns', N'${column}'\\)`, "i"));
+    assert.match(sql, new RegExp(`@${column}`, "i"));
+  }
   assert.match(sql, /BEGIN TRANSACTION/i);
   assert.match(sql, /COMMIT TRANSACTION/i);
   assert.match(sql, /ROLLBACK TRANSACTION/i);
-  assert.doesNotMatch(sql, /DROP TABLE|TRUNCATE TABLE|VARBINARY|BUFFER_API_KEY/i);
+  assert.match(sql, /MediaId must match Cloudinary asset_id/i);
+  assert.doesNotMatch(sql, /DROP TABLE|TRUNCATE TABLE|VARBINARY|BUFFER_API_KEY|CLOUDINARY_API_SECRET/i);
 });
 
 test("SQL Server repository parameterizes event and lead persistence", async () => {
@@ -546,8 +547,11 @@ test("SQL Server repository parameterizes Buffer campaign and post lifecycle pro
   await repository.saveCampaign({
     name: "Buffer campaign", platform: "instagram", audience: "Registrations", message: "Join now",
     budget: 0, status: "draft", createdByAi: false, campaignObjective: "Registrations",
-    postText: "Join now", mediaId: "12345678-1234-1234-1234-123456789abc.mp4",
-    mediaType: "video", mediaUrl: "https://crm.example.com/uploads/campaigns/12345678-1234-1234-1234-123456789abc.mp4",
+    postText: "Join now", mediaId: "cloudinary-asset-video",
+    cloudinaryAssetId: "cloudinary-asset-video",
+    cloudinaryPublicId: "crm-marketing/campaigns/story",
+    cloudinaryResourceType: "video", cloudinaryFormat: "mp4",
+    mediaType: "video", mediaUrl: "https://res.cloudinary.com/crm-cloud/video/upload/v1/crm-marketing/campaigns/story.mp4",
     postType: "STORY", mediaOriginalName: "story.mp4", mediaMimeType: "video/mp4", mediaSizeBytes: 2048,
     mediaWidth: 1080, mediaHeight: 1920, mediaDurationSeconds: 30, mediaFrameRate: 30,
     mediaVideoCodec: "avc1.640028", mediaAudioCodec: "mp4a.40.2", mediaAudioSampleRate: 48000,
@@ -578,9 +582,11 @@ test("SQL Server repository parameterizes Buffer campaign and post lifecycle pro
     "dbo.BufferCampaignPost_Get",
     "dbo.BufferCampaign_SetMode",
   ]);
-  assert.equal(executions[0].parameters.get("MediaUrl").value, "https://crm.example.com/uploads/campaigns/12345678-1234-1234-1234-123456789abc.mp4");
+  assert.equal(executions[0].parameters.get("MediaUrl").value, "https://res.cloudinary.com/crm-cloud/video/upload/v1/crm-marketing/campaigns/story.mp4");
   assert.equal(executions[0].parameters.get("PostType").value, "STORY");
-  assert.equal(executions[0].parameters.get("MediaId").value, "12345678-1234-1234-1234-123456789abc.mp4");
+  assert.equal(executions[0].parameters.get("MediaId").value, "cloudinary-asset-video");
+  assert.equal(executions[0].parameters.get("CloudinaryAssetId").value, "cloudinary-asset-video");
+  assert.equal(executions[0].parameters.get("CloudinaryPublicId").value, "crm-marketing/campaigns/story");
   assert.equal(executions[0].parameters.get("MediaMimeType").value, "video/mp4");
   assert.equal(executions[0].parameters.get("MediaWidth").value, 1080);
   assert.equal(executions[0].parameters.get("MediaDurationSeconds").value, 30);

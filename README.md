@@ -15,6 +15,7 @@ provider secrets stay on the server and are never returned to the browser.
 - Node.js `22.13.0` or a compatible Node.js 22 release
 - npm and the committed `package-lock.json`
 - Microsoft SQL Server reachable from the Social Listener
+- A Cloudinary product environment for campaign image/video delivery
 
 ## Configure SQL Server
 
@@ -26,6 +27,9 @@ fixed TCP port.
 
 Set a strong `SERVICE_AUTH_TOKEN`. The hosted dashboard's
 `SOCIAL_LISTENER_SERVICE_TOKEN` must contain the same value.
+Set `CLOUDINARY_CLOUD_NAME`, `CLOUDINARY_API_KEY`, and
+`CLOUDINARY_API_SECRET` in the ignored `.env`; the local launcher requires all
+three and keeps the secret in the server process.
 
 ```powershell
 npm ci
@@ -82,9 +86,11 @@ CHANNEL_CONFIG_ENCRYPTION_KEY=<strong-random-key>
 BUFFER_API_KEY=<Buffer API key>
 BUFFER_ORGANIZATION_ID=<Buffer organization ID>
 BUFFER_API_URL=https://api.buffer.com
-CAMPAIGN_MEDIA_DIRECTORY=App_Data/campaign-media
-PUBLIC_BASE_URL=https://carlitoh-001-site7.dtempurl.com
-CAMPAIGN_MEDIA_PUBLIC_PATH=/uploads/campaigns
+CLOUDINARY_CLOUD_NAME=<Cloudinary cloud name>
+CLOUDINARY_API_KEY=<Cloudinary API key>
+CLOUDINARY_API_SECRET=<Cloudinary API secret>
+CLOUDINARY_CAMPAIGN_FOLDER=crm-marketing/campaigns
+CLOUDINARY_UPLOAD_PRESET=
 CAMPAIGN_MEDIA_MAX_BYTES=314572800
 ```
 
@@ -101,28 +107,26 @@ saves the campaign and a draft `CampaignPosts` row for every selected channel,
 and only then sends exact `customScheduled` UTC requests to Buffer. The CRM
 stores Buffer IDs, lifecycle state, publish times, platform URLs, and safe
 failures in SQL Server. Use `npm run db:setup:mssql` after pulling this version
-to apply migrations 006 through 009.
+to apply the Buffer/campaign migrations through migration 010.
 
 Buffer requires `BUFFER_API_KEY` and `BUFFER_ORGANIZATION_ID` in the listener
 environment. Keep both server-only; never prefix them with `NEXT_PUBLIC_` or
 commit them. The campaign editor accepts drag/drop or file browsing for JPEG,
 PNG, WebP, GIF, MP4, and MOV media. Files are signature-, extension-, MIME-,
 and size-validated by the Express listener, written to
-`CAMPAIGN_MEDIA_DIRECTORY`, and served without authentication at
-`PUBLIC_BASE_URL/uploads/campaigns/<stored-filename>`. `PUBLIC_BASE_URL` is
-required in production and must be the public HTTPS app origin. SQL stores only
-the media URL and verified metadata, never the large binary. Immediately before
-Buffer scheduling, the app verifies that the saved URL returns the expected
-image/video content instead of HTML. Production storage defaults to
-`App_Data/campaign-media`, which must remain writable and persistent so
-scheduled media remains available until Buffer publishes it.
+Cloudinary by the server using authenticated credentials. Cloudinary's returned
+`secure_url` is stored exactly in SQL together with `asset_id`, `public_id`,
+`resource_type`, format, original filename, MIME type, size, and verified video
+metadata; SQL never stores the large binary. Immediately before Buffer
+scheduling, the app reads the persisted URL back from SQL and verifies that it
+returns the expected image/video content instead of HTML.
 
 `POST /api/media` is the sole multipart upload endpoint and uses the `media`
-form field. `/uploads/campaigns/<stored-filename>` is GET/HEAD-only; it exposes
-only the resolved campaign-media directory and never all of `App_Data`.
+form field. Campaign media is not written to or served from the application
+filesystem, and there is no campaign-only local static delivery route.
 
-Instagram video is inspected from the stored MP4/MOV bytes before the SQL save;
-client-supplied metadata is never authoritative. Reel and Story video must use
+Instagram video is inspected from the received MP4/MOV bytes before Cloudinary
+upload and SQL persistence. Reel and Story video must use
 H.264 with AAC audio when audio is present, 23-60 FPS, no more than 25 Mbps
 video or 128 kbps audio, and no more than 300 MB. Reel aspect ratio must
 be from 9:16 through 4:5; 9:16 remains the recommended Story format. Reels are

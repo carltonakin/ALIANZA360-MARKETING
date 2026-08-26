@@ -1,6 +1,6 @@
 import { isSocialConfigAdmin } from "../social/_config";
 import { proxySocialRequest } from "../social/_proxy";
-import { DEFAULT_CAMPAIGN_MEDIA_MAX_BYTES } from "../../../lib/campaign-media.mjs";
+import { INSTAGRAM_VIDEO_MAX_BYTES } from "../../../lib/instagram-video-validation.mjs";
 
 export const runtime = "nodejs";
 
@@ -9,7 +9,7 @@ export async function POST(request: Request) {
     return Response.json({ ok: false, error: "Only the site owner can upload campaign media." }, { status: 403 });
   }
 
-  const configuredLimit = Number(process.env.CAMPAIGN_MEDIA_MAX_BYTES || DEFAULT_CAMPAIGN_MEDIA_MAX_BYTES);
+  const configuredLimit = Number(process.env.CAMPAIGN_MEDIA_MAX_BYTES || INSTAGRAM_VIDEO_MAX_BYTES);
   const contentLength = Number(request.headers.get("content-length") || 0);
   if (contentLength && contentLength > configuredLimit + 1024 * 1024) {
     return Response.json({ ok: false, error: "The campaign media upload is too large." }, { status: 413 });

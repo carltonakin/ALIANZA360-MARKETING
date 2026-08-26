@@ -61,9 +61,11 @@ CHANNEL_CONFIG_ENCRYPTION_KEY=<strong-random-encryption-key>
 BUFFER_API_KEY=<Buffer API key>
 BUFFER_ORGANIZATION_ID=<Buffer organization ID>
 BUFFER_API_URL=https://api.buffer.com
-CAMPAIGN_MEDIA_DIRECTORY=App_Data/campaign-media
-PUBLIC_BASE_URL=https://carlitoh-001-site7.dtempurl.com
-CAMPAIGN_MEDIA_PUBLIC_PATH=/uploads/campaigns
+CLOUDINARY_CLOUD_NAME=<Cloudinary cloud name>
+CLOUDINARY_API_KEY=<Cloudinary API key>
+CLOUDINARY_API_SECRET=<Cloudinary API secret>
+CLOUDINARY_CAMPAIGN_FOLDER=crm-marketing/campaigns
+CLOUDINARY_UPLOAD_PRESET=
 CAMPAIGN_MEDIA_MAX_BYTES=314572800
 ```
 
@@ -73,24 +75,27 @@ listener. Use `.env.production.example` only as a non-secret checklist. Provider
 tokens and webhook secrets remain server-side control-panel values. Apply all
 SQL migrations with `npm run db:setup:mssql` before using the campaign studio;
 the Buffer lifecycle and campaign editing procedures are installed by
-migrations 006 through 009. Migration 009 updates persisted legacy
-`/api/media/<id>` references to `/uploads/campaigns/<id>` without changing the
-stored filename or hostname. Grant the Node.js application write access to
-`App_Data/campaign-media` and keep that directory persistent across GitHub
-deployments. SmarterASP reserves `App_Data` for application data and it avoids
-depending on write access to the deployed application root. `PUBLIC_BASE_URL`
-is mandatory and must contain only the public HTTPS app origin. Express serves
-the writable directory at `/uploads/campaigns`, while the public Next.js route
-proxies that path to the private listener in single-app hosting. Buffer must be
-able to fetch `/uploads/campaigns/<stored-filename>` without authentication,
-cookies, redirects, or a login page. The included `web.config` allows the
+migrations 006 through 008 and Cloudinary identity persistence by migration
+010. Create a Cloudinary product environment and copy its cloud name, API key,
+and API secret from Cloudinary's API Keys settings. Keep the secret server-side
+and never use a `NEXT_PUBLIC_` name. The optional upload preset must permit
+authenticated server uploads if configured. The included `web.config` allows the
 documented 300 MB media limit plus multipart overhead. If the account-level IIS
 request limit is lower, raise it in the SmarterASP control panel or ask the host
 to allow the same limit.
 
+Deploy the application code and set the `CLOUDINARY_*` variables before running
+`npm run db:setup:mssql` for migration 010. Complete those steps in the same
+maintenance window: migration 010 makes Cloudinary identity fields mandatory
+for newly saved campaign media, so an older application build must not continue
+writing campaigns after the procedure is upgraded.
+
 The dashboard and listener both use `POST /api/media` for multipart uploads.
-Do not add a POST handler under `/uploads/campaigns`; that route is reserved for
-public GET/HEAD delivery from the same resolved `App_Data/campaign-media` path.
+The listener validates the actual bytes and uploads them directly to Cloudinary.
+It returns success only after Cloudinary supplies a valid HTTPS `secure_url`.
+No application-root or `App_Data` write permission is required for campaign
+media. Existing campaigns with legacy local media URLs must have their media
+replaced through the campaign editor before they can be rescheduled.
 
 If `SOCIAL_LISTENER_ADMIN_EMAIL` is used, the reverse proxy or authentication
 layer must supply the corresponding trusted user-email header. Otherwise leave
@@ -108,11 +113,9 @@ SOCIAL_LISTENER_SERVICE_TOKEN=<same value as SERVICE_AUTH_TOKEN on the listener>
 
 External production URLs must use HTTPS. The separate listener starts with
 `npm run start:social-listener` and owns its own `DB_*`/`SQL_SERVER_*` values.
-For Instagram video campaigns, the external listener owns the persistent
-campaign-media directory and must use the same public `PUBLIC_BASE_URL` contract.
-The dashboard proxies `/uploads/campaigns/<stored-filename>` to that listener,
-so the listener can re-read and validate the stored bytes before writing the
-campaign to SQL.
+The external listener also owns the `CLOUDINARY_*` credentials and performs all
+campaign media uploads and safe unreferenced-asset deletions. The dashboard
+never receives the Cloudinary API secret.
 
 ## Traditional IIS/httpPlatformHandler mode
 
@@ -154,10 +157,11 @@ healthy production MSSQL connection.
   the two service tokens match.
 - SQL connection failure: troubleshoot the listener's database variables and
   SmarterASP network access; the browser never connects directly to SQL Server.
-- Campaign media HTTP 503: verify that `App_Data/campaign-media` exists and the
-  Node application identity can write to it, and verify `PUBLIC_BASE_URL` is the
-  public HTTPS origin. Test the saved `/uploads/campaigns/<stored-filename>` URL
-  in a signed-out browser; it must return the media MIME type, not HTML.
+- Campaign media HTTP 502/503: verify `CLOUDINARY_CLOUD_NAME`,
+  `CLOUDINARY_API_KEY`, and `CLOUDINARY_API_SECRET`, then inspect the safe server
+  log. Upload a small image through `POST /api/media` and open the returned
+  `mediaUrl` in a signed-out browser; it must return the media MIME type, not
+  HTML. Never paste the API secret into browser code or logs.
 
 Roll back by redeploying a known-good Git commit or tag. Dashboard rollback does
 not alter listener or SQL Server data.

@@ -52,6 +52,5 @@ yarn-error.log*
 /.sites-stage/
 /*.tar.gz
 /tsconfig.tsbuildinfo
-/var/campaign-media/
-/App_Data/campaign-media/*
-!/App_Data/campaign-media/.gitkeep
+/App_Data/
+/var/

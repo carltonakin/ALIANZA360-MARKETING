@@ -3,12 +3,7 @@ import {
   mapBufferPostStatus,
   safeBufferMessage,
 } from "./buffer-adapter.mjs";
-import {
-  campaignMediaPublicUrl,
-  deleteCampaignMedia,
-  readCampaignMedia,
-} from "../lib/campaign-media.mjs";
-import { inspectCampaignVideo } from "../lib/instagram-video.mjs";
+import { deleteCampaignMediaFromCloudinary } from "../lib/cloudinary-campaign-media.mjs";
 import {
   instagramVideoValidationErrors,
   INSTAGRAM_VIDEO_MAX_BYTES,
@@ -50,9 +45,10 @@ function optionalNumber(value) {
 
 function publicMediaUrl(value, { allowPrivate = false } = {}) {
   if (!value) return null;
+  const normalizedValue = String(value).trim();
   let parsed;
   try {
-    parsed = new URL(String(value).trim());
+    parsed = new URL(normalizedValue);
   } catch {
     throw validationError("Media must be a valid public HTTP or HTTPS URL.");
   }
@@ -65,8 +61,8 @@ function publicMediaUrl(value, { allowPrivate = false } = {}) {
     /^172\.(1[6-9]|2\d|3[01])\./.test(hostname) || /^f[cd][0-9a-f]{2}:/i.test(hostname) ||
     /^fe[89ab][0-9a-f]:/i.test(hostname);
   if (privateHost && !allowPrivate) throw validationError("Media must be publicly accessible to Buffer.");
-  if (parsed.href.length > 2048) throw validationError("Media URL must be 2048 characters or fewer.");
-  return parsed.href;
+  if (normalizedValue.length > 2048) throw validationError("Media URL must be 2048 characters or fewer.");
+  return normalizedValue;
 }
 
 function expectedMediaContentType(mediaType, contentType) {
@@ -122,13 +118,30 @@ export async function verifyPublicMediaUrl(input, {
   return input;
 }
 
-export function validateCanonicalMediaReference(input, env = process.env) {
-  if (!input.mediaUrl || !input.mediaId) return input;
-  const expected = campaignMediaPublicUrl(input.mediaId, input.mediaUrl, env);
-  if (input.mediaUrl !== expected) {
-    throw validationError("The persisted media URL does not match the canonical stored filename and public media path.");
+export function validateCanonicalMediaReference(input) {
+  if (!input.mediaUrl) return input;
+  const assetId = optionalString(input.cloudinaryAssetId, 255);
+  const publicId = optionalString(input.cloudinaryPublicId, 512);
+  const resourceType = optionalString(input.cloudinaryResourceType, 16)?.toLowerCase();
+  const format = optionalString(input.cloudinaryFormat, 32)?.toLowerCase();
+  if (!assetId || !publicId || !resourceType || !format) {
+    throw validationError("Replace this campaign's media with a Cloudinary upload before saving or scheduling it.");
   }
-  return input;
+  if (input.mediaId && input.mediaId !== assetId) {
+    throw validationError("The campaign media ID does not match the Cloudinary asset_id.");
+  }
+  if (resourceType !== input.mediaType) {
+    throw validationError("The Cloudinary resource_type does not match the campaign media type.");
+  }
+  publicMediaUrl(input.mediaUrl);
+  return {
+    ...input,
+    mediaId: assetId,
+    cloudinaryAssetId: assetId,
+    cloudinaryPublicId: publicId,
+    cloudinaryResourceType: resourceType,
+    cloudinaryFormat: format,
+  };
 }
 
 function keywordValue(value) {
@@ -149,7 +162,7 @@ function normalizedChannelIds(value) {
 export function normalizeBufferCampaignInput(body, { now = new Date() } = {}) {
   const campaignStatus = String(body.campaignStatus || "PRODUCTION").trim().toUpperCase();
   if (!new Set(["DRAFT", "PRODUCTION"]).has(campaignStatus)) throw validationError("Campaign status must be DRAFT or PRODUCTION.");
-  const mediaUrl = publicMediaUrl(body.mediaUrl, { allowPrivate: campaignStatus === "DRAFT" });
+  const mediaUrl = publicMediaUrl(body.mediaUrl);
   const mediaType = String(body.mediaType || "").trim().toLowerCase() || null;
   if (mediaType && !new Set(["image", "video"]).has(mediaType)) throw validationError("Media type must be image or video.");
   if (Boolean(mediaUrl) !== Boolean(mediaType)) throw validationError("Media type and media URL must be provided together.");
@@ -172,12 +185,35 @@ export function normalizeBufferCampaignInput(body, { now = new Date() } = {}) {
   if (Number.isNaN(publishDate.getTime())) throw validationError("Publish date and time is invalid.");
   if (publishDate.getTime() <= now.getTime()) throw validationError("Publish date and time must be in the future.");
 
-  return {
+  const cloudinaryAssetId = mediaUrl ? optionalString(body.cloudinaryAssetId || body.assetId, 255) : null;
+  const cloudinaryPublicId = mediaUrl ? optionalString(body.cloudinaryPublicId || body.publicId, 512) : null;
+  const cloudinaryResourceType = mediaUrl
+    ? optionalString(body.cloudinaryResourceType || body.resourceType, 16)?.toLowerCase() || null
+    : null;
+  const cloudinaryFormat = mediaUrl
+    ? optionalString(body.cloudinaryFormat || body.format, 32)?.toLowerCase() || null
+    : null;
+  if (mediaUrl && (!cloudinaryAssetId || !cloudinaryPublicId || !cloudinaryResourceType || !cloudinaryFormat)) {
+    throw validationError("Cloudinary asset_id, public_id, resource_type, and format are required with campaign media.");
+  }
+  if (cloudinaryResourceType && cloudinaryResourceType !== mediaType) {
+    throw validationError("Cloudinary resource_type must match the campaign media type.");
+  }
+  const submittedMediaId = mediaUrl ? optionalString(body.mediaId, 255) : null;
+  if (submittedMediaId && submittedMediaId !== cloudinaryAssetId) {
+    throw validationError("Campaign mediaId must match the Cloudinary asset_id.");
+  }
+
+  return validateCanonicalMediaReference({
     campaignName: requiredString(body.campaignName || body.name, "Campaign name", 255),
     campaignObjective: requiredString(body.campaignObjective, "Campaign objective", 2000),
     postText: requiredString(body.postText || body.message, "Post text", 16_000),
     postType,
-    mediaId: mediaUrl ? optionalString(body.mediaId, 100) : null,
+    mediaId: cloudinaryAssetId,
+    cloudinaryAssetId,
+    cloudinaryPublicId,
+    cloudinaryResourceType,
+    cloudinaryFormat,
     mediaType,
     mediaUrl,
     mediaOriginalName: mediaUrl ? optionalString(body.mediaOriginalName, 255) : null,
@@ -198,7 +234,7 @@ export function normalizeBufferCampaignInput(body, { now = new Date() } = {}) {
     highIntentKeywords: keywordValue(body.highIntentKeywords),
     aiReplyEnabled: booleanValue(body.aiReplyEnabled),
     createdByAi: booleanValue(body.createdByAi),
-  };
+  });
 }
 
 export function validateBufferPostCompatibility(input, channels) {
@@ -221,50 +257,43 @@ export function validateBufferPostCompatibility(input, channels) {
 
 export async function validateStoredInstagramVideo(input, channels, {
   env = process.env,
-  readMedia = readCampaignMedia,
-  inspectVideo = inspectCampaignVideo,
 } = {}) {
   const services = channels.map((channel) => String(channel.service || "").toLowerCase());
   if (input.mediaType !== "video" || !services.includes("instagram")) return input;
-  if (!input.mediaId) {
-    throw validationError("Upload the Instagram video through the campaign editor so the server can verify its publishing requirements.");
-  }
   try {
     validateCanonicalMediaReference(input, env);
   } catch (error) {
     throw validationError(error instanceof Error ? error.message : "The stored campaign video URL is invalid.");
   }
 
-  let stored;
-  let metadata;
-  try {
-    stored = await readMedia(input.mediaId, env);
-    if (!String(stored.mimeType || "").startsWith("video/")) {
-      throw new Error("The stored media is not a video.");
-    }
-    metadata = await inspectVideo(stored.bytes);
-  } catch (error) {
-    throw validationError(error instanceof Error ? error.message : "The stored campaign video could not be validated.");
+  const metadata = {
+    width: input.mediaWidth,
+    height: input.mediaHeight,
+    durationSeconds: input.mediaDurationSeconds,
+    frameRate: input.mediaFrameRate,
+    videoCodec: input.mediaVideoCodec,
+    audioCodec: input.mediaAudioCodec,
+    audioSampleRate: input.mediaAudioSampleRate,
+    videoBitrate: input.mediaVideoBitrate,
+    audioBitrate: input.mediaAudioBitrate,
+  };
+  if (![metadata.width, metadata.height, metadata.durationSeconds, metadata.frameRate]
+    .every((value) => Number.isFinite(Number(value)))) {
+    throw validationError("Replace this Instagram video so its validation metadata can be stored with the Cloudinary asset.");
   }
   const errors = instagramVideoValidationErrors(metadata, {
     postType: input.postType,
     services,
-    sizeBytes: stored.bytes.byteLength,
+    sizeBytes: input.mediaSizeBytes,
   });
   if (errors.length) throw validationError(errors.join(" "));
 
   return {
     ...input,
-    mediaSizeBytes: stored.bytes.byteLength,
-    mediaWidth: metadata.width,
-    mediaHeight: metadata.height,
-    mediaDurationSeconds: metadata.durationSeconds,
-    mediaFrameRate: metadata.frameRate,
-    mediaVideoCodec: metadata.videoCodec,
-    mediaAudioCodec: metadata.audioCodec,
-    mediaAudioSampleRate: metadata.audioSampleRate,
-    mediaVideoBitrate: metadata.videoBitrate,
-    mediaAudioBitrate: metadata.audioBitrate,
+    mediaWidth: Number(metadata.width),
+    mediaHeight: Number(metadata.height),
+    mediaDurationSeconds: Number(metadata.durationSeconds),
+    mediaFrameRate: Number(metadata.frameRate),
   };
 }
 
@@ -304,6 +333,10 @@ function campaignRecord(input, selectedChannels, existing = null) {
     postText: input.postText,
     postType: input.postType,
     mediaId: input.mediaId,
+    cloudinaryAssetId: input.cloudinaryAssetId,
+    cloudinaryPublicId: input.cloudinaryPublicId,
+    cloudinaryResourceType: input.cloudinaryResourceType,
+    cloudinaryFormat: input.cloudinaryFormat,
     mediaType: input.mediaType,
     mediaUrl: input.mediaUrl,
     mediaOriginalName: input.mediaOriginalName,
@@ -348,6 +381,10 @@ function deliveryFieldsChanged(existing, input) {
 
 const MEDIA_FIELDS = [
   "mediaId",
+  "cloudinaryAssetId",
+  "cloudinaryPublicId",
+  "cloudinaryResourceType",
+  "cloudinaryFormat",
   "mediaType",
   "mediaUrl",
   "mediaOriginalName",
@@ -364,6 +401,14 @@ const MEDIA_FIELDS = [
   "mediaAudioBitrate",
 ];
 
+function cloudinaryReference(value = {}) {
+  return {
+    assetId: value.cloudinaryAssetId || value.assetId || value.mediaId || null,
+    publicId: value.cloudinaryPublicId || value.publicId || null,
+    resourceType: value.cloudinaryResourceType || value.resourceType || value.mediaType || null,
+  };
+}
+
 function persistedDeliveryInput(input, campaign) {
   const persisted = { ...input };
   for (const field of MEDIA_FIELDS) persisted[field] = campaign[field] ?? null;
@@ -379,6 +424,7 @@ export class BufferCampaignService {
     validateMedia = validateStoredInstagramVideo,
     verifyMediaUrl = verifyPublicMediaUrl,
     fetchImpl = globalThis.fetch,
+    deleteMedia = deleteCampaignMediaFromCloudinary,
   }) {
     this.repository = repository;
     this.bufferAdapter = bufferAdapter;
@@ -387,6 +433,7 @@ export class BufferCampaignService {
     this.validateMedia = validateMedia;
     this.verifyMediaUrl = verifyMediaUrl;
     this.fetchImpl = fetchImpl;
+    this.deleteMedia = deleteMedia;
   }
 
   configurationStatus() {
@@ -416,26 +463,28 @@ export class BufferCampaignService {
     return campaigns.find((campaign) => String(campaign.id) === String(campaignId)) || null;
   }
 
-  async deleteMediaIfUnreferenced(mediaId) {
-    const normalizedId = String(mediaId || "").trim();
+  async deleteMediaIfUnreferenced(reference) {
+    const normalizedId = String(reference?.assetId || reference?.cloudinaryAssetId || "").trim();
+    if (!normalizedId) throw validationError("Cloudinary asset_id is required to remove campaign media.");
     const campaigns = await this.getCampaigns();
-    const referenced = campaigns.some((campaign) => String(campaign.mediaId || "") === normalizedId);
+    const referenced = campaigns.some((campaign) =>
+      String(campaign.cloudinaryAssetId || campaign.mediaId || "") === normalizedId);
     if (referenced) return { deleted: false, referenced: true };
     return {
-      deleted: await deleteCampaignMedia(normalizedId, this.env),
+      deleted: await this.deleteMedia(reference, { env: this.env }),
       referenced: false,
     };
   }
 
-  async cleanupUnreferencedMedia(mediaId) {
-    if (!mediaId) return;
+  async cleanupUnreferencedMedia(reference) {
+    if (!reference?.assetId && !reference?.cloudinaryAssetId) return;
     try {
-      await this.deleteMediaIfUnreferenced(mediaId);
+      await this.deleteMediaIfUnreferenced(reference);
     } catch (error) {
       this.logger.error?.(JSON.stringify({
         component: "campaign_media",
         operation: "cleanup_unreferenced",
-        mediaId,
+        assetId: reference.assetId || reference.cloudinaryAssetId,
         status: "failed",
         error: safeBufferMessage(error),
       }));
@@ -500,7 +549,7 @@ export class BufferCampaignService {
       campaign = await this.repository.saveCampaign(campaignRecord(input, selectedChannels));
       if (!campaign) throw new Error("The campaign could not be persisted before Buffer scheduling.");
     } catch (error) {
-      if (!campaign) await this.cleanupUnreferencedMedia(input?.mediaId || body?.mediaId);
+      if (!campaign) await this.cleanupUnreferencedMedia(cloudinaryReference(input || body));
       throw error;
     }
 
@@ -554,7 +603,7 @@ export class BufferCampaignService {
   async updateCampaign(campaignId, body) {
     const existing = await this.campaignById(requiredString(String(campaignId || ""), "Campaign ID", 100));
     if (!existing) {
-      await this.cleanupUnreferencedMedia(body?.mediaId);
+      await this.cleanupUnreferencedMedia(cloudinaryReference(body));
       throw validationError("Campaign was not found.", 404);
     }
 
@@ -567,16 +616,7 @@ export class BufferCampaignService {
       input = normalizeBufferCampaignInput({ ...body, createdByAi: existing.createdByAi });
       const { channels } = await this.getChannels();
       selectedChannels = selectedChannelRecords(input, channels);
-      const existingTargetIds = new Set((existing.targetSocialChannels || []).map((channel) =>
-        String(typeof channel === "string" ? channel : channel?.id || "")));
-      const sameTargets = input.targetSocialChannels.length === existingTargetIds.size &&
-        input.targetSocialChannels.every((id) => existingTargetIds.has(String(id)));
-      const unchangedLegacyVideo = input.mediaType === "video" && !input.mediaId &&
-        input.mediaUrl === existing.mediaUrl && !existing.mediaId &&
-        input.postType === existing.postType && sameTargets;
-      if (!unchangedLegacyVideo) {
-        input = await this.validateMedia(input, selectedChannels, { env: this.env });
-      }
+      input = await this.validateMedia(input, selectedChannels, { env: this.env });
       const selectedIds = new Set(input.targetSocialChannels);
       const existingPosts = await this.repository.getCampaignPosts({ campaignId: existing.id });
       activePosts = existingPosts.filter((post) => post.isActive !== false);
@@ -605,7 +645,7 @@ export class BufferCampaignService {
     } catch (error) {
       const candidateMediaId = input?.mediaId || body?.mediaId;
       if (!saved && candidateMediaId && candidateMediaId !== existing.mediaId) {
-        await this.cleanupUnreferencedMedia(candidateMediaId);
+        await this.cleanupUnreferencedMedia(cloudinaryReference(input || body));
       }
       throw error;
     }
@@ -617,7 +657,7 @@ export class BufferCampaignService {
     if (input.campaignStatus === "DRAFT") {
       const draftCampaign = await this.repository.setBufferCampaignMode(saved.id, "draft");
       if (existing.mediaId && existing.mediaId !== input.mediaId) {
-        await this.cleanupUnreferencedMedia(existing.mediaId);
+        await this.cleanupUnreferencedMedia(cloudinaryReference(existing));
       }
       return { ok: true, campaign: { ...draftCampaign, campaignPosts: posts }, posts, syncedCount: 0, failedCount: 0, statusCode: 200 };
     }
@@ -664,7 +704,7 @@ export class BufferCampaignService {
     const allSynchronized = failures.length === 0 && results.length > 0 && results.every((post) => SCHEDULED_STATES.has(post.postStatus));
     const campaign = await this.repository.setBufferCampaignMode(saved.id, allSynchronized ? "production" : "draft");
     if (allSynchronized && existing.mediaId && existing.mediaId !== input.mediaId) {
-      await this.cleanupUnreferencedMedia(existing.mediaId);
+      await this.cleanupUnreferencedMedia(cloudinaryReference(existing));
     }
     return {
       ok: allSynchronized,

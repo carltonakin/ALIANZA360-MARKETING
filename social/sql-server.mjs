@@ -152,6 +152,10 @@ function mapCampaign(row) {
     postText: row.PostText || row.Message || "",
     postType: row.PostType || "POST",
     mediaId: row.MediaId || null,
+    cloudinaryAssetId: row.CloudinaryAssetId || null,
+    cloudinaryPublicId: row.CloudinaryPublicId || null,
+    cloudinaryResourceType: row.CloudinaryResourceType || null,
+    cloudinaryFormat: row.CloudinaryFormat || null,
     mediaType: row.MediaType || null,
     mediaUrl: row.MediaUrl || null,
     mediaOriginalName: row.MediaOriginalName || null,
@@ -528,7 +532,11 @@ export class SqlServerRepository {
     request.input("CampaignObjective", this.sql.NVarChar(2000), input.campaignObjective || null);
     request.input("PostText", this.sql.NVarChar(this.sql.MAX), input.postText || null);
     request.input("PostType", this.sql.NVarChar(16), input.postType || "POST");
-    request.input("MediaId", this.sql.NVarChar(100), input.mediaId || null);
+    request.input("MediaId", this.sql.NVarChar(255), input.mediaId || null);
+    request.input("CloudinaryAssetId", this.sql.NVarChar(255), input.cloudinaryAssetId || null);
+    request.input("CloudinaryPublicId", this.sql.NVarChar(512), input.cloudinaryPublicId || null);
+    request.input("CloudinaryResourceType", this.sql.NVarChar(16), input.cloudinaryResourceType || null);
+    request.input("CloudinaryFormat", this.sql.NVarChar(32), input.cloudinaryFormat || null);
     request.input("MediaType", this.sql.NVarChar(16), input.mediaType || null);
     request.input("MediaUrl", this.sql.NVarChar(2048), input.mediaUrl || null);
     request.input("MediaOriginalName", this.sql.NVarChar(255), input.mediaOriginalName || null);

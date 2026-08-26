@@ -1,5 +1,4 @@
 import { createRequire } from "node:module";
-import path from "node:path";
 import { pathToFileURL } from "node:url";
 import {
   SOCIAL_CHANNELS,
@@ -29,9 +28,7 @@ import { createSproutAdapterFromEnv } from "./sprout.mjs";
 import { createBufferAdapterFromEnv } from "./buffer-adapter.mjs";
 import { BufferCampaignService } from "./buffer-campaigns.mjs";
 import {
-  campaignMediaDirectory,
   campaignMediaMaximumBytes,
-  campaignMediaPublicPath,
   storeCampaignMediaBuffer,
 } from "../lib/campaign-media.mjs";
 
@@ -150,8 +147,6 @@ export function registerCampaignMediaExpressRoutes(expressApp, {
   logger = console,
   storeMedia = storeCampaignMediaBuffer,
 } = {}) {
-  const mediaDirectory = campaignMediaDirectory(env);
-  const mediaPublicPath = campaignMediaPublicPath(env);
   const upload = multer({
     storage: multer.memoryStorage(),
     limits: {
@@ -188,7 +183,6 @@ export function registerCampaignMediaExpressRoutes(expressApp, {
             size: request.file.size,
             bytes: request.file.buffer,
           }, {
-            requestUrl: `${request.protocol}://${request.get("host")}${request.originalUrl}`,
             env,
             postType: String(request.body.postType || "POST"),
             targetServices: requestedServices.map((value) => String(value || "").trim().toLowerCase()).filter(Boolean),
@@ -196,20 +190,23 @@ export function registerCampaignMediaExpressRoutes(expressApp, {
           logger.info?.(JSON.stringify({
             component: "campaign_media",
             operation: "express_upload",
-            status: "stored",
-            mediaDirectory,
+            status: "uploaded",
+            provider: "cloudinary",
             originalFileName: media.originalFileName,
             mimeType: media.mimeType,
             size: media.size,
-            storedFileName: media.storedFileName,
-            diskPath: path.join(mediaDirectory, media.storedFileName),
+            assetId: media.assetId,
+            publicId: media.publicId,
+            resourceType: media.resourceType,
+            format: media.format,
             mediaUrl: media.mediaUrl,
           }));
           response.status(201).json({
             ok: true,
-            originalFileName: media.originalFileName,
-            storedFileName: media.storedFileName,
-            mimeType: media.mimeType,
+            assetId: media.assetId,
+            publicId: media.publicId,
+            resourceType: media.resourceType,
+            format: media.format,
             size: media.size,
             mediaUrl: media.mediaUrl,
             media,
@@ -230,21 +227,6 @@ export function registerCampaignMediaExpressRoutes(expressApp, {
         }
       });
     },
-  );
-
-  expressApp.use(
-    mediaPublicPath,
-    express.static(mediaDirectory, {
-      index: false,
-      dotfiles: "deny",
-      fallthrough: false,
-      immutable: true,
-      maxAge: "1y",
-      setHeaders(response) {
-        response.setHeader("x-content-type-options", "nosniff");
-        response.setHeader("content-disposition", "inline");
-      },
-    }),
   );
 }
 
@@ -1774,8 +1756,13 @@ export async function createSocialListenerApp({
         ? url.pathname.match(/^\/api\/media\/([^/]+)$/)
         : null;
       if (mediaDeleteMatch) {
+        const body = await readJson(request);
         const result = await activeBufferCampaignService.deleteMediaIfUnreferenced(
-          decodeURIComponent(mediaDeleteMatch[1]),
+          {
+            assetId: decodeURIComponent(mediaDeleteMatch[1]),
+            publicId: body.publicId,
+            resourceType: body.resourceType,
+          },
         );
         return json({ ok: true, ...result });
       }
