@@ -1,7 +1,7 @@
 import assert from "node:assert/strict";
 import { readFile } from "node:fs/promises";
 import test from "node:test";
-import { SqlServerRepository } from "../social/sql-server.mjs";
+import { SqlServerRepository, toSqlInteger } from "../social/sql-server.mjs";
 
 const migrationUrl = new URL("../sql/001_social_listener.sql", import.meta.url);
 const automationMigrationUrl = new URL("../sql/003_social_crm_automation.sql", import.meta.url);
@@ -240,6 +240,20 @@ test("Cloudinary migration persists provider identifiers without media binaries"
   assert.match(sql, /ROLLBACK TRANSACTION/i);
   assert.match(sql, /MediaId must match Cloudinary asset_id/i);
   assert.doesNotMatch(sql, /DROP TABLE|TRUNCATE TABLE|VARBINARY|BUFFER_API_KEY|CLOUDINARY_API_SECRET/i);
+});
+
+test("SQL integer normalization rounds finite media metadata and nulls invalid values", () => {
+  assert.equal(toSqlInteger(891087.1719038817), 891087);
+  assert.equal(toSqlInteger(891087), 891087);
+  assert.equal(toSqlInteger("891087.1719038817"), 891087);
+  assert.equal(toSqlInteger(null), null);
+  assert.equal(toSqlInteger(undefined), null);
+  assert.equal(toSqlInteger(""), null);
+  assert.equal(toSqlInteger("   "), null);
+  assert.equal(toSqlInteger("not-a-number"), null);
+  assert.equal(toSqlInteger(Number.NaN), null);
+  assert.equal(toSqlInteger(Number.POSITIVE_INFINITY), null);
+  assert.equal(toSqlInteger(Number.NEGATIVE_INFINITY), null);
 });
 
 test("SQL Server repository parameterizes event and lead persistence", async () => {
@@ -552,10 +566,10 @@ test("SQL Server repository parameterizes Buffer campaign and post lifecycle pro
     cloudinaryPublicId: "crm-marketing/campaigns/story",
     cloudinaryResourceType: "video", cloudinaryFormat: "mp4",
     mediaType: "video", mediaUrl: "https://res.cloudinary.com/crm-cloud/video/upload/v1/crm-marketing/campaigns/story.mp4",
-    postType: "STORY", mediaOriginalName: "story.mp4", mediaMimeType: "video/mp4", mediaSizeBytes: 2048,
-    mediaWidth: 1080, mediaHeight: 1920, mediaDurationSeconds: 30, mediaFrameRate: 30,
-    mediaVideoCodec: "avc1.640028", mediaAudioCodec: "mp4a.40.2", mediaAudioSampleRate: 48000,
-    mediaVideoBitrate: 8000000, mediaAudioBitrate: 128000,
+    postType: "STORY", mediaOriginalName: "story.mp4", mediaMimeType: "video/mp4", mediaSizeBytes: "2048.4",
+    mediaWidth: 1079.6, mediaHeight: 1919.6, mediaDurationSeconds: 30.125, mediaFrameRate: 29.97003,
+    mediaVideoCodec: "avc1.640028", mediaAudioCodec: "mp4a.40.2", mediaAudioSampleRate: "47999.6",
+    mediaVideoBitrate: 891087.1719038817, mediaAudioBitrate: "128000.6",
     publishDateTime: "2030-08-26T15:00:00.000Z", highIntentKeywords: "pricing, demo",
     aiReplyEnabled: true, targetSocialChannels: [{ id: "channel-1", service: "instagram" }],
   });
@@ -588,8 +602,14 @@ test("SQL Server repository parameterizes Buffer campaign and post lifecycle pro
   assert.equal(executions[0].parameters.get("CloudinaryAssetId").value, "cloudinary-asset-video");
   assert.equal(executions[0].parameters.get("CloudinaryPublicId").value, "crm-marketing/campaigns/story");
   assert.equal(executions[0].parameters.get("MediaMimeType").value, "video/mp4");
+  assert.equal(executions[0].parameters.get("MediaSizeBytes").value, 2048);
   assert.equal(executions[0].parameters.get("MediaWidth").value, 1080);
-  assert.equal(executions[0].parameters.get("MediaDurationSeconds").value, 30);
+  assert.equal(executions[0].parameters.get("MediaHeight").value, 1920);
+  assert.equal(executions[0].parameters.get("MediaAudioSampleRate").value, 48000);
+  assert.equal(executions[0].parameters.get("MediaVideoBitrate").value, 891087);
+  assert.equal(executions[0].parameters.get("MediaAudioBitrate").value, 128001);
+  assert.equal(executions[0].parameters.get("MediaDurationSeconds").value, 30.125);
+  assert.equal(executions[0].parameters.get("MediaFrameRate").value, 29.97003);
   assert.equal(executions[0].parameters.get("MediaVideoCodec").value, "avc1.640028");
   assert.equal(executions[0].parameters.get("AIReplyEnabled").value, 1);
   assert.equal(executions[1].parameters.get("BufferChannelId").value, "channel-1");

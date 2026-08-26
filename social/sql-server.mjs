@@ -21,6 +21,17 @@ function numericId(value) {
   return Number.isInteger(id) && id > 0 ? id : null;
 }
 
+export function toSqlInteger(value) {
+  if (value === null || value === undefined || (typeof value === "string" && value.trim() === "")) return null;
+  let number;
+  try {
+    number = Number(value);
+  } catch {
+    return null;
+  }
+  return Number.isFinite(number) ? Math.round(number) : null;
+}
+
 function mapLead(row) {
   return {
     id: `social:${row.LeadId}`,
@@ -541,16 +552,16 @@ export class SqlServerRepository {
     request.input("MediaUrl", this.sql.NVarChar(2048), input.mediaUrl || null);
     request.input("MediaOriginalName", this.sql.NVarChar(255), input.mediaOriginalName || null);
     request.input("MediaMimeType", this.sql.NVarChar(127), input.mediaMimeType || null);
-    request.input("MediaSizeBytes", this.sql.BigInt, input.mediaSizeBytes == null ? null : Number(input.mediaSizeBytes));
-    request.input("MediaWidth", this.sql.Int, input.mediaWidth == null ? null : Number(input.mediaWidth));
-    request.input("MediaHeight", this.sql.Int, input.mediaHeight == null ? null : Number(input.mediaHeight));
+    request.input("MediaSizeBytes", this.sql.BigInt, toSqlInteger(input.mediaSizeBytes));
+    request.input("MediaWidth", this.sql.Int, toSqlInteger(input.mediaWidth));
+    request.input("MediaHeight", this.sql.Int, toSqlInteger(input.mediaHeight));
     request.input("MediaDurationSeconds", this.sql.Decimal(12, 3), input.mediaDurationSeconds == null ? null : Number(input.mediaDurationSeconds));
     request.input("MediaFrameRate", this.sql.Decimal(8, 3), input.mediaFrameRate == null ? null : Number(input.mediaFrameRate));
     request.input("MediaVideoCodec", this.sql.NVarChar(64), input.mediaVideoCodec || null);
     request.input("MediaAudioCodec", this.sql.NVarChar(64), input.mediaAudioCodec || null);
-    request.input("MediaAudioSampleRate", this.sql.Int, input.mediaAudioSampleRate == null ? null : Number(input.mediaAudioSampleRate));
-    request.input("MediaVideoBitrate", this.sql.BigInt, input.mediaVideoBitrate == null ? null : Number(input.mediaVideoBitrate));
-    request.input("MediaAudioBitrate", this.sql.BigInt, input.mediaAudioBitrate == null ? null : Number(input.mediaAudioBitrate));
+    request.input("MediaAudioSampleRate", this.sql.Int, toSqlInteger(input.mediaAudioSampleRate));
+    request.input("MediaVideoBitrate", this.sql.BigInt, toSqlInteger(input.mediaVideoBitrate));
+    request.input("MediaAudioBitrate", this.sql.BigInt, toSqlInteger(input.mediaAudioBitrate));
     request.input("PublishDateTime", this.sql.DateTime2, input.publishDateTime ? new Date(input.publishDateTime) : null);
     request.input("HighIntentKeywords", this.sql.NVarChar(2000), input.highIntentKeywords || null);
     request.input("AIReplyEnabled", this.sql.Bit, input.aiReplyEnabled ? 1 : 0);
