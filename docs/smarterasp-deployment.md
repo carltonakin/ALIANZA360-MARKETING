@@ -75,8 +75,8 @@ listener. Use `.env.production.example` only as a non-secret checklist. Provider
 tokens and webhook secrets remain server-side control-panel values. Apply all
 SQL migrations with `npm run db:setup:mssql` before using the campaign studio;
 the Buffer lifecycle and campaign editing procedures are installed by
-migrations 006 through 008 and Cloudinary identity persistence by migration
-010. Create a Cloudinary product environment and copy its cloud name, API key,
+migrations 006 through 008, Cloudinary identity persistence by migration 010,
+and CRM authentication/user administration by migration 011. Create a Cloudinary product environment and copy its cloud name, API key,
 and API secret from Cloudinary's API Keys settings. Keep the secret server-side
 and never use a `NEXT_PUBLIC_` name. The optional upload preset must permit
 authenticated server uploads if configured. The included `web.config` allows the
@@ -97,9 +97,11 @@ No application-root or `App_Data` write permission is required for campaign
 media. Existing campaigns with legacy local media URLs must have their media
 replaced through the campaign editor before they can be rescheduled.
 
-If `SOCIAL_LISTENER_ADMIN_EMAIL` is used, the reverse proxy or authentication
-layer must supply the corresponding trusted user-email header. Otherwise leave
-it unset until SmarterASP authentication is configured.
+The CRM uses its own MSSQL-backed users and sessions. The listener creates the
+`next2thetop` ADMIN account only when absent and never resets it during later
+starts. Apply migration 011 before starting the new build; otherwise the
+authentication bootstrap correctly fails rather than running without login
+protection.
 
 ## Optional separate Social Listener deployment
 
@@ -140,7 +142,8 @@ $env:PORT = "43131"
 npm start
 ```
 
-Open `http://127.0.0.1:43131/` and require HTTP 200. Test `/api/data` and
+Open `http://127.0.0.1:43131/login` and require HTTP 200. Confirm unauthenticated
+requests to `/api/data` return 401, sign in, and then test `/api/data` and
 `/api/social/status`; startup logs must report the MSSQL data source and a
 healthy production MSSQL connection.
 

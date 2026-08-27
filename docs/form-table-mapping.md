@@ -4,6 +4,8 @@ The browser never connects to SQL Server. Forms call Next.js route handlers; tho
 
 | Application form | Backend operation | Primary table | Field mapping |
 |---|---|---|---|
+| Login | `POST /auth/login` | `dbo.AppUsers` + `dbo.AuthSessions` | username→Username; verified password hash→PasswordHash; SHA-256 session-token digest→TokenHash; successful login→LastLoginAt |
+| User Management | `/auth/users` | `dbo.AppUsers` | username→Username, server-generated password hash→PasswordHash, role→Role, active status→IsActive; edits retain UserId |
 | Lead create/edit | `POST/PUT /leads` | `dbo.Leads` | name→Name, email→Email, phone→Phone, facebook→Facebook, instagram→Instagram, x→X, source→Source, value→EstimatedValue |
 | Lead stage | `POST /leads/status` | `dbo.Leads` | leadId→LeadId, status→Status |
 | AI/manual campaign | `POST/PUT /content` | `dbo.Campaigns` + `dbo.SocialCampaigns` | core content→Campaigns; sourceType, provider IDs, content reference, schedule, cadence, retries and run state→SocialCampaigns |

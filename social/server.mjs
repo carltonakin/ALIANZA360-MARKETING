@@ -27,6 +27,7 @@ import { SqlServerRepository } from "./sql-server.mjs";
 import { createSproutAdapterFromEnv } from "./sprout.mjs";
 import { createBufferAdapterFromEnv } from "./buffer-adapter.mjs";
 import { BufferCampaignService } from "./buffer-campaigns.mjs";
+import { AuthService } from "./auth.mjs";
 import {
   campaignMediaMaximumBytes,
   storeCampaignMediaBuffer,
@@ -1263,6 +1264,7 @@ export async function createSocialListenerApp({
   bufferAdapter,
   bufferCampaignService,
   orchestrator,
+  authService: providedAuthService,
   fetchImpl,
   logger = console,
 } = {}) {
@@ -1282,6 +1284,24 @@ export async function createSocialListenerApp({
     (await SqlServerRepository.connectFromEnv(
       env
     ));
+
+  const authRepositoryMethods = [
+    "getAuthUserByUsername",
+    "listAuthUsers",
+    "createAuthUser",
+    "updateAuthUser",
+    "setAuthUserPassword",
+    "recordAuthLogin",
+    "createAuthSession",
+    "getAuthSession",
+    "revokeAuthSession",
+  ];
+  const activeAuthService = providedAuthService || (
+    authRepositoryMethods.every((method) => typeof activeRepository[method] === "function")
+      ? new AuthService(activeRepository)
+      : null
+  );
+  if (activeAuthService) await activeAuthService.bootstrapDefaultAdmin();
 
   let runtimeEnv = {
     ...env,
@@ -1752,6 +1772,51 @@ export async function createSocialListenerApp({
     }
 
     try {
+      const sessionToken = request.headers.get("x-crm-session-token") || "";
+
+      if (request.method === "POST" && url.pathname === "/auth/login") {
+        if (!activeAuthService) return json({ error: "Authentication storage is unavailable." }, 503);
+        const result = await activeAuthService.login(await readJson(request));
+        return json({ ok: true, ...result });
+      }
+
+      if (request.method === "GET" && url.pathname === "/auth/me") {
+        if (!activeAuthService) return json({ error: "Authentication storage is unavailable." }, 503);
+        return json({ ok: true, user: await activeAuthService.authenticate(sessionToken) });
+      }
+
+      if (request.method === "POST" && url.pathname === "/auth/logout") {
+        if (!activeAuthService) return json({ error: "Authentication storage is unavailable." }, 503);
+        await activeAuthService.logout(sessionToken);
+        return json({ ok: true });
+      }
+
+      if (request.method === "GET" && url.pathname === "/auth/users") {
+        if (!activeAuthService) return json({ error: "Authentication storage is unavailable." }, 503);
+        return json({ ok: true, users: await activeAuthService.listUsers(sessionToken) });
+      }
+
+      if (request.method === "POST" && url.pathname === "/auth/users") {
+        if (!activeAuthService) return json({ error: "Authentication storage is unavailable." }, 503);
+        const user = await activeAuthService.createUser(sessionToken, await readJson(request));
+        return json({ ok: true, user }, 201);
+      }
+
+      const authUserMatch = url.pathname.match(/^\/auth\/users\/(\d+)$/);
+      if (request.method === "PATCH" && authUserMatch) {
+        if (!activeAuthService) return json({ error: "Authentication storage is unavailable." }, 503);
+        const user = await activeAuthService.updateUser(sessionToken, authUserMatch[1], await readJson(request));
+        return json({ ok: true, user });
+      }
+
+      const authPasswordMatch = url.pathname.match(/^\/auth\/users\/(\d+)\/password$/);
+      if (request.method === "POST" && authPasswordMatch) {
+        if (!activeAuthService) return json({ error: "Authentication storage is unavailable." }, 503);
+        const body = await readJson(request);
+        const user = await activeAuthService.changePassword(sessionToken, authPasswordMatch[1], body.password);
+        return json({ ok: true, user });
+      }
+
       const mediaDeleteMatch = request.method === "DELETE"
         ? url.pathname.match(/^\/api\/media\/([^/]+)$/)
         : null;
@@ -3776,6 +3841,9 @@ export async function createSocialListenerApp({
 
     bufferCampaignService:
       activeBufferCampaignService,
+
+    authService:
+      activeAuthService,
 
     close: () =>
       ownsRepository

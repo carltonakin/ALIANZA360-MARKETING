@@ -11,7 +11,7 @@
     "build": "next build",
     "start": "node --env-file-if-exists=.env scripts/start-production.mjs",
     "test": "npm run build && npm run test:unit",
-    "test:unit": "node --test tests/rendered-html.test.mjs tests/production-startup.test.mjs tests/mssql-conversion.test.mjs tests/social-config.test.mjs tests/social-core.test.mjs tests/social-intelligence.test.mjs tests/campaign-automation.test.mjs tests/sprout-adapter.test.mjs tests/buffer-integration.test.mjs tests/crm-orchestrator.test.mjs tests/social-api.test.mjs tests/social-sql.test.mjs tests/social-smoke.test.mjs",
+    "test:unit": "node --test tests/auth.test.mjs tests/rendered-html.test.mjs tests/production-startup.test.mjs tests/mssql-conversion.test.mjs tests/social-config.test.mjs tests/social-core.test.mjs tests/social-intelligence.test.mjs tests/campaign-automation.test.mjs tests/sprout-adapter.test.mjs tests/buffer-integration.test.mjs tests/crm-orchestrator.test.mjs tests/social-api.test.mjs tests/social-sql.test.mjs tests/social-smoke.test.mjs",
     "test:social": "node --test tests/social-core.test.mjs tests/social-intelligence.test.mjs tests/campaign-automation.test.mjs tests/sprout-adapter.test.mjs tests/buffer-integration.test.mjs tests/crm-orchestrator.test.mjs tests/social-api.test.mjs tests/social-sql.test.mjs",
     "test:smoke": "node --test tests/social-smoke.test.mjs",
     "verify:social": "node scripts/verify-social.mjs",

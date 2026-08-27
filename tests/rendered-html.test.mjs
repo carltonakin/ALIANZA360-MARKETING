@@ -70,16 +70,24 @@ async function render() {
   return fetch(dashboardUrl, { headers: { accept: "text/html" } });
 }
 
-test("server-renders the CRM dashboard shell", async () => {
+test("server-renders Login and denies unauthenticated CRM/API access", async () => {
+  const protectedPage = await fetch(dashboardUrl, { redirect: "manual" });
+  assert.ok([302, 307, 308].includes(protectedPage.status));
+  assert.match(protectedPage.headers.get("location") || "", /\/login/);
+
   const response = await render();
   assert.equal(response.status, 200);
   assert.match(response.headers.get("content-type") ?? "", /^text\/html\b/i);
 
   const html = await response.text();
   assert.match(html, /<title>Alianza CRM Marketing 360<\/title>/i);
-  assert.match(html, /CRM • MARKETING|CRM MARKETING FUNNEL 360/i);
-  assert.match(html, /Social Listener/i);
-  assert.match(html, /Overview/i);
+  assert.match(html, /CRM • MARKETING/i);
+  assert.match(html, /SECURE ACCESS/i);
+  assert.match(html, /Sign in/i);
+  assert.doesNotMatch(html, /Alianza#123|PasswordHash/i);
+
+  const api = await fetch(`${dashboardUrl}/api/data`);
+  assert.equal(api.status, 401);
 });
 
 test("dashboard exposes social listener configuration and live diagnostics", async () => {

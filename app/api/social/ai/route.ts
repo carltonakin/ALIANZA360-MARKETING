@@ -1,10 +1,6 @@
-import { isSocialConfigAdmin } from "../_config";
 import { proxySocialRequest } from "../_proxy";
 
 export async function POST(request: Request) {
-  if (!isSocialConfigAdmin(request)) {
-    return Response.json({ ok: false, message: "Only the site owner can create AI drafts." }, { status: 403 });
-  }
   let payload: unknown;
   try {
     payload = await request.json();

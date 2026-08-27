@@ -321,6 +321,21 @@ function mapWebinar(row) {
   };
 }
 
+function mapAuthUser(row, { includePasswordHash = false } = {}) {
+  if (!row) return null;
+  const user = {
+    id: Number(row.UserId),
+    username: row.Username,
+    role: row.Role,
+    isActive: Boolean(row.IsActive),
+    createdAt: iso(row.CreatedAt),
+    updatedAt: iso(row.UpdatedAt),
+    lastLoginAt: iso(row.LastLoginAt),
+  };
+  if (includePasswordHash) user.passwordHash = row.PasswordHash;
+  return user;
+}
+
 export class SqlServerRepository {
   constructor(sql, pool, { rawRetentionDays = 7 } = {}) {
     this.sql = sql;
@@ -352,6 +367,74 @@ export class SqlServerRepository {
   async healthCheck() {
     const response = await this.request().query("SELECT CAST(1 AS INT) AS ok");
     return response.recordset?.[0]?.ok === 1;
+  }
+
+  async getAuthUserByUsername(username) {
+    const request = this.request();
+    request.input("Username", this.sql.NVarChar(128), username);
+    const response = await request.execute("dbo.AuthUser_GetByUsername");
+    return mapAuthUser(response.recordset?.[0], { includePasswordHash: true });
+  }
+
+  async listAuthUsers() {
+    const response = await this.request().execute("dbo.AuthUser_List");
+    return (response.recordset || []).map((row) => mapAuthUser(row));
+  }
+
+  async createAuthUser({ username, passwordHash, role, isActive }) {
+    const request = this.request();
+    request.input("Username", this.sql.NVarChar(128), username);
+    request.input("PasswordHash", this.sql.NVarChar(512), passwordHash);
+    request.input("Role", this.sql.NVarChar(16), role);
+    request.input("IsActive", this.sql.Bit, isActive ? 1 : 0);
+    const response = await request.execute("dbo.AuthUser_Create");
+    return mapAuthUser(response.recordset?.[0]);
+  }
+
+  async updateAuthUser(id, { username, role, isActive }) {
+    const request = this.request();
+    request.input("UserId", this.sql.BigInt, Number(id));
+    request.input("Username", this.sql.NVarChar(128), username);
+    request.input("Role", this.sql.NVarChar(16), role);
+    request.input("IsActive", this.sql.Bit, isActive ? 1 : 0);
+    const response = await request.execute("dbo.AuthUser_Update");
+    return mapAuthUser(response.recordset?.[0]);
+  }
+
+  async setAuthUserPassword(id, passwordHash) {
+    const request = this.request();
+    request.input("UserId", this.sql.BigInt, Number(id));
+    request.input("PasswordHash", this.sql.NVarChar(512), passwordHash);
+    const response = await request.execute("dbo.AuthUser_SetPassword");
+    return mapAuthUser(response.recordset?.[0]);
+  }
+
+  async recordAuthLogin(id) {
+    const request = this.request();
+    request.input("UserId", this.sql.BigInt, Number(id));
+    const response = await request.execute("dbo.AuthUser_RecordLogin");
+    return mapAuthUser(response.recordset?.[0]);
+  }
+
+  async createAuthSession({ userId: id, tokenHash, expiresAt }) {
+    const request = this.request();
+    request.input("UserId", this.sql.BigInt, Number(id));
+    request.input("TokenHash", this.sql.VarBinary(32), tokenHash);
+    request.input("ExpiresAt", this.sql.DateTime2, expiresAt);
+    await request.execute("dbo.AuthSession_Create");
+  }
+
+  async getAuthSession(tokenHash) {
+    const request = this.request();
+    request.input("TokenHash", this.sql.VarBinary(32), tokenHash);
+    const response = await request.execute("dbo.AuthSession_Get");
+    return mapAuthUser(response.recordset?.[0]);
+  }
+
+  async revokeAuthSession(tokenHash) {
+    const request = this.request();
+    request.input("TokenHash", this.sql.VarBinary(32), tokenHash);
+    await request.execute("dbo.AuthSession_Revoke");
   }
 
   async upsertConnectionStatus(result) {

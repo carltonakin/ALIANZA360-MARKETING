@@ -38,8 +38,17 @@ npm run db:setup:mssql
 ```
 
 The numbered scripts in `sql/` create the CRM, social-listener, campaign,
-scoring, automation, integration, and audit storage surfaces. The application
+scoring, automation, integration, audit, user, and database-session storage surfaces. The application
 form-to-table mapping is documented in `docs/form-table-mapping.md`.
+
+Migration 011 adds local CRM authentication. On listener startup, the
+`next2thetop` ADMIN account is created only when it does not already exist. Its
+initial credential is hashed with Node.js `scrypt` before SQL persistence and
+is never logged or returned by an API. Subsequent starts do not recreate the
+account or reset its password. Sign in at `/login`, then use ADMIN-only User
+Management to create BASIC or ADMIN users, deactivate accounts, and reset
+passwords. BASIC users can use normal CRM modules but cannot access Settings or
+User Management.
 
 ## Launch locally
 
@@ -107,7 +116,8 @@ saves the campaign and a draft `CampaignPosts` row for every selected channel,
 and only then sends exact `customScheduled` UTC requests to Buffer. The CRM
 stores Buffer IDs, lifecycle state, publish times, platform URLs, and safe
 failures in SQL Server. Use `npm run db:setup:mssql` after pulling this version
-to apply the Buffer/campaign migrations through migration 010.
+to apply the Buffer/campaign migrations through migration 010 and the
+authentication/user-management migration 011.
 
 Buffer requires `BUFFER_API_KEY` and `BUFFER_ORGANIZATION_ID` in the listener
 environment. Keep both server-only; never prefix them with `NEXT_PUBLIC_` or

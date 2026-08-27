@@ -1,17 +1,10 @@
-import { isSocialConfigAdmin } from "../_config";
 import { proxySocialRequest } from "../_proxy";
 
-function forbidden() {
-  return Response.json({ ok: false, message: "Only the site owner can manage SQL content." }, { status: 403 });
-}
-
-export async function GET(request: Request) {
-  if (!isSocialConfigAdmin(request)) return forbidden();
+export async function GET() {
   return proxySocialRequest("/content");
 }
 
 async function forward(request: Request, method: "POST" | "PUT") {
-  if (!isSocialConfigAdmin(request)) return forbidden();
   let payload: Record<string, unknown>;
   try {
     payload = await request.json() as Record<string, unknown>;

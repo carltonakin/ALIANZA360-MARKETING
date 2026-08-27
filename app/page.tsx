@@ -3,11 +3,14 @@ import {
   type ChangeEvent,
   type DragEvent,
   type FormEvent,
+  useCallback,
   useEffect,
   useRef,
   useState,
 } from "react";
+import { useRouter } from "next/navigation";
 import { browserVideoValidationErrors, INSTAGRAM_VIDEO_MAX_BYTES } from "../lib/instagram-video-validation.mjs";
+import type { AuthUser } from "./auth/shared";
 
 // Type definitions
 type Lead = {
@@ -284,7 +287,9 @@ const nav = [
 ];
 
 export default function Home() {
+  const router = useRouter();
   const [active, setActive] = useState("Overview");
+  const [authUser, setAuthUser] = useState<AuthUser | null>(null);
   const [collapsed, setCollapsed] = useState(false);
   const [modal, setModal] = useState("");
   const [editingLead, setEditingLead] = useState<Lead | null>(null);
@@ -555,7 +560,23 @@ export default function Home() {
   };
 
   useEffect(() => {
-    const initialLoad = window.setTimeout(() => {
+    const initialLoad = window.setTimeout(async () => {
+      const response = await fetch("/api/auth/me", { cache: "no-store" });
+      if (!response.ok) {
+        router.replace("/login");
+        return;
+      }
+      const auth = await response.json() as { user?: AuthUser };
+      if (!auth.user) {
+        router.replace("/login");
+        return;
+      }
+      setAuthUser(auth.user);
+      const query = new URLSearchParams(window.location.search);
+      const requestedView = query.get("view");
+      const adminView = requestedView === "Settings" || requestedView === "User Management";
+      if (requestedView && (!adminView || auth.user.role === "ADMIN")) setActive(requestedView);
+      if (query.has("forbidden")) setToast("Administrator access is required for that area.");
       void load();
       void loadSocialStatus();
       void loadBufferChannels();
@@ -912,13 +933,22 @@ export default function Home() {
             </button>
           ))}
           <p className="nav-label second">SYSTEM</p>
-          <button
-            className={active === "Settings" ? "active" : ""}
-            onClick={() => setActive("Settings")}
-          >
-            <span className="nav-icon">⚙</span>
-            <span>Settings</span>
-          </button>
+          {authUser?.role === "ADMIN" && <>
+            <button
+              className={active === "Settings" ? "active" : ""}
+              onClick={() => setActive("Settings")}
+            >
+              <span className="nav-icon">⚙</span>
+              <span>Settings</span>
+            </button>
+            <button
+              className={active === "User Management" ? "active" : ""}
+              onClick={() => setActive("User Management")}
+            >
+              <span className="nav-icon">♙</span>
+              <span>User Management</span>
+            </button>
+          </>}
         </nav>
         <div className="ai-card">
           <div className="ai-orb">✦</div>
@@ -931,11 +961,16 @@ export default function Home() {
           <i />
         </div>
         <div className="profile">
-          <div className="avatar">CW</div>
+          <div className="avatar">{authUser?.username.slice(0, 2).toUpperCase() || "…"}</div>
           <div>
-            <strong>Carl Williams</strong>
-            <small>Growth plan</small>
+            <strong>{authUser?.username || "Loading…"}</strong>
+            <small>{authUser?.role || "Authenticated user"}</small>
           </div>
+          <button className="logout-button" onClick={async () => {
+            setBusy(true);
+            await fetch("/api/auth/logout", { method: "POST" }).catch(() => null);
+            router.replace("/login");
+          }} disabled={busy}>Sign out</button>
         </div>
       </aside>
       <section className="workspace">
@@ -1043,14 +1078,16 @@ export default function Home() {
               testing={testing}
               onTestChannel={handleTestChannel}
               channelTestResults={channelTestResults}
-              onConfigure={() => setActive("Settings")}
+              onConfigure={() => authUser?.role === "ADMIN"
+                ? setActive("Settings")
+                : notify("Administrator access is required for Settings")}
               integrations={socialIntegrations}
               integrationActions={integrationActions}
               onSproutOperation={runSproutOperation}
               busy={busy}
             />
           )}
-          {active === "Settings" && (
+          {active === "Settings" && authUser?.role === "ADMIN" && (
             <Settings
               bufferConnection={bufferConnection}
               bufferChannels={bufferChannels}
@@ -1060,6 +1097,7 @@ export default function Home() {
               }}
             />
           )}
+          {active === "User Management" && authUser?.role === "ADMIN" && <UserManagement />}
         </div>
       </section>
       {modal && (
@@ -1864,6 +1902,161 @@ function Social({
           />
         )}
       </article>
+    </>
+  );
+}
+
+function UserManagement() {
+  const router = useRouter();
+  const [users, setUsers] = useState<AuthUser[]>([]);
+  const [loading, setLoading] = useState(true);
+  const [working, setWorking] = useState(false);
+  const [error, setError] = useState("");
+  const [dialog, setDialog] = useState<"create" | "edit" | "password" | "">("");
+  const [selected, setSelected] = useState<AuthUser | null>(null);
+
+  const loadUsers = useCallback(async () => {
+    setLoading(true);
+    const response = await fetch("/api/admin/users", { cache: "no-store" });
+    const body = await response.json().catch(() => ({})) as { users?: AuthUser[]; error?: string };
+    if (response.status === 401) {
+      router.replace("/login");
+      return;
+    }
+    setError(response.ok ? "" : body.error || "Users could not be loaded.");
+    setUsers(body.users || []);
+    setLoading(false);
+  }, [router]);
+
+  useEffect(() => {
+    const timer = window.setTimeout(() => void loadUsers(), 0);
+    return () => window.clearTimeout(timer);
+  }, [loadUsers]);
+
+  async function request(url: string, method: "POST" | "PATCH", body: Record<string, unknown>) {
+    setWorking(true);
+    setError("");
+    try {
+      const response = await fetch(url, {
+        method,
+        headers: { "content-type": "application/json" },
+        body: JSON.stringify(body),
+      });
+      const result = await response.json().catch(() => ({})) as { error?: string };
+      if (!response.ok) throw new Error(result.error || "The user change could not be saved.");
+      setDialog("");
+      setSelected(null);
+      await loadUsers();
+    } catch (requestError) {
+      setError(requestError instanceof Error ? requestError.message : "The user change could not be saved.");
+    } finally {
+      setWorking(false);
+    }
+  }
+
+  function submitCreate(event: FormEvent<HTMLFormElement>) {
+    event.preventDefault();
+    const data = new FormData(event.currentTarget);
+    void request("/api/admin/users", "POST", {
+      username: data.get("username"),
+      password: data.get("password"),
+      role: data.get("role"),
+      isActive: data.get("isActive") === "on",
+    });
+  }
+
+  function submitEdit(event: FormEvent<HTMLFormElement>) {
+    event.preventDefault();
+    if (!selected) return;
+    const data = new FormData(event.currentTarget);
+    void request(`/api/admin/users/${selected.id}`, "PATCH", {
+      username: data.get("username"),
+      role: data.get("role"),
+      isActive: data.get("isActive") === "on",
+    });
+  }
+
+  function submitPassword(event: FormEvent<HTMLFormElement>) {
+    event.preventDefault();
+    if (!selected) return;
+    const data = new FormData(event.currentTarget);
+    void request(`/api/admin/users/${selected.id}/password`, "POST", {
+      password: data.get("password"),
+    });
+  }
+
+  const formatted = (value: string | null) => value
+    ? new Date(value).toLocaleString()
+    : "Never";
+
+  return (
+    <>
+      <ModuleHead
+        title="User Management"
+        sub="Create users, assign roles, manage access, and reset passwords"
+        action="+ Create user"
+        click={() => { setSelected(null); setDialog("create"); setError(""); }}
+      />
+      {error && <p className="backend-config-message" role="alert">{error}</p>}
+      <section className="panel user-management-panel">
+        <div className="user-table user-table-head">
+          <span>Username</span><span>Role</span><span>Status</span><span>Created</span><span>Updated</span><span>Last login</span><span>Actions</span>
+        </div>
+        {loading && <p className="user-loading">Loading users…</p>}
+        {!loading && users.length === 0 && <p className="user-loading">No users were returned.</p>}
+        {users.map((user) => (
+          <div className="user-table" key={user.id}>
+            <strong>{user.username}</strong>
+            <span className={`role-badge ${user.role.toLowerCase()}`}>{user.role}</span>
+            <span className={`user-status ${user.isActive ? "active" : "inactive"}`}>{user.isActive ? "Active" : "Inactive"}</span>
+            <time>{formatted(user.createdAt)}</time>
+            <time>{formatted(user.updatedAt)}</time>
+            <time>{formatted(user.lastLoginAt)}</time>
+            <div className="user-actions">
+              <button onClick={() => { setSelected(user); setDialog("edit"); setError(""); }}>Edit</button>
+              <button onClick={() => void request(`/api/admin/users/${user.id}`, "PATCH", {
+                username: user.username,
+                role: user.role,
+                isActive: !user.isActive,
+              })}>{user.isActive ? "Deactivate" : "Activate"}</button>
+              <button onClick={() => { setSelected(user); setDialog("password"); setError(""); }}>Password</button>
+            </div>
+          </div>
+        ))}
+      </section>
+
+      {dialog && <div className="modal-backdrop" role="presentation" onMouseDown={(event) => {
+        if (event.target === event.currentTarget && !working) setDialog("");
+      }}>
+        <div className="modal user-modal">
+          <button className="modal-close" onClick={() => setDialog("")} disabled={working}>×</button>
+          {dialog === "create" && <form onSubmit={submitCreate}>
+            <h2>Create user</h2>
+            <p>Passwords are hashed on the server and are never returned.</p>
+            <Field label="Username" name="username" required />
+            <Field label="Temporary password" name="password" type="password" required />
+            <label>Role<select name="role" defaultValue="BASIC"><option value="BASIC">BASIC</option><option value="ADMIN">ADMIN</option></select></label>
+            <label className="checkbox-field"><input name="isActive" type="checkbox" defaultChecked /> Active</label>
+            <small className="password-guidance">Use 10+ characters with uppercase, lowercase, number, and special characters.</small>
+            <button className="primary submit" disabled={working}>{working ? "Creating…" : "Create user"}</button>
+          </form>}
+          {dialog === "edit" && selected && <form onSubmit={submitEdit}>
+            <h2>Edit user</h2>
+            <p>Update this existing account. Password changes are handled separately.</p>
+            <Field label="Username" name="username" defaultValue={selected.username} required />
+            <label>Role<select name="role" defaultValue={selected.role}><option value="BASIC">BASIC</option><option value="ADMIN">ADMIN</option></select></label>
+            <label className="checkbox-field"><input name="isActive" type="checkbox" defaultChecked={selected.isActive} /> Active</label>
+            <button className="primary submit" disabled={working}>{working ? "Saving…" : "Save changes"}</button>
+          </form>}
+          {dialog === "password" && selected && <form onSubmit={submitPassword}>
+            <h2>Reset password</h2>
+            <p>Set a replacement password for <strong>{selected.username}</strong>. Existing sessions for this user will be revoked.</p>
+            <Field label="New password" name="password" type="password" required />
+            <small className="password-guidance">Use 10+ characters with uppercase, lowercase, number, and special characters.</small>
+            <button className="primary submit" disabled={working}>{working ? "Updating…" : "Update password"}</button>
+          </form>}
+        </div>
+      </div>}
     </>
   );
 }

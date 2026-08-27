@@ -1,12 +1,6 @@
-import { isSocialConfigAdmin } from "../../../social/_config";
 import { proxySocialRequest } from "../../../social/_proxy";
 
-function forbidden() {
-  return Response.json({ ok: false, error: "Only the site owner can manage Buffer campaign posts." }, { status: 403 });
-}
-
 export async function GET(request: Request) {
-  if (!isSocialConfigAdmin(request)) return forbidden();
   const source = new URL(request.url);
   const query = new URLSearchParams();
   if (source.searchParams.get("campaignId")) query.set("campaignId", source.searchParams.get("campaignId")!);
@@ -14,7 +8,6 @@ export async function GET(request: Request) {
 }
 
 export async function POST(request: Request) {
-  if (!isSocialConfigAdmin(request)) return forbidden();
   let body: unknown;
   try {
     body = await request.json();

@@ -11,6 +11,7 @@ const bufferCampaignMigrationUrl = new URL("../sql/006_buffer_campaign_integrati
 const campaignEditingMigrationUrl = new URL("../sql/007_campaign_post_types_media_editing.sql", import.meta.url);
 const campaignVideoMigrationUrl = new URL("../sql/008_campaign_video_validation_metadata.sql", import.meta.url);
 const cloudinaryCampaignMediaMigrationUrl = new URL("../sql/010_cloudinary_campaign_media.sql", import.meta.url);
+const authenticationMigrationUrl = new URL("../sql/011_authentication_user_management.sql", import.meta.url);
 
 class FakeRequest {
   constructor(executions, result = { recordset: [] }) {
@@ -39,6 +40,7 @@ function fakeRepository(result = { recordset: [] }) {
     Bit: { type: "Bit" },
     Int: { type: "Int" },
     BigInt: { type: "BigInt" },
+    VarBinary: (size) => ({ type: "VarBinary", size }),
     DateTime2: { type: "DateTime2" },
     UniqueIdentifier: { type: "UniqueIdentifier" },
   };
@@ -242,6 +244,21 @@ test("Cloudinary migration persists provider identifiers without media binaries"
   assert.doesNotMatch(sql, /DROP TABLE|TRUNCATE TABLE|VARBINARY|BUFFER_API_KEY|CLOUDINARY_API_SECRET/i);
 });
 
+test("authentication migration stores only hashes and enforces safe role/session procedures", async () => {
+  const sql = await readFile(authenticationMigrationUrl, "utf8");
+  assert.match(sql, /CREATE TABLE dbo\.AppUsers/i);
+  assert.match(sql, /CREATE TABLE dbo\.AuthSessions/i);
+  assert.match(sql, /UQ_AppUsers_Username UNIQUE \(Username\)/i);
+  assert.match(sql, /TokenHash BINARY\(32\)/i);
+  assert.match(sql, /Role IN \(N'ADMIN', N'BASIC'\)/i);
+  for (const procedure of [
+    "AuthUser_GetByUsername", "AuthUser_List", "AuthUser_Create", "AuthUser_Update",
+    "AuthUser_SetPassword", "AuthUser_RecordLogin", "AuthSession_Create", "AuthSession_Get", "AuthSession_Revoke",
+  ]) assert.match(sql, new RegExp(`PROCEDURE dbo\\.${procedure}`, "i"));
+  assert.match(sql, /last active ADMIN/i);
+  assert.doesNotMatch(sql, /PlaintextPassword|Password NVARCHAR/i);
+});
+
 test("SQL integer normalization rounds finite media metadata and nulls invalid values", () => {
   assert.equal(toSqlInteger(891087.1719038817), 891087);
   assert.equal(toSqlInteger(891087), 891087);
@@ -275,6 +292,41 @@ test("SQL Server repository parameterizes event and lead persistence", async () 
   assert.equal(executions[0].parameters.get("RawPayload").value, JSON.stringify(event.rawPayload));
   assert.equal(executions[0].parameters.get("InteractionType").value, "POST_INTERACTION");
   assert.equal(executions[0].parameters.get("RawRetentionDays").value, 7);
+});
+
+test("SQL Server repository parameterizes authentication without returning password hashes", async () => {
+  const row = {
+    UserId: 7,
+    Username: "admin.user",
+    PasswordHash: "scrypt$hash",
+    Role: "ADMIN",
+    IsActive: true,
+    CreatedAt: new Date("2030-01-01T00:00:00.000Z"),
+    UpdatedAt: new Date("2030-01-02T00:00:00.000Z"),
+    LastLoginAt: null,
+  };
+  const { repository, executions } = fakeRepository({ recordset: [row] });
+  const fullUser = await repository.getAuthUserByUsername("admin.user");
+  const created = await repository.createAuthUser({ username: "basic.user", passwordHash: "scrypt$stored", role: "BASIC", isActive: true });
+  await repository.listAuthUsers();
+  await repository.updateAuthUser(7, { username: "admin.user", role: "ADMIN", isActive: true });
+  await repository.setAuthUserPassword(7, "scrypt$replacement");
+  await repository.recordAuthLogin(7);
+  const tokenHash = Buffer.alloc(32, 1);
+  await repository.createAuthSession({ userId: 7, tokenHash, expiresAt: new Date("2030-01-03T00:00:00.000Z") });
+  await repository.getAuthSession(tokenHash);
+  await repository.revokeAuthSession(tokenHash);
+
+  assert.equal(fullUser.passwordHash, "scrypt$hash");
+  assert.equal("passwordHash" in created, false);
+  assert.deepEqual(executions.map((entry) => entry.procedure), [
+    "dbo.AuthUser_GetByUsername", "dbo.AuthUser_Create", "dbo.AuthUser_List", "dbo.AuthUser_Update",
+    "dbo.AuthUser_SetPassword", "dbo.AuthUser_RecordLogin", "dbo.AuthSession_Create", "dbo.AuthSession_Get", "dbo.AuthSession_Revoke",
+  ]);
+  assert.equal(executions[0].parameters.get("Username").value, "admin.user");
+  assert.equal(executions[1].parameters.get("PasswordHash").value, "scrypt$stored");
+  assert.deepEqual(executions[6].parameters.get("TokenHash").value, tokenHash);
+  assert.equal(executions[6].parameters.get("TokenHash").type.size, 32);
 });
 
 test("SQL Server repository parameterizes campaign automation lifecycle", async () => {

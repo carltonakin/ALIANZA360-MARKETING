@@ -1,12 +1,6 @@
-import { isSocialConfigAdmin } from "../_config";
 import { proxySocialRequest } from "../_proxy";
 
-function forbidden() {
-  return Response.json({ ok: false, message: "Only the site owner can run CRM integration actions." }, { status: 403 });
-}
-
 export async function GET(request: Request) {
-  if (!isSocialConfigAdmin(request)) return forbidden();
   const source = new URL(request.url);
   const query = new URLSearchParams();
   if (source.searchParams.get("campaignId")) query.set("campaignId", source.searchParams.get("campaignId")!);
@@ -15,7 +9,6 @@ export async function GET(request: Request) {
 }
 
 export async function POST(request: Request) {
-  if (!isSocialConfigAdmin(request)) return forbidden();
   let body: Record<string, unknown>;
   try {
     body = await request.json() as Record<string, unknown>;

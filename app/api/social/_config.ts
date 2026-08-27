@@ -1,6 +1,5 @@
 type RuntimeEnv = NodeJS.ProcessEnv & {
   NODE_ENV?: string;
-  SOCIAL_LISTENER_ADMIN_EMAIL?: string;
   SOCIAL_LISTENER_SERVICE_URL?: string;
   SOCIAL_LISTENER_SERVICE_TOKEN?: string;
 };
@@ -27,13 +26,7 @@ function permittedServiceUrl(value: string, nodeEnvironment?: string) {
 }
 
 export function isSocialConfigAdmin(request: Request) {
-  const expected = process.env.SOCIAL_LISTENER_ADMIN_EMAIL?.trim().toLowerCase();
-  const actual = request.headers
-    .get("oai-authenticated-user-email")
-    ?.trim()
-    .toLowerCase();
-
-  return !expected || Boolean(actual && actual === expected);
+  return request.headers.get("x-crm-user-role") === "ADMIN";
 }
 
 export async function resolveSocialListenerConfig(): Promise<ResolvedSocialConfig | null> {
