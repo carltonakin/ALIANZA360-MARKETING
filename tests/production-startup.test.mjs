@@ -1,6 +1,11 @@
 import assert from "node:assert/strict";
+import { createServer } from "node:net";
+import { readFile } from "node:fs/promises";
 import test from "node:test";
+import { assertPortAvailable } from "../scripts/start-local.mjs";
 import { resolveProductionTopology } from "../scripts/start-production.mjs";
+
+const packageUrl = new URL("../package.json", import.meta.url);
 
 const databaseEnv = {
   DB_SERVER: "sql.example",
@@ -92,4 +97,29 @@ test("internal production requires server-side Cloudinary credentials", () => {
     () => resolveProductionTopology({ ...databaseEnv, CLOUDINARY_API_SECRET: "<cloudinary-api-secret>", SERVICE_AUTH_TOKEN: "test-service-token" }),
     /CLOUDINARY_API_SECRET/,
   );
+});
+
+test("the normal development command starts the complete SQL-backed local stack", async () => {
+  const packageJson = JSON.parse(await readFile(packageUrl, "utf8"));
+  assert.equal(packageJson.scripts.dev, "node scripts/start-local.mjs");
+  assert.equal(packageJson.scripts["dev:local"], "node scripts/start-local.mjs");
+  assert.equal(packageJson.scripts["dev:next"], "next dev");
+});
+
+test("local startup rejects a stale occupied port before spawning either server", async () => {
+  const server = createServer();
+  await new Promise((resolve, reject) => {
+    server.once("error", reject);
+    server.listen(0, "127.0.0.1", resolve);
+  });
+  try {
+    const address = server.address();
+    assert.equal(typeof address, "object");
+    await assert.rejects(
+      () => assertPortAvailable(address.port, "LOCAL_APP_PORT"),
+      /LOCAL_APP_PORT \d+ is already in use[\s\S]*npm run dev again/,
+    );
+  } finally {
+    await new Promise((resolve) => server.close(resolve));
+  }
 });

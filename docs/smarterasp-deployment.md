@@ -103,6 +103,26 @@ starts. Apply migration 011 before starting the new build; otherwise the
 authentication bootstrap correctly fails rather than running without login
 protection.
 
+## Authentication route ownership and environments
+
+Next.js App Router owns the single public login endpoint at
+`app/api/auth/login/route.ts` and exports its `POST` handler. It delegates to
+the existing Express listener at `/auth/login`; Express does not register a
+competing public `/api/auth/login` route. Browser code uses only the relative
+`/api/auth/login` URL, so the same code runs on localhost and the deployed
+hostname.
+
+Local development reads the ignored `.env` and uses its configured MSSQL
+database through `npm run dev`. SmarterASP uses the control-panel `DB_*` values.
+To share accounts between localhost and production, configure both environments
+for the same intended MSSQL database; otherwise users created in one database
+will not appear in the other. Never change either database target silently.
+
+The session cookie is HttpOnly, SameSite=Lax, and scoped to `/`. Development
+uses `Secure=false` for plain HTTP localhost. Production uses `Secure=true` and
+must be served over HTTPS. No session token or password hash is exposed to the
+browser.
+
 ## Optional separate Social Listener deployment
 
 To keep the listener as a second Node.js application, set these dashboard
@@ -146,6 +166,35 @@ Open `http://127.0.0.1:43131/login` and require HTTP 200. Confirm unauthenticate
 requests to `/api/data` return 401, sign in, and then test `/api/data` and
 `/api/social/status`; startup logs must report the MSSQL data source and a
 healthy production MSSQL connection.
+
+Before publishing, also confirm:
+
+- Migration 011 and its auth stored procedures exist in the target MSSQL
+  database, and intended users have a non-plaintext `PasswordHash`, role, and
+  active state.
+- SmarterASP has `NODE_ENV=production`, the correct `DB_*` values,
+  `SERVICE_AUTH_TOKEN`, and the remaining required server-only variables.
+- `SOCIAL_LISTENER_SERVICE_URL` is empty for single-app mode, or is the intended
+  external HTTPS listener with a matching `SOCIAL_LISTENER_SERVICE_TOKEN`.
+- `npm run build` lists `/api/auth/login`, and a production-mode local POST to
+  that route returns 401 for invalid credentials rather than 404.
+- `.env` and all password/session/provider secrets remain untracked.
+
+Publish the latest `main` commit with `npm ci`, `npm run build`, and `npm start`,
+then restart or recycle the Node application so new routes and environment
+values are loaded. Do not rewrite the browser's relative login URL.
+
+After publishing, verify over the deployed HTTPS origin:
+
+1. `/login` loads and `POST /api/auth/login` returns 401—not 404—for invalid
+   credentials.
+2. A valid ADMIN login sets a Secure, HttpOnly, SameSite=Lax cookie and can open
+   User Management and Settings after a refresh.
+3. A valid BASIC login succeeds but receives 403 for ADMIN-only APIs and cannot
+   open User Management or Settings.
+4. Logout expires the cookie and protected endpoints return 401 afterward.
+5. `LastLoginAt` changes for the signed-in user, no duplicate user is created,
+   and the request used the intended production `dbo.AppUsers` table.
 
 ## Troubleshooting
 

@@ -55,18 +55,25 @@ User Management.
 Start the complete SQL-backed application with one command:
 
 ```powershell
-npm run dev:local
+npm run dev
 ```
 
 The launcher reads `.env`, starts the Social Listener, waits until its real SQL
 health check succeeds, and then starts Next.js. Open
 `http://localhost:3000/`. `LOCAL_APP_PORT` and `SOCIAL_LISTENER_PORT` can change
-the two local ports. Press Ctrl+C to stop both processes.
+the two local ports. `npm run dev:local` is an equivalent explicit alias. Press
+Ctrl+C to stop both processes.
+
+The launcher refuses to start if either port is already occupied. If an older
+local CRM process is still running, stop it and rerun `npm run dev` so newly
+added App Router handlers such as `POST /api/auth/login` are loaded. The browser
+always calls the relative `/api/auth/login` URL; Next.js owns that public route
+and proxies it to the private listener's `/auth/login` service route.
 
 To run the dashboard or listener independently:
 
 ```powershell
-npm run dev
+npm run dev:next
 npm run start:social-listener
 ```
 
@@ -172,8 +179,9 @@ state in SQL Server.
 
 ## Commands
 
-- `npm run dev:local` — start the local listener and Next.js dashboard
-- `npm run dev` — start only the Next.js development server
+- `npm run dev` — start the local listener and Next.js dashboard
+- `npm run dev:local` — explicit alias for the complete local stack
+- `npm run dev:next` — start only the Next.js development server
 - `npm run build` — create the production Next.js build
 - `npm start` — start the production SQL-backed listener and Next.js dashboard using `PORT`
 - `npm test` — build and run the complete regression suite

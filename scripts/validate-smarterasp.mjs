@@ -22,7 +22,9 @@ assert.match(
 );
 
 for (const [name, command] of Object.entries({
-  dev: "next dev",
+  dev: "node scripts/start-local.mjs",
+  "dev:local": "node scripts/start-local.mjs",
+  "dev:next": "next dev",
   build: "next build",
   start: "node --env-file-if-exists=.env scripts/start-production.mjs",
   "start:smarterasp": "node --env-file-if-exists=.env scripts/start-production.mjs",

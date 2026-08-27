@@ -308,6 +308,8 @@ test("Next.js auth boundary uses HttpOnly cookies, returns 401/403, and keeps bo
   assert.match(authServer, /httpOnly: true/);
   assert.match(authServer, /secure: process\.env\.NODE_ENV === "production"/);
   assert.match(loginRoute, /Response\.json\(\{ ok: true, user: body\.user \}/);
+  assert.match(loginPage, /fetch\("\/api\/auth\/login"/);
+  assert.doesNotMatch(loginPage, /https?:\/\/(?:localhost|carlitoh-001-site7)/i);
   assert.doesNotMatch(`${loginRoute}\n${loginPage}\n${dashboard}`, /Alianza#123|admin#12|PasswordHash/);
   assert.match(dashboard, /authUser\?\.role === "ADMIN"/);
   assert.match(dashboard, /User Management/);

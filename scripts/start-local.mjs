@@ -1,8 +1,9 @@
 import { spawn } from "node:child_process";
 import { readFile } from "node:fs/promises";
+import { createServer } from "node:net";
 import path from "node:path";
 import { parseEnv } from "node:util";
-import { fileURLToPath } from "node:url";
+import { fileURLToPath, pathToFileURL } from "node:url";
 
 const projectRoot = path.resolve(
   path.dirname(fileURLToPath(import.meta.url)),
@@ -39,6 +40,25 @@ function parsePort(value, name, fallback) {
     throw new Error(`${name} must be an integer between 1 and 65535.`);
   }
   return port;
+}
+
+export async function assertPortAvailable(port, name) {
+  await new Promise((resolve, reject) => {
+    const probe = createServer();
+    probe.unref();
+    probe.once("error", (error) => {
+      if (error?.code === "EADDRINUSE") {
+        reject(new Error(
+          `${name} ${port} is already in use. Stop the existing local CRM process so updated routes can load, then run npm run dev again.`,
+        ));
+        return;
+      }
+      reject(error);
+    });
+    probe.listen({ host: "127.0.0.1", port, exclusive: true }, () => {
+      probe.close(resolve);
+    });
+  });
 }
 
 function launch(name, args, env) {
@@ -147,6 +167,8 @@ async function main() {
   if (listenerPort === appPort) {
     throw new Error("SOCIAL_LISTENER_PORT and LOCAL_APP_PORT must be different.");
   }
+  await assertPortAvailable(listenerPort, "SOCIAL_LISTENER_PORT");
+  await assertPortAvailable(appPort, "LOCAL_APP_PORT");
 
   const listenerUrl = `http://127.0.0.1:${listenerPort}`;
   const listenerEnv = {
@@ -185,10 +207,14 @@ async function main() {
   );
 }
 
-process.once("SIGINT", () => shutdown(0));
-process.once("SIGTERM", () => shutdown(0));
-
-main().catch((error) => {
-  console.error(`Local startup failed: ${error.message}`);
-  shutdown(1);
-});
+const invokedPath = process.argv[1]
+  ? pathToFileURL(path.resolve(process.argv[1])).href
+  : "";
+if (import.meta.url === invokedPath) {
+  process.once("SIGINT", () => shutdown(0));
+  process.once("SIGTERM", () => shutdown(0));
+  main().catch((error) => {
+    console.error(`Local startup failed: ${error.message}`);
+    shutdown(1);
+  });
+}
