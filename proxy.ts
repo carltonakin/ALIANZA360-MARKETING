@@ -7,6 +7,7 @@ import {
   VERIFIED_USERNAME_HEADER,
   type AuthUser,
 } from "./app/auth/shared";
+import { safeAuthReturnTo } from "./app/auth/return-to.mjs";
 
 const PUBLIC_API_PATHS = new Set([
   "/api/auth/login",
@@ -92,7 +93,10 @@ export async function proxy(request: NextRequest) {
   if (isPublicPath(pathname)) {
     if (pathname === "/login" && sessionToken) {
       const { user } = await validateSession(sessionToken);
-      if (user) return NextResponse.redirect(new URL("/dashboard", request.url));
+      if (user) {
+        const returnTo = safeAuthReturnTo(request.nextUrl.searchParams.get("returnTo"));
+        return NextResponse.redirect(new URL(returnTo, request.url));
+      }
     }
     return NextResponse.next();
   }

@@ -2,6 +2,7 @@
 
 import { type FormEvent, useState } from "react";
 import { useRouter } from "next/navigation";
+import { safeAuthReturnTo } from "../auth/return-to.mjs";
 
 export default function LoginPage() {
   const router = useRouter();
@@ -14,6 +15,7 @@ export default function LoginPage() {
     setPending(true);
     setError("");
     const form = new FormData(event.currentTarget);
+    const returnTo = safeAuthReturnTo(new URLSearchParams(window.location.search).get("returnTo"));
     try {
       const response = await fetch("/api/auth/login", {
         method: "POST",
@@ -25,7 +27,7 @@ export default function LoginPage() {
       });
       const body = await response.json().catch(() => ({})) as { error?: string };
       if (!response.ok) throw new Error(body.error || "Login could not be completed.");
-      router.replace("/dashboard");
+      router.replace(returnTo);
     } catch (loginError) {
       setError(loginError instanceof Error ? loginError.message : "Login could not be completed.");
       setPending(false);

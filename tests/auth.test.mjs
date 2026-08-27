@@ -7,6 +7,7 @@ import {
   hashPassword,
   verifyPassword,
 } from "../social/auth.mjs";
+import { safeAuthReturnTo } from "../app/auth/return-to.mjs";
 import { InMemorySocialRepository } from "../social/core.mjs";
 import { createSocialListenerApp } from "../social/server.mjs";
 
@@ -115,6 +116,18 @@ test("scrypt password hashes are salted, adaptive, and verify without plaintext 
   assert.equal(await verifyPassword("Strong#Pass123", first), true);
   assert.equal(await verifyPassword("Wrong#Pass123", first), false);
   assert.equal(await verifyPassword("Strong#Pass123", "malformed"), false);
+});
+
+test("login return paths allow only safe internal application locations", () => {
+  assert.equal(safeAuthReturnTo(undefined), "/");
+  assert.equal(safeAuthReturnTo(""), "/");
+  assert.equal(safeAuthReturnTo("/"), "/");
+  assert.equal(safeAuthReturnTo("/dashboard?view=Campaigns#active"), "/dashboard?view=Campaigns#active");
+  assert.equal(safeAuthReturnTo("/login?returnTo=%2Fdashboard"), "/");
+  assert.equal(safeAuthReturnTo("/api/auth/login"), "/");
+  assert.equal(safeAuthReturnTo("https://example.com"), "/");
+  assert.equal(safeAuthReturnTo("//example.com"), "/");
+  assert.equal(safeAuthReturnTo("/\\example.com"), "/");
 });
 
 test("default admin bootstrap is idempotent and the required initial login creates a revocable session", async () => {
@@ -305,10 +318,15 @@ test("Next.js auth boundary uses HttpOnly cookies, returns 401/403, and keeps bo
   assert.match(proxy, /status: 403/);
   assert.match(proxy, /\/api\/admin\//);
   assert.match(proxy, /\/api\/social\/config/);
+  assert.match(proxy, /pathname === "\/login"/);
+  assert.match(proxy, /_next\/static/);
+  assert.match(proxy, /safeAuthReturnTo/);
   assert.match(authServer, /httpOnly: true/);
   assert.match(authServer, /secure: process\.env\.NODE_ENV === "production"/);
   assert.match(loginRoute, /Response\.json\(\{ ok: true, user: body\.user \}/);
   assert.match(loginPage, /fetch\("\/api\/auth\/login"/);
+  assert.match(loginPage, /URLSearchParams\(window\.location\.search\)/);
+  assert.match(loginPage, /router\.replace\(returnTo\)/);
   assert.doesNotMatch(loginPage, /https?:\/\/(?:localhost|carlitoh-001-site7)/i);
   assert.doesNotMatch(`${loginRoute}\n${loginPage}\n${dashboard}`, /Alianza#123|admin#12|PasswordHash/);
   assert.match(dashboard, /authUser\?\.role === "ADMIN"/);
