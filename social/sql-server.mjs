@@ -1058,6 +1058,10 @@ export class SqlServerRepository {
     request.input("Instagram", this.sql.NVarChar(500), input.instagram);
     request.input("X", this.sql.NVarChar(500), input.x);
     request.input("Source", this.sql.NVarChar(100), input.source);
+    request.input("LastIntent", this.sql.NVarChar(64), input.lastIntent);
+    request.input("CrmNotes", this.sql.NVarChar(this.sql.MAX), input.crmNotes);
+    request.input("LastIntentProvided", this.sql.Bit, input.lastIntentProvided ? 1 : 0);
+    request.input("CrmNotesProvided", this.sql.Bit, input.crmNotesProvided ? 1 : 0);
     request.input("EstimatedValue", this.sql.Decimal(19, 4), input.value);
     return request;
   }

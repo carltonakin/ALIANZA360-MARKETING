@@ -29,11 +29,17 @@ type Lead = {
   leadScore?: number;
   leadTemperature?: string;
   intent?: string;
+  crmNotes?: string;
   qualification?: Record<string, unknown>;
   company?: string;
   productServiceInterest?: string;
   assignedSalesperson?: string;
   lastContactAt?: string | null;
+};
+
+type LeadInput = Omit<Lead, "id" | "status" | "createdAt" | "intent" | "crmNotes"> & {
+  lastIntent: string;
+  crmnotes: string;
 };
 
 type Campaign = {
@@ -781,7 +787,7 @@ export default function Home() {
     }
   };
 
-  const saveLead = async (lead: Omit<Lead, "id" | "status" | "createdAt">) => {
+  const saveLead = async (lead: LeadInput) => {
     setBusy(true);
     try {
       const isSocialLead = typeof editingLead?.id === "string" && editingLead.id.startsWith("social:");
@@ -1311,11 +1317,11 @@ function Leads({
       </div>
       <article className="panel data-panel">
         <div className="data-table lead-cols table-head">
-          <span>CONTACT</span>
-          <span>SOURCE</span>
-          <span>PHONE</span>
-          <span>VALUE</span>
-          <span>STAGE</span>
+          <span>Contact</span>
+          <span>Source</span>
+          <span>Last Intent</span>
+          <span>AI Response</span>
+          <span>Stage</span>
         </div>
         {shown.map((l) => (
           <div className="data-table lead-cols" key={l.id}>
@@ -1330,8 +1336,8 @@ function Leads({
               {l.source}
               {typeof l.leadScore === "number" && <small>{l.leadTemperature || "COLD"} · {l.leadScore} pts</small>}
             </span>
-            <span>{l.phone || "—"}</span>
-            <strong>${l.value.toLocaleString()}</strong>
+            <span className="lead-intent-cell">{(l.intent || "—").replaceAll("_", " ")}</span>
+            <span className="lead-ai-response-cell" title={l.crmNotes || ""}>{l.crmNotes || "—"}</span>
             <span className="lead-actions">
               <select
                 value={l.status}
@@ -2602,7 +2608,7 @@ function LeadForm({
   busy,
 }: {
   lead: Lead | null;
-  save: (lead: Omit<Lead, "id" | "status" | "createdAt">) => Promise<void>;
+  save: (lead: LeadInput) => Promise<void>;
   busy: boolean;
 }) {
   const [values, setValues] = useState({
@@ -2614,6 +2620,8 @@ function LeadForm({
     x: lead?.x || "",
     source: lead?.source || "Manual",
     value: String(lead?.value || ""),
+    lastIntent: lead?.intent || "",
+    crmnotes: lead?.crmNotes || "",
   });
   const update = (field: keyof typeof values) => (value: string) => {
     setValues((current) => ({ ...current, [field]: value }));
@@ -2644,6 +2652,7 @@ function LeadForm({
         <Field label="Instagram" name="instagram" placeholder="@username or profile URL" value={values.instagram} onValueChange={update("instagram")} />
         <Field label="X" name="x" placeholder="@username or profile URL" value={values.x} onValueChange={update("x")} />
         <Field label="Source" name="source" placeholder="Instagram" value={values.source} onValueChange={update("source")} />
+        <Field label="Last Intent" name="lastIntent" placeholder="PURCHASE_INTENT" value={values.lastIntent} onValueChange={update("lastIntent")} />
         <Field
           label="Estimated value"
           name="value"
@@ -2652,6 +2661,16 @@ function LeadForm({
           value={values.value}
           onValueChange={update("value")}
         />
+        <label className="lead-ai-response-field">
+          AI Response
+          <textarea
+            name="crmnotes"
+            placeholder="AI-generated response or CRM follow-up notes"
+            maxLength={10000}
+            value={values.crmnotes}
+            onChange={(event) => update("crmnotes")(event.target.value)}
+          />
+        </label>
       </div>
       <button className="primary submit" disabled={busy}>
         {busy ? "Saving..." : lead ? "Update lead" : "Save lead"}

@@ -218,7 +218,7 @@ test("social lead status endpoint rejects malformed updates", async () => {
   assert.equal(invalidStatusResponse.status, 400);
 });
 
-test("manual lead create, update, reload, and clear persist every social field", async () => {
+test("manual lead create, update, and reload persist social and AI response fields", async () => {
   const { app } = await createApp();
   const createResponse = await app.handle(serviceRequest("/leads", {
     method: "POST",
@@ -232,6 +232,8 @@ test("manual lead create, update, reload, and clear persist every social field",
       x: "@editable_x",
       source: "Manual",
       value: 1750,
+      lastIntent: "PURCHASE_INTENT",
+      crmnotes: "Share the pricing guide and offer a discovery call.",
     }),
   }));
   assert.equal(createResponse.status, 201);
@@ -239,6 +241,29 @@ test("manual lead create, update, reload, and clear persist every social field",
   assert.equal(created.facebook, "facebook.com/editable");
   assert.equal(created.instagram, "@editable");
   assert.equal(created.x, "@editable_x");
+  assert.equal(created.intent, "PURCHASE_INTENT");
+  assert.equal(created.crmNotes, "Share the pricing guide and offer a discovery call.");
+
+  const compatibleUpdateResponse = await app.handle(serviceRequest("/leads", {
+    method: "PUT",
+    headers: { "content-type": "application/json" },
+    body: JSON.stringify({
+      leadId: 1,
+      name: "Editable Lead",
+      email: "editable@example.com",
+      phone: "305-555-0199",
+      facebook: "facebook.com/editable",
+      instagram: "@editable",
+      x: "@editable_x",
+      source: "Manual",
+      value: 1800,
+    }),
+  }));
+  assert.equal(compatibleUpdateResponse.status, 200);
+  const compatibleReload = await app.handle(serviceRequest("/leads"));
+  const preserved = (await compatibleReload.json()).leads[0];
+  assert.equal(preserved.intent, "PURCHASE_INTENT");
+  assert.equal(preserved.crmNotes, "Share the pricing guide and offer a discovery call.");
 
   const updateResponse = await app.handle(serviceRequest("/leads", {
     method: "PUT",
@@ -253,6 +278,8 @@ test("manual lead create, update, reload, and clear persist every social field",
       x: "",
       source: "Instagram",
       value: 2000,
+      lastIntent: "READY_TO_BUY",
+      crmnotes: "Confirm the preferred meeting time.",
     }),
   }));
   assert.equal(updateResponse.status, 200);
@@ -264,6 +291,8 @@ test("manual lead create, update, reload, and clear persist every social field",
   assert.equal(reloaded.x, "");
   assert.equal(reloaded.phone, "");
   assert.equal(reloaded.value, 2000);
+  assert.equal(reloaded.intent, "READY_TO_BUY");
+  assert.equal(reloaded.crmNotes, "Confirm the preferred meeting time.");
 });
 
 test("lead and content delete operations complete through authenticated server endpoints",async()=>{

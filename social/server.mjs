@@ -343,6 +343,10 @@ function cleanLeadValue(value, maxLength) {
 }
 
 function normalizeLeadInput(body) {
+  const lastIntentProvided = Object.prototype.hasOwnProperty.call(body, "lastIntent") ||
+    Object.prototype.hasOwnProperty.call(body, "intent");
+  const crmNotesProvided = Object.prototype.hasOwnProperty.call(body, "crmnotes") ||
+    Object.prototype.hasOwnProperty.call(body, "crmNotes");
   const name = cleanLeadValue(
     body.name,
     255
@@ -409,6 +413,19 @@ function normalizeLeadInput(body) {
         body.source,
         100
       ) || "Manual",
+
+    lastIntent: cleanLeadValue(
+      body.lastIntent ?? body.intent,
+      64
+    ),
+
+    crmNotes: cleanLeadValue(
+      body.crmnotes ?? body.crmNotes,
+      10000
+    ),
+
+    lastIntentProvided,
+    crmNotesProvided,
 
     value,
   };

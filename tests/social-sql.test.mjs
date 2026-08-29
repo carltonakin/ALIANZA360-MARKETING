@@ -12,6 +12,7 @@ const campaignEditingMigrationUrl = new URL("../sql/007_campaign_post_types_medi
 const campaignVideoMigrationUrl = new URL("../sql/008_campaign_video_validation_metadata.sql", import.meta.url);
 const cloudinaryCampaignMediaMigrationUrl = new URL("../sql/010_cloudinary_campaign_media.sql", import.meta.url);
 const authenticationMigrationUrl = new URL("../sql/011_authentication_user_management.sql", import.meta.url);
+const leadAiResponseMigrationUrl = new URL("../sql/012_lead_intent_ai_response.sql", import.meta.url);
 
 class FakeRequest {
   constructor(executions, result = { recordset: [] }) {
@@ -259,6 +260,19 @@ test("authentication migration stores only hashes and enforces safe role/session
   assert.doesNotMatch(sql, /PlaintextPassword|Password NVARCHAR/i);
 });
 
+test("lead AI response migration reuses existing columns and preserves omitted values", async () => {
+  const sql = await readFile(leadAiResponseMigrationUrl, "utf8");
+  assert.match(sql, /CREATE OR ALTER PROCEDURE dbo\.SocialLead_Create/i);
+  assert.match(sql, /CREATE OR ALTER PROCEDURE dbo\.SocialLead_Update/i);
+  assert.match(sql, /CREATE OR ALTER PROCEDURE dbo\.SocialLead_GetRecent/i);
+  assert.match(sql, /@LastIntentProvided BIT = 0/i);
+  assert.match(sql, /@CrmNotesProvided BIT = 0/i);
+  assert.match(sql, /LastIntent = CASE WHEN @LastIntentProvided = 1/i);
+  assert.match(sql, /CrmNotes = CASE WHEN @CrmNotesProvided = 1/i);
+  assert.match(sql, /l\.LastIntent, l\.CrmNotes/i);
+  assert.doesNotMatch(sql, /ALTER TABLE|ADD LastIntent|ADD CrmNotes/i);
+});
+
 test("SQL integer normalization rounds finite media metadata and nulls invalid values", () => {
   assert.equal(toSqlInteger(891087.1719038817), 891087);
   assert.equal(toSqlInteger(891087), 891087);
@@ -472,6 +486,8 @@ test("SQL Server repository exposes and updates social leads through parameteriz
       SourceChannel: "x",
       Status: "Engaged",
       Value: 0,
+      LastIntent: "PURCHASE_INTENT",
+      CrmNotes: "Send pricing options.",
       CreatedAt: new Date("2026-08-16T12:00:00Z"),
     }],
   });
@@ -481,6 +497,8 @@ test("SQL Server repository exposes and updates social leads through parameteriz
   assert.equal(leads[0].facebook, "facebook.com/buyer7");
   assert.equal(leads[0].instagram, "@buyer7");
   assert.equal(leads[0].x, "@buyer7_x");
+  assert.equal(leads[0].intent, "PURCHASE_INTENT");
+  assert.equal(leads[0].crmNotes, "Send pricing options.");
   assert.equal(executions[0].procedure, "dbo.SocialLead_GetRecent");
   assert.equal(executions[0].parameters.get("Limit").value, 25);
 
@@ -515,6 +533,10 @@ test("SQL Server repository parameterizes create, update, and clearable social f
     x: null,
     source: "Instagram",
     value: 900,
+    lastIntent: "PURCHASE_INTENT",
+    crmNotes: "Send the pricing guide.",
+    lastIntentProvided: true,
+    crmNotesProvided: true,
   };
   await repository.createLead(input);
   await repository.updateLead(9, { ...input, instagram: null });
@@ -523,6 +545,10 @@ test("SQL Server repository parameterizes create, update, and clearable social f
   assert.equal(executions[0].parameters.get("Facebook").value, null);
   assert.equal(executions[0].parameters.get("Instagram").value, "@manual");
   assert.equal(executions[0].parameters.get("X").value, null);
+  assert.equal(executions[0].parameters.get("LastIntent").value, "PURCHASE_INTENT");
+  assert.equal(executions[0].parameters.get("CrmNotes").value, "Send the pricing guide.");
+  assert.equal(executions[0].parameters.get("LastIntentProvided").value, 1);
+  assert.equal(executions[0].parameters.get("CrmNotesProvided").value, 1);
   assert.equal(executions[1].procedure, "dbo.SocialLead_Update");
   assert.equal(executions[1].parameters.get("LeadId").value, 9);
   assert.equal(executions[1].parameters.get("Instagram").value, null);

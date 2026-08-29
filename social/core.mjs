@@ -843,6 +843,7 @@ export class InMemorySocialRepository {
       leadScore: Number(lead.leadScore || 0),
       leadTemperature: lead.leadTemperature || "COLD",
       intent: lead.lastIntent || "OTHER",
+      crmNotes: lead.crmNotes || "",
       qualification: lead.qualification || {},
       lastContactAt: lead.lastContactAt || lead.createdAt,
     }));
@@ -897,9 +898,14 @@ export class InMemorySocialRepository {
   async createLead(input) {
     const leadKey = input.email?.toLowerCase() || `manual:${this.leads.size + 1}`;
     const current = this.leads.get(leadKey);
+    const changes = structuredClone(input);
+    if (!input.lastIntentProvided) delete changes.lastIntent;
+    if (!input.crmNotesProvided) delete changes.crmNotes;
+    delete changes.lastIntentProvided;
+    delete changes.crmNotesProvided;
     const saved = {
       ...current,
-      ...structuredClone(input),
+      ...changes,
       id: current?.id || `social:${this.leads.size + 1}`,
       socialUsername: input.instagram || input.facebook || input.x || "",
       status: current?.status || "New",
@@ -913,9 +919,14 @@ export class InMemorySocialRepository {
     const entry = [...this.leads.entries()].find(([, lead]) => lead.id === `social:${leadId}`);
     if (!entry) return null;
     const [key, current] = entry;
+    const changes = structuredClone(input);
+    if (!input.lastIntentProvided) delete changes.lastIntent;
+    if (!input.crmNotesProvided) delete changes.crmNotes;
+    delete changes.lastIntentProvided;
+    delete changes.crmNotesProvided;
     const saved = {
       ...current,
-      ...structuredClone(input),
+      ...changes,
       socialUsername: input.instagram || input.facebook || input.x || "",
     };
     const nextKey = saved.email?.toLowerCase() || key;

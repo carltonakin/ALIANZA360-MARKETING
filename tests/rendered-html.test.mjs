@@ -114,6 +114,16 @@ test("dashboard exposes social listener configuration and live diagnostics", asy
   assert.match(page, /value=\{values\.facebook\}/i);
   assert.match(page, /value=\{values\.instagram\}/i);
   assert.match(page, /value=\{values\.x\}/i);
+  assert.match(page, /label="Last Intent" name="lastIntent"/i);
+  assert.match(page, /AI Response[\s\S]+?<textarea[\s\S]+?name="crmnotes"/i);
+  assert.match(page, /\{\(l\.intent \|\| "—"\)\.replaceAll\("_", " "\)\}/i);
+  assert.match(page, /\{l\.crmNotes \|\| "—"\}/i);
+  const leadHeader = page.match(/className="data-table lead-cols table-head">([\s\S]+?)<\/div>/i);
+  assert.ok(leadHeader, "The lead table header must remain inspectable.");
+  assert.deepEqual(
+    [...leadHeader[1].matchAll(/<span>([^<]+)<\/span>/g)].map((match) => match[1].trim()),
+    ["Contact", "Source", "Last Intent", "AI Response", "Stage"],
+  );
   assert.match(page, /Lead updated successfully/i);
   assert.match(page, /Save to SQL and schedule in Buffer/i);
   assert.match(page, /campaignSaveError/i);
