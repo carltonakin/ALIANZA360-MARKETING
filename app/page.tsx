@@ -28,6 +28,14 @@ type Lead = {
   createdAt: string;
   leadScore?: number;
   leadTemperature?: string;
+  scoreBand?: string;
+  intentScore?: number;
+  engagementScore?: number;
+  fitScore?: number;
+  recencyScore?: number;
+  sourceScore?: number;
+  scoreReason?: string;
+  lastScoredAt?: string | null;
   intent?: string;
   crmNotes?: string;
   qualification?: Record<string, unknown>;
@@ -35,6 +43,12 @@ type Lead = {
   productServiceInterest?: string;
   assignedSalesperson?: string;
   lastContactAt?: string | null;
+  lastInteractionAt?: string | null;
+  lastInteractionType?: string | null;
+  lastInteractionText?: string;
+  lastResponseAt?: string | null;
+  lastResponseType?: string | null;
+  lastResponseText?: string;
 };
 
 type LeadInput = Omit<Lead, "id" | "status" | "createdAt" | "intent" | "crmNotes"> & {
@@ -176,7 +190,19 @@ type ClientVideoMetadata = {
 type UnifiedLead = {
   lead: Lead;
   socialAccounts: Array<{ id: string; platform: string; platformUserId?: string; username: string; displayName: string; profileUrl?: string | null }>;
-  interactions: Array<{ id: string; platform: string; interactionType: string; message: string; occurredAt: string; intent: string; sentiment: string; sourceType: string }>;
+  interactions: Array<{
+    id: string;
+    platform: string;
+    externalInteractionId?: string | null;
+    interactionType: string;
+    direction: "INBOUND" | "OUTBOUND";
+    message: string;
+    occurredAt: string;
+    intent: string;
+    intentConfidence?: number | null;
+    sentiment: string;
+    sourceType: string;
+  }>;
   conversations: Array<{ id: string; platform: string; importantMessage: string; lastMessageAt: string; status: string }>;
   leadActivities: Array<{ id: string; type: string; summary: string; occurredAt: string }>;
   opportunities: unknown[];
@@ -1459,22 +1485,19 @@ function Campaigns({
 }
 
 function Lead360View({ data }: { data: UnifiedLead }) {
-  const timeline = [
-    ...data.interactions.map((item) => ({
-      id: item.id,
-      kind: `${item.platform} · ${item.interactionType.replaceAll("_", " ")}`,
-      summary: item.message || item.intent,
-      detail: `${item.intent.replaceAll("_", " ")} · ${item.sentiment} · ${item.sourceType}`,
-      occurredAt: item.occurredAt,
-    })),
-    ...data.leadActivities.map((item) => ({
-      id: item.id,
-      kind: item.type.replaceAll("_", " "),
-      summary: item.summary,
-      detail: "CRM activity",
-      occurredAt: item.occurredAt,
-    })),
-  ].sort((left, right) => String(right.occurredAt).localeCompare(String(left.occurredAt)));
+  const interactionHistory = data.interactions
+    .filter((item) => ["COMMENT", "REPLY", "DM", "DIRECT_MESSAGE", "STORY_REPLY"].includes(item.interactionType))
+    .sort((left, right) => String(right.occurredAt).localeCompare(String(left.occurredAt)));
+  const latestInteraction = interactionHistory[0];
+  const scoreComponents = [
+    ["Intent", data.lead.intentScore || 0, 35],
+    ["Engagement", data.lead.engagementScore || 0, 20],
+    ["Fit", data.lead.fitScore || 0, 15],
+    ["Recency", data.lead.recencyScore || 0, 15],
+    ["Source", data.lead.sourceScore || 0, 15],
+  ] as const;
+  const displayInteractionType = (value: string) =>
+    ["DIRECT_MESSAGE", "STORY_REPLY"].includes(value) ? "DM" : value.replaceAll("_", " ");
 
   return (
     <section className="lead-360">
@@ -1483,10 +1506,38 @@ function Lead360View({ data }: { data: UnifiedLead }) {
       <p>One CRM record across advertisements, organic engagement, messages, forms, opportunities and conversions.</p>
       <div className="lead-360-score">
         <strong>{data.lead.leadScore || 0}</strong>
-        <span>{data.lead.leadTemperature || "COLD"}<small>lead score</small></span>
+        <span>{data.lead.scoreBand || data.lead.leadTemperature || "COLD"}<small>score band</small></span>
         <span>{(data.lead.intent || "OTHER").replaceAll("_", " ")}<small>latest intent</small></span>
         <span>{data.lead.status}<small>CRM stage</small></span>
       </div>
+      <div className="lead-score-explanation">
+        <div className="lead-score-components">
+          {scoreComponents.map(([label, value, maximum]) => (
+            <span key={label}><b>{value}/{maximum}</b><small>{label}</small></span>
+          ))}
+        </div>
+        <p>{data.lead.scoreReason || "This lead has not yet been scored from social interaction history."}</p>
+      </div>
+      <article className="latest-lead-interaction">
+        <div>
+          <span className="insight-tag">LATEST COMMENT OR DM</span>
+          {latestInteraction ? (
+            <div className="interaction-labels">
+              <b>{displayInteractionType(latestInteraction.interactionType)}</b>
+              <b className={latestInteraction.direction.toLowerCase()}>{latestInteraction.direction}</b>
+              <b>{latestInteraction.platform}</b>
+            </div>
+          ) : null}
+        </div>
+        {latestInteraction ? (
+          <>
+            <p>{latestInteraction.message || latestInteraction.intent.replaceAll("_", " ")}</p>
+            <time>{formatSocialTime(latestInteraction.occurredAt)}</time>
+          </>
+        ) : (
+          <p>No comment or DM has been recorded for this lead.</p>
+        )}
+      </article>
       <div className="lead-360-grid">
         <article>
           <h3>Contact and qualification</h3>
@@ -1496,6 +1547,9 @@ function Lead360View({ data }: { data: UnifiedLead }) {
             <div><dt>Company</dt><dd>{data.lead.company || "—"}</dd></div>
             <div><dt>Interest</dt><dd>{data.lead.productServiceInterest || "—"}</dd></div>
             <div><dt>Owner</dt><dd>{data.lead.assignedSalesperson || "Unassigned"}</dd></div>
+            <div><dt>Source</dt><dd>{data.lead.source || "Manual"}</dd></div>
+            <div><dt>Platform</dt><dd>{latestInteraction?.platform || data.socialAccounts[0]?.platform || "—"}</dd></div>
+            <div><dt>Last interaction</dt><dd>{formatSocialTime(data.lead.lastInteractionAt || latestInteraction?.occurredAt || null)}</dd></div>
           </dl>
         </article>
         <article>
@@ -1516,15 +1570,23 @@ function Lead360View({ data }: { data: UnifiedLead }) {
         <span><b>{data.appointments.length}</b> appointments</span>
         <span><b>{data.conversionHistory.length}</b> conversions</span>
       </div>
-      <h3>Timeline</h3>
+      <h3>Comment and DM history</h3>
       <div className="lead-360-timeline">
-        {timeline.length ? timeline.map((item) => (
-          <div key={`${item.id}-${item.kind}`}>
+        {interactionHistory.length ? interactionHistory.map((item) => (
+          <div key={item.id}>
             <i />
-            <span><strong>{item.kind}</strong><small>{item.summary}</small><em>{item.detail}</em></span>
+            <span>
+              <strong className="interaction-history-heading">
+                <b>{displayInteractionType(item.interactionType)}</b>
+                <b className={item.direction.toLowerCase()}>{item.direction}</b>
+                <b>{item.platform}</b>
+              </strong>
+              <small>{item.message || item.intent}</small>
+              <em>{item.intent.replaceAll("_", " ")} · {item.sentiment} · {item.sourceType}</em>
+            </span>
             <time>{formatSocialTime(item.occurredAt)}</time>
           </div>
-        )) : <p>No timeline activity has been recorded yet.</p>}
+        )) : <p>No comment or DM history has been recorded yet.</p>}
       </div>
     </section>
   );

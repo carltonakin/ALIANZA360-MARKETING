@@ -190,9 +190,16 @@ test("lead pipeline creates once, updates an existing lead, and deduplicates an 
     text: "I also need pricing",
     timestamp: "2026-08-16T13:00:00Z",
   });
-  assert.deepEqual(first, { duplicate: false, leadCreated: true, leadUpdated: false });
-  assert.deepEqual(duplicate, { duplicate: true, leadCreated: false, leadUpdated: false });
-  assert.deepEqual(update, { duplicate: false, leadCreated: false, leadUpdated: true });
+  assert.equal(first.duplicate, false);
+  assert.equal(first.leadCreated, true);
+  assert.equal(first.interactionInserted, true);
+  assert.equal(duplicate.duplicate, true);
+  assert.equal(duplicate.interactionInserted, false);
+  assert.equal(update.duplicate, false);
+  assert.equal(update.leadCreated, false);
+  assert.equal(update.leadUpdated, true);
+  assert.equal(update.interactionInserted, true);
+  assert.ok(update.score >= first.score);
   assert.equal(repository.events.size, 2);
   assert.equal(repository.leads.size, 1);
 });

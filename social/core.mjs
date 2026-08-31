@@ -1,8 +1,8 @@
 import {
+  calculateHistoricalLeadScore,
   DEFAULT_SCORING_RULES,
   DEFAULT_TEMPERATURE_THRESHOLDS,
   evaluateSocialEvent,
-  temperatureForScore,
 } from "./intelligence.mjs";
 
 const CHANNEL_NAMES = Object.freeze({
@@ -293,6 +293,7 @@ class SocialChannelAdapter extends ISocialMediaProvider {
       socialUsername: event.username,
       sourceChannel: event.channel,
       campaignId: event.campaignId,
+      campaignPostId: event.campaignPostId || null,
       adId: event.adId,
       postId: event.postId,
       externalEventId: event.externalEventId,
@@ -688,20 +689,36 @@ export class InMemorySocialRepository {
     temperatureThresholds: this.temperatureThresholds,
   })) {
     const eventKey = `${event.channel}:${event.externalEventId}`;
-    if (this.events.has(eventKey)) {
-      return { duplicate: true, leadCreated: false, leadUpdated: false };
+    const interactionKey = `${event.channel}:${event.externalInteractionId || event.externalEventId}`;
+    if (this.events.has(eventKey) || this.interactions.has(interactionKey)) {
+      const existingInteraction = this.interactions.get(interactionKey);
+      const existingLead = existingInteraction?.leadId
+        ? [...this.leads.values()].find((item) => item.id === existingInteraction.leadId)
+        : null;
+      return {
+        duplicate: true,
+        leadCreated: false,
+        leadUpdated: false,
+        interactionInserted: false,
+        leadId: existingLead?.id || null,
+        score: existingLead?.leadScore ?? null,
+        band: existingLead?.scoreBand || existingLead?.leadTemperature || null,
+        qualified: Number(existingLead?.leadScore || 0) >= 60,
+      };
     }
     this.events.set(eventKey, structuredClone(event));
     let leadCreated = false;
     let leadUpdated = false;
     let savedLead = null;
+    let leadKey = null;
     if (lead) {
-      const accountKey = event.externalUserId ? `${event.channel}:${event.externalUserId}` : null;
+      const identity = event.externalUserId || (event.username ? `username:${event.username.toLowerCase()}` : null);
+      const accountKey = identity ? `${event.channel}:${identity}` : null;
       const linkedLeadId = accountKey ? this.socialAccounts.get(accountKey)?.leadId : null;
       const linkedEntry = linkedLeadId
         ? [...this.leads.entries()].find(([, item]) => item.id === linkedLeadId)
         : null;
-      const leadKey = linkedEntry?.[0] || lead.email?.toLowerCase() || lead.phone ||
+      leadKey = linkedEntry?.[0] || lead.email?.toLowerCase() || lead.phone ||
         `${event.channel}:${event.externalUserId || event.username}`;
       const socialFields = {
         facebook: event.channel === "facebook" ? event.username || "" : "",
@@ -713,14 +730,14 @@ export class InMemorySocialRepository {
         savedLead = {
           ...currentLead,
           ...structuredClone(lead),
+          email: lead.email || currentLead.email || null,
+          phone: lead.phone || currentLead.phone || null,
+          productServiceInterest: lead.productServiceInterest || currentLead.productServiceInterest || null,
+          budget: lead.budget ?? currentLead.budget ?? null,
+          purchaseTimeline: lead.purchaseTimeline || currentLead.purchaseTimeline || null,
           facebook: socialFields.facebook || currentLead.facebook || "",
           instagram: socialFields.instagram || currentLead.instagram || "",
           x: socialFields.x || currentLead.x || "",
-          leadScore: Number(currentLead.leadScore || 0) + Number(intelligence.scoreDelta || 0),
-          leadTemperature: temperatureForScore(
-            Number(currentLead.leadScore || 0) + Number(intelligence.scoreDelta || 0),
-            this.temperatureThresholds,
-          ),
           lastIntent: intelligence.intent,
           lastContactAt: event.occurredAt,
           qualification: { ...currentLead.qualification, ...intelligence.qualification },
@@ -735,8 +752,9 @@ export class InMemorySocialRepository {
           status: "New",
           value: 0,
           createdAt: lead.firstTouchAt,
-          leadScore: Number(intelligence.scoreDelta || 0),
-          leadTemperature: temperatureForScore(intelligence.scoreDelta, this.temperatureThresholds),
+          leadScore: 0,
+          leadTemperature: "COLD",
+          scoreBand: "COLD",
           lastIntent: intelligence.intent,
           firstContactAt: event.occurredAt,
           lastContactAt: event.occurredAt,
@@ -751,7 +769,7 @@ export class InMemorySocialRepository {
           id: currentAccount?.id || `account:${this.socialAccounts.size + 1}`,
           leadId: savedLead.id,
           platform: event.channel,
-          platformUserId: event.externalUserId,
+          platformUserId: identity,
           username: event.username,
           profileUrl: event.sourceUrl,
           displayName: event.displayName,
@@ -763,6 +781,7 @@ export class InMemorySocialRepository {
       id: `interaction:${this.interactions.size + 1}`,
       leadId: savedLead?.id || null,
       platform: event.channel,
+      externalInteractionId: event.externalInteractionId || event.externalEventId,
       platformUserId: event.externalUserId,
       platformPostId: event.postId,
       platformConversationId: event.conversationId,
@@ -771,17 +790,20 @@ export class InMemorySocialRepository {
       occurredAt: event.occurredAt,
       direction: event.direction || "INBOUND",
       intent: intelligence.intent,
+      intentConfidence: intelligence.intentConfidence ?? event.intentConfidence ?? null,
       sentiment: intelligence.sentiment,
       productService: intelligence.qualification?.productService || null,
       campaignId: event.campaignId,
+      campaignPostId: event.campaignPostId || null,
       campaignName: event.campaignName,
       advertisementId: event.adId,
       leadFormId: event.leadFormId,
       sourceType: intelligence.sourceType,
       responseStatus: "PENDING",
       sourceUrl: event.sourceUrl,
+      processedAt: new Date().toISOString(),
     };
-    this.interactions.set(eventKey, interaction);
+    this.interactions.set(interactionKey, interaction);
     if (event.conversationId) {
       const conversationKey = `${event.channel}:${event.conversationId}`;
       const currentConversation = this.conversations.get(conversationKey);
@@ -798,6 +820,34 @@ export class InMemorySocialRepository {
       });
     }
     if (savedLead) {
+      const history = [...this.interactions.values()].filter((item) => item.leadId === savedLead.id);
+      const scoring = calculateHistoricalLeadScore({ lead: savedLead, interactions: history });
+      const latestInbound = history
+        .filter((item) => String(item.direction || "INBOUND").toUpperCase() === "INBOUND")
+        .sort((left, right) => String(right.occurredAt).localeCompare(String(left.occurredAt)))[0];
+      const latestOutbound = history
+        .filter((item) => String(item.direction || "").toUpperCase() === "OUTBOUND")
+        .sort((left, right) => String(right.occurredAt).localeCompare(String(left.occurredAt)))[0];
+      savedLead = {
+        ...savedLead,
+        leadScore: scoring.score,
+        leadTemperature: scoring.band,
+        scoreBand: scoring.band,
+        intentScore: scoring.intentScore,
+        engagementScore: scoring.engagementScore,
+        fitScore: scoring.fitScore,
+        recencyScore: scoring.recencyScore,
+        sourceScore: scoring.sourceScore,
+        scoreReason: scoring.reason,
+        lastScoredAt: scoring.lastScoredAt,
+        lastInteractionAt: latestInbound?.occurredAt || savedLead.lastInteractionAt || null,
+        lastInteractionType: latestInbound?.interactionType || savedLead.lastInteractionType || null,
+        lastInteractionText: latestInbound?.message || savedLead.lastInteractionText || null,
+        lastResponseAt: latestOutbound?.occurredAt || savedLead.lastResponseAt || null,
+        lastResponseType: latestOutbound?.interactionType || savedLead.lastResponseType || null,
+        lastResponseText: latestOutbound?.message || savedLead.lastResponseText || null,
+      };
+      this.leads.set(leadKey, savedLead);
       this.leadActivities.push({
         id: `activity:${this.leadActivities.length + 1}`,
         leadId: savedLead.id,
@@ -815,7 +865,16 @@ export class InMemorySocialRepository {
       eventsProcessed: Number(current.eventsProcessed || 0) + 1,
       leadsGenerated: Number(current.leadsGenerated || 0) + (leadCreated ? 1 : 0),
     });
-    return { duplicate: false, leadCreated, leadUpdated };
+    return {
+      duplicate: false,
+      leadCreated,
+      leadUpdated,
+      interactionInserted: true,
+      leadId: savedLead?.id || null,
+      score: savedLead?.leadScore ?? null,
+      band: savedLead?.scoreBand || null,
+      qualified: Number(savedLead?.leadScore || 0) >= 60,
+    };
   }
 
   async saveMetrics(channel, values) {
@@ -842,10 +901,24 @@ export class InMemorySocialRepository {
       createdAt: lead.createdAt,
       leadScore: Number(lead.leadScore || 0),
       leadTemperature: lead.leadTemperature || "COLD",
+      scoreBand: lead.scoreBand || lead.leadTemperature || "COLD",
+      intentScore: Number(lead.intentScore || 0),
+      engagementScore: Number(lead.engagementScore || 0),
+      fitScore: Number(lead.fitScore || 0),
+      recencyScore: Number(lead.recencyScore || 0),
+      sourceScore: Number(lead.sourceScore || 0),
+      scoreReason: lead.scoreReason || "",
+      lastScoredAt: lead.lastScoredAt || null,
       intent: lead.lastIntent || "OTHER",
       crmNotes: lead.crmNotes || "",
       qualification: lead.qualification || {},
       lastContactAt: lead.lastContactAt || lead.createdAt,
+      lastInteractionAt: lead.lastInteractionAt || null,
+      lastInteractionType: lead.lastInteractionType || null,
+      lastInteractionText: lead.lastInteractionText || "",
+      lastResponseAt: lead.lastResponseAt || null,
+      lastResponseType: lead.lastResponseType || null,
+      lastResponseText: lead.lastResponseText || "",
     }));
   }
 
@@ -893,6 +966,29 @@ export class InMemorySocialRepository {
       conversionHistory: [],
       timeline,
     };
+  }
+
+  async rescoreLead(leadId, asOf = new Date()) {
+    const id = `social:${Number(leadId)}`;
+    const entry = [...this.leads.entries()].find(([, item]) => item.id === id);
+    if (!entry) return null;
+    const [key, lead] = entry;
+    const interactions = [...this.interactions.values()].filter((item) => item.leadId === id);
+    const scoring = calculateHistoricalLeadScore({ lead, interactions, asOf });
+    this.leads.set(key, {
+      ...lead,
+      leadScore: scoring.score,
+      leadTemperature: scoring.band,
+      scoreBand: scoring.band,
+      intentScore: scoring.intentScore,
+      engagementScore: scoring.engagementScore,
+      fitScore: scoring.fitScore,
+      recencyScore: scoring.recencyScore,
+      sourceScore: scoring.sourceScore,
+      scoreReason: scoring.reason,
+      lastScoredAt: scoring.lastScoredAt,
+    });
+    return { leadId: id, ...scoring };
   }
 
   async createLead(input) {
@@ -1560,7 +1656,7 @@ export class SocialListener {
     return this.processNormalizedEvent(event);
   }
 
-  async processNormalizedEvent(event) {
+  async processNormalizedEvent(event, { ensureLead = false } = {}) {
     const adapter = this.adapters[event?.channel];
     if (!adapter) throw new MalformedPayloadError(`Unsupported channel: ${event?.channel || "unknown"}.`);
     const scoring = typeof this.repository.getScoringConfiguration === "function"
@@ -1570,7 +1666,25 @@ export class SocialListener {
       scoringRules: scoring.rules,
       temperatureThresholds: scoring.thresholds,
     });
-    const lead = adapter.extractLead(event, intelligence);
+    const lead = adapter.extractLead(event, intelligence) || (ensureLead ? {
+      name: event.displayName || event.username || `${CHANNEL_NAMES[event.channel]} prospect`,
+      email: event.email,
+      phone: event.phone,
+      socialUsername: event.username,
+      sourceChannel: event.channel,
+      campaignId: event.campaignId,
+      adId: event.adId,
+      postId: event.postId,
+      externalEventId: event.externalEventId,
+      externalUserId: event.externalUserId,
+      intent: intelligence.intent,
+      qualification: intelligence.qualification,
+      productServiceInterest: intelligence.qualification.productService,
+      budget: intelligence.qualification.budget,
+      purchaseTimeline: intelligence.qualification.purchaseTimeline,
+      firstTouchAt: event.occurredAt,
+      lastInteractionAt: event.occurredAt,
+    } : null);
     return this.repository.processEvent(event, lead, intelligence);
   }
 

@@ -13,6 +13,7 @@ const campaignVideoMigrationUrl = new URL("../sql/008_campaign_video_validation_
 const cloudinaryCampaignMediaMigrationUrl = new URL("../sql/010_cloudinary_campaign_media.sql", import.meta.url);
 const authenticationMigrationUrl = new URL("../sql/011_authentication_user_management.sql", import.meta.url);
 const leadAiResponseMigrationUrl = new URL("../sql/012_lead_intent_ai_response.sql", import.meta.url);
+const leadHistoryMigrationUrl = new URL("../sql/013_lead_scoring_interaction_history.sql", import.meta.url);
 
 class FakeRequest {
   constructor(executions, result = { recordset: [] }) {
@@ -273,6 +274,25 @@ test("lead AI response migration reuses existing columns and preserves omitted v
   assert.doesNotMatch(sql, /ALTER TABLE|ADD LastIntent|ADD CrmNotes/i);
 });
 
+test("lead history migration adds explainable scoring, identity reuse, and interaction uniqueness", async () => {
+  const sql = await readFile(leadHistoryMigrationUrl, "utf8");
+  for (const column of [
+    "ScoreBand", "IntentScore", "EngagementScore", "FitScore", "RecencyScore", "SourceScore",
+    "ScoreReason", "LastScoredAt", "LastInteractionAt", "LastInteractionType", "LastInteractionText",
+    "LastResponseAt", "LastResponseType", "LastResponseText",
+  ]) assert.match(sql, new RegExp(`COL_LENGTH\\(N'dbo\\.Leads', N'${column}'\\)`, "i"));
+  for (const column of ["ExternalInteractionId", "IntentConfidence", "CampaignPostId", "ProcessedAt"]) {
+    assert.match(sql, new RegExp(`COL_LENGTH\\(N'dbo\\.SocialInteractions', N'${column}'\\)`, "i"));
+  }
+  assert.match(sql, /CREATE UNIQUE INDEX UX_SocialInteractions_Platform_ExternalInteraction[\s\S]+SocialPlatformId, ExternalInteractionId/i);
+  assert.match(sql, /PROCEDURE dbo\.LeadScore_Recalculate/i);
+  assert.match(sql, /InteractionCount[\s\S]+RecencyWeight/i);
+  assert.match(sql, /username:[\s\S]+LOWER/i);
+  assert.match(sql, /InteractionInserted/i);
+  assert.match(sql, /LeadScore >= 60/i);
+  assert.doesNotMatch(sql, /DROP TABLE|TRUNCATE TABLE/i);
+});
+
 test("SQL integer normalization rounds finite media metadata and nulls invalid values", () => {
   assert.equal(toSqlInteger(891087.1719038817), 891087);
   assert.equal(toSqlInteger(891087), 891087);
@@ -289,7 +309,10 @@ test("SQL integer normalization rounds finite media metadata and nulls invalid v
 
 test("SQL Server repository parameterizes event and lead persistence", async () => {
   const { repository, executions } = fakeRepository({
-    recordset: [{ Duplicate: false, LeadCreated: true, LeadUpdated: false, LeadId: 42, SocialEventId: 99 }],
+    recordset: [{
+      Duplicate: false, LeadCreated: true, LeadUpdated: false, InteractionInserted: true,
+      LeadId: 42, SocialEventId: 99, LeadScore: 72, ScoreBand: "QUALIFIED", Qualified: true,
+    }],
   });
   const result = await repository.processEvent(event, lead);
   assert.deepEqual(result, {
@@ -298,6 +321,10 @@ test("SQL Server repository parameterizes event and lead persistence", async () 
     leadUpdated: false,
     leadId: 42,
     socialEventId: 99,
+    interactionInserted: true,
+    score: 72,
+    band: "QUALIFIED",
+    qualified: true,
   });
   assert.equal(executions.length, 1);
   assert.equal(executions[0].procedure, "dbo.SocialEvent_Process");
@@ -305,6 +332,8 @@ test("SQL Server repository parameterizes event and lead persistence", async () 
   assert.equal(executions[0].parameters.get("Qualified").value, 1);
   assert.equal(executions[0].parameters.get("RawPayload").value, JSON.stringify(event.rawPayload));
   assert.equal(executions[0].parameters.get("InteractionType").value, "POST_INTERACTION");
+  assert.equal(executions[0].parameters.get("IntentConfidence").value, null);
+  assert.equal(executions[0].parameters.get("CampaignPostId").value, null);
   assert.equal(executions[0].parameters.get("RawRetentionDays").value, 7);
 });
 

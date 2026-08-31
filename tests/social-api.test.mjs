@@ -201,6 +201,108 @@ test("valid signed webhooks create a lead once and duplicate delivery is idempot
   assert.equal(updatedLeads[0].status, "Hot");
 });
 
+test("normalized interaction API reuses leads, deduplicates history, scores it, and confirms outbound delivery", async () => {
+  const { app, repository } = await createApp();
+  const baseTime = Date.now();
+  const send = (body) => app.handle(serviceRequest("/lead-interactions", {
+    method: "POST",
+    headers: { "content-type": "application/json" },
+    body: JSON.stringify(body),
+  }));
+  const identity = {
+    platform: "instagram",
+    externalUserId: "history-user-1",
+    username: "history_buyer",
+    displayName: "History Buyer",
+    email: "history@example.test",
+    phone: "+1 305 555 0199",
+  };
+
+  const firstResponse = await send({
+    ...identity,
+    externalInteractionId: "history-comment-1",
+    interactionType: "COMMENT",
+    direction: "INBOUND",
+    messageText: "I am ready to buy. What does it cost?",
+    intent: "PURCHASE_INTENT",
+    intentConfidence: 1,
+    advertisementId: "ad-history-1",
+    createdAt: new Date(baseTime - 2_000).toISOString(),
+  });
+  const first = await firstResponse.json();
+  assert.equal(firstResponse.status, 201);
+  assert.equal(first.leadCreated, true);
+  assert.equal(first.interactionInserted, true);
+  assert.equal(first.band, "WARM");
+
+  const secondPayload = {
+    ...identity,
+    externalInteractionId: "history-dm-2",
+    interactionType: "DM",
+    direction: "INBOUND",
+    messageText: "Please send a quote today.",
+    classification: { intent: "QUOTE_REQUEST", confidence: 1 },
+    advertisementId: "ad-history-1",
+    campaignPostId: 7,
+    createdAt: new Date(baseTime - 1_000).toISOString(),
+  };
+  const secondResponse = await send(secondPayload);
+  const second = await secondResponse.json();
+  assert.equal(secondResponse.status, 201);
+  assert.equal(second.leadCreated, false);
+  assert.equal(second.leadUpdated, true);
+  assert.equal(second.interactionInserted, true);
+  assert.equal(second.qualified, true);
+  assert.equal(second.band, "QUALIFIED");
+  assert.ok(second.score > first.score);
+  assert.equal(repository.leads.size, 1);
+
+  const duplicateResponse = await send(secondPayload);
+  const duplicate = await duplicateResponse.json();
+  assert.equal(duplicateResponse.status, 200);
+  assert.equal(duplicate.duplicate, true);
+  assert.equal(duplicate.interactionInserted, false);
+  assert.equal(repository.interactions.size, 2);
+
+  const unconfirmed = await send({
+    ...identity,
+    externalInteractionId: "history-outbound-3",
+    interactionType: "DM",
+    direction: "OUTBOUND",
+    messageText: "Here is your quote.",
+    createdAt: new Date(baseTime).toISOString(),
+  });
+  assert.equal(unconfirmed.status, 409);
+  assert.equal(repository.interactions.size, 2);
+
+  const confirmed = await send({
+    ...identity,
+    externalInteractionId: "history-outbound-3",
+    interactionType: "DM",
+    direction: "OUTBOUND",
+    messageText: "Here is your quote.",
+    deliveryConfirmed: true,
+    createdAt: new Date(baseTime).toISOString(),
+  });
+  assert.equal(confirmed.status, 201);
+  assert.equal((await confirmed.json()).interactionInserted, true);
+
+  const unifiedResponse = await app.handle(serviceRequest("/leads/1/unified"));
+  const unified = await unifiedResponse.json();
+  assert.equal(unified.interactions.length, 3);
+  assert.equal(unified.interactions[0].direction, "OUTBOUND");
+  assert.equal(unified.interactions[0].interactionType, "DM");
+  assert.equal(unified.interactions[1].campaignPostId, 7);
+  assert.equal(unified.lead.lastResponseText, "Here is your quote.");
+  assert.equal(unified.lead.lastInteractionText, "Please send a quote today.");
+
+  const rescoreResponse = await app.handle(serviceRequest("/leads/1/score", { method: "POST" }));
+  const rescored = await rescoreResponse.json();
+  assert.equal(rescoreResponse.status, 200);
+  assert.equal(rescored.score, second.score);
+  assert.equal(rescored.band, "QUALIFIED");
+});
+
 test("social lead status endpoint rejects malformed updates", async () => {
   const { app } = await createApp();
   const malformedResponse = await app.handle(serviceRequest("/leads/status", {

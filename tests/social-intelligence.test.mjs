@@ -2,6 +2,7 @@ import assert from "node:assert/strict";
 import test from "node:test";
 import { InMemorySocialRepository } from "../social/core.mjs";
 import {
+  calculateHistoricalLeadScore,
   DEFAULT_SCORING_RULES,
   evaluateSocialEvent,
   extractQualification,
@@ -42,6 +43,7 @@ test("intelligence classifies paid intent, scores it, and qualifies buying detai
   assert.equal(result.interactionType, "COMMENT");
   assert.equal(result.intent, "PRICE_REQUEST");
   assert.equal(result.sourceType, "PAID");
+  assert.equal(result.intentConfidence, null);
   assert.equal(result.shouldCreateLead, true);
   assert.equal(result.scoreDelta,
     DEFAULT_SCORING_RULES.COMMENT_ON_ADVERTISEMENT +
@@ -69,6 +71,37 @@ test("temperature thresholds and qualification extraction are deterministic", ()
   assert.equal(qualification.decisionMaker, true);
   assert.equal(qualification.budget, 12000);
   assert.equal(qualification.purchaseTimeline, "within 2 weeks");
+});
+
+test("historical scoring rewards repeat intent and falls as interactions age", () => {
+  const lead = { email: "buyer@example.test", phone: "+1 305 555 0100", qualification: {} };
+  const firstInteraction = {
+    interactionType: "COMMENT", direction: "INBOUND", intent: "PURCHASE_INTENT",
+    intentConfidence: 1, sourceType: "ORGANIC", occurredAt: "2030-01-01T12:00:00.000Z",
+  };
+  const first = calculateHistoricalLeadScore({
+    lead, interactions: [firstInteraction], asOf: "2030-01-01T13:00:00.000Z",
+  });
+  const repeated = calculateHistoricalLeadScore({
+    lead,
+    interactions: [firstInteraction, {
+      ...firstInteraction, interactionType: "DM", intent: "QUOTE_REQUEST", occurredAt: "2030-01-02T12:00:00.000Z",
+    }],
+    asOf: "2030-01-02T13:00:00.000Z",
+  });
+  const aged = calculateHistoricalLeadScore({
+    lead,
+    interactions: [firstInteraction, {
+      ...firstInteraction, interactionType: "DM", intent: "QUOTE_REQUEST", occurredAt: "2030-01-02T12:00:00.000Z",
+    }],
+    asOf: "2031-01-02T13:00:00.000Z",
+  });
+
+  assert.ok(repeated.score > first.score);
+  assert.equal(repeated.qualified, true);
+  assert.equal(repeated.band, "QUALIFIED");
+  assert.ok(aged.score < repeated.score);
+  assert.match(repeated.reason, /across 2 inbound interactions/i);
 });
 
 test("repository deduplicates a person across platforms while preserving both identities", async () => {

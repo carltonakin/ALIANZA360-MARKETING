@@ -22,6 +22,7 @@ import { CrmSocialOrchestrator } from "./crm-orchestrator.mjs";
 import {
   DEFAULT_SCORING_RULES,
   DEFAULT_TEMPERATURE_THRESHOLDS,
+  INTENT_CATEGORIES,
 } from "./intelligence.mjs";
 import { SqlServerRepository } from "./sql-server.mjs";
 import { createSproutAdapterFromEnv } from "./sprout.mjs";
@@ -428,6 +429,138 @@ function normalizeLeadInput(body) {
     crmNotesProvided,
 
     value,
+  };
+}
+
+const LEAD_INTERACTION_TYPES = new Set(["COMMENT", "DM"]);
+const LEAD_INTERACTION_DIRECTIONS = new Set(["INBOUND", "OUTBOUND"]);
+const INTENT_ALIASES = Object.freeze({
+  BOOKING: "APPOINTMENT_REQUEST",
+  PRICING: "PRICE_REQUEST",
+  PURCHASE: "PURCHASE_INTENT",
+  QUOTE: "QUOTE_REQUEST",
+  DEMO: "DEMO_REQUEST",
+  INFORMATION: "INFORMATION_REQUEST",
+});
+
+function normalizeLeadInteractionInput(body) {
+  const platformValue = cleanLeadValue(body.platform ?? body.channel, 32)?.toLowerCase();
+  const platform = platformValue === "twitter" ? "x" : platformValue;
+  if (!platform || !SOCIAL_CHANNELS.includes(platform)) {
+    const error = new Error("Platform must be facebook, instagram, or x.");
+    error.statusCode = 400;
+    throw error;
+  }
+
+  const externalInteractionId = cleanLeadValue(
+    body.externalInteractionId ?? body.externalEventId ?? body.interactionId,
+    255,
+  );
+  if (!externalInteractionId) {
+    const error = new Error("ExternalInteractionId is required.");
+    error.statusCode = 400;
+    throw error;
+  }
+
+  const externalUserId = cleanLeadValue(body.externalUserId ?? body.platformUserId, 255);
+  const username = cleanLeadValue(body.username, 255);
+  if (!externalUserId && !username) {
+    const error = new Error("ExternalUserId or Username is required.");
+    error.statusCode = 400;
+    throw error;
+  }
+
+  const rawType = String(body.interactionType || "").trim().toUpperCase().replaceAll("-", "_");
+  const interactionType = rawType === "DIRECT_MESSAGE" ? "DM" : rawType;
+  if (!LEAD_INTERACTION_TYPES.has(interactionType)) {
+    const error = new Error("InteractionType must be COMMENT or DM.");
+    error.statusCode = 400;
+    throw error;
+  }
+
+  const direction = String(body.direction || "INBOUND").trim().toUpperCase();
+  if (!LEAD_INTERACTION_DIRECTIONS.has(direction)) {
+    const error = new Error("Direction must be INBOUND or OUTBOUND.");
+    error.statusCode = 400;
+    throw error;
+  }
+  if (direction === "OUTBOUND" && body.deliveryConfirmed !== true) {
+    const error = new Error("Outbound interactions require successful delivery confirmation.");
+    error.statusCode = 409;
+    throw error;
+  }
+
+  const message = cleanLeadValue(body.messageText ?? body.message, 100_000);
+  if (!message) {
+    const error = new Error("MessageText is required.");
+    error.statusCode = 400;
+    throw error;
+  }
+
+  const occurred = body.createdAt ?? body.occurredAt;
+  const occurredAt = occurred ? new Date(occurred) : new Date();
+  if (Number.isNaN(occurredAt.getTime())) {
+    const error = new Error("CreatedAt must be a valid date and time.");
+    error.statusCode = 400;
+    throw error;
+  }
+
+  const classification = body.classification && typeof body.classification === "object"
+    ? body.classification
+    : {};
+  const rawIntent = String(body.intent ?? classification.intent ?? "").trim().toUpperCase().replaceAll(" ", "_");
+  const intent = INTENT_ALIASES[rawIntent] || rawIntent;
+  if (intent && !INTENT_CATEGORIES.includes(intent)) {
+    const error = new Error("Intent is not a supported CRM intent category.");
+    error.statusCode = 400;
+    throw error;
+  }
+  const confidenceValue = body.intentConfidence ?? classification.confidence;
+  const intentConfidence = confidenceValue === null || confidenceValue === undefined || confidenceValue === ""
+    ? null
+    : Number(confidenceValue);
+  if (intentConfidence !== null && (!Number.isFinite(intentConfidence) || intentConfidence < 0 || intentConfidence > 1)) {
+    const error = new Error("IntentConfidence must be between 0 and 1.");
+    error.statusCode = 400;
+    throw error;
+  }
+
+  const sourceTypeValue = String(body.sourceType || (body.advertisementId || body.adId || body.leadFormId ? "PAID" : "ORGANIC")).toUpperCase();
+  const sourceType = sourceTypeValue === "PAID" ? "PAID" : "ORGANIC";
+  const campaignPostValue = body.campaignPostId;
+  const campaignPostId = campaignPostValue === null || campaignPostValue === undefined || campaignPostValue === ""
+    ? null
+    : Number(campaignPostValue);
+  if (campaignPostId !== null && (!Number.isInteger(campaignPostId) || campaignPostId < 1)) {
+    const error = new Error("CampaignPostId must be a positive integer.");
+    error.statusCode = 400;
+    throw error;
+  }
+  return {
+    channel: platform,
+    externalEventId: externalInteractionId,
+    externalInteractionId,
+    eventType: interactionType === "DM" ? "dm" : "comment",
+    externalUserId,
+    username,
+    displayName: cleanLeadValue(body.displayName, 255),
+    email: cleanLeadValue(body.email, 320),
+    phone: cleanLeadValue(body.phone, 80),
+    message,
+    postId: cleanLeadValue(body.externalPostId ?? body.postId, 255),
+    campaignId: cleanLeadValue(body.campaignId, 255),
+    campaignPostId,
+    adId: cleanLeadValue(body.advertisementId ?? body.adId, 255),
+    leadFormId: cleanLeadValue(body.leadFormId, 255),
+    campaignName: cleanLeadValue(body.campaignName, 255),
+    conversationId: cleanLeadValue(body.conversationId, 255),
+    direction,
+    sourceUrl: cleanLeadValue(body.sourceUrl, 2048),
+    occurredAt: occurredAt.toISOString(),
+    intent: intent || null,
+    intentConfidence,
+    sourceType,
+    rawPayload: body.rawPayload && typeof body.rawPayload === "object" ? body.rawPayload : body,
   };
 }
 
@@ -3379,6 +3512,26 @@ export async function createSocialListenerApp({
       | LEADS
       |--------------------------------------------------------------------------
       */
+
+      if (
+        request.method === "POST" &&
+        url.pathname === "/lead-interactions"
+      ) {
+        const event = normalizeLeadInteractionInput(await readJson(request));
+        const result = await listener.processNormalizedEvent(event, { ensureLead: true });
+        return json({ ok: true, ...result }, result.interactionInserted ? 201 : 200);
+      }
+
+      const leadScorePath = url.pathname.match(/^\/leads\/(\d+)\/score$/);
+      if (request.method === "POST" && leadScorePath) {
+        if (typeof activeRepository.rescoreLead !== "function") {
+          return json({ error: "Lead scoring is unavailable." }, 503);
+        }
+        const scoring = await activeRepository.rescoreLead(Number(leadScorePath[1]));
+        return scoring
+          ? json({ ok: true, ...scoring })
+          : json({ error: "Social lead not found." }, 404);
+      }
 
       if (
         request.method ===

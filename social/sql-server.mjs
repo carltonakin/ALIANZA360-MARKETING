@@ -21,6 +21,14 @@ function numericId(value) {
   return Number.isInteger(id) && id > 0 ? id : null;
 }
 
+function scoreBand(value) {
+  const score = Math.max(0, Math.min(100, Number(value) || 0));
+  if (score >= 80) return "HOT";
+  if (score >= 60) return "QUALIFIED";
+  if (score >= 30) return "WARM";
+  return "COLD";
+}
+
 export function toSqlInteger(value) {
   if (value === null || value === undefined || (typeof value === "string" && value.trim() === "")) return null;
   let number;
@@ -58,6 +66,14 @@ function mapLead(row) {
     city: row.City || "",
     leadScore: Number(row.LeadScore || 0),
     leadTemperature: row.LeadTemperature || "COLD",
+    scoreBand: row.ScoreBand || scoreBand(row.LeadScore),
+    intentScore: Number(row.IntentScore || 0),
+    engagementScore: Number(row.EngagementScore || 0),
+    fitScore: Number(row.FitScore || 0),
+    recencyScore: Number(row.RecencyScore || 0),
+    sourceScore: Number(row.SourceScore || 0),
+    scoreReason: row.ScoreReason || "",
+    lastScoredAt: iso(row.LastScoredAt),
     intent: row.LastIntent || "OTHER",
     productServiceInterest: row.ProductServiceInterest || "",
     qualification: jsonValue(row.QualificationJson, {}),
@@ -71,6 +87,12 @@ function mapLead(row) {
     lostReason: row.LostReason || "",
     firstContactAt: iso(row.FirstContactAt),
     lastContactAt: iso(row.LastContactAt),
+    lastInteractionAt: iso(row.LastInteractionAt),
+    lastInteractionType: row.LastInteractionType || null,
+    lastInteractionText: row.LastInteractionText || "",
+    lastResponseAt: iso(row.LastResponseAt),
+    lastResponseType: row.LastResponseType || null,
+    lastResponseText: row.LastResponseText || "",
   };
 }
 
@@ -487,6 +509,8 @@ export class SqlServerRepository {
     request.input("Sentiment", this.sql.NVarChar(20), intelligence.sentiment || "NEUTRAL");
     request.input("QualificationJson", this.sql.NVarChar(this.sql.MAX), JSON.stringify(intelligence.qualification || {}));
     request.input("ScoreDelta", this.sql.Int, Number(intelligence.scoreDelta || 0));
+    request.input("IntentConfidence", this.sql.Decimal(5, 4), intelligence.intentConfidence ?? event.intentConfidence ?? null);
+    request.input("CampaignPostId", this.sql.BigInt, numericId(event.campaignPostId));
     request.input("SourceType", this.sql.NVarChar(16), intelligence.sourceType || "ORGANIC");
     request.input("RawRetentionDays", this.sql.Int, this.rawRetentionDays);
     const response = await request.execute("dbo.SocialEvent_Process");
@@ -497,6 +521,10 @@ export class SqlServerRepository {
       leadUpdated: Boolean(row.LeadUpdated),
       leadId: row.LeadId ?? null,
       socialEventId: row.SocialEventId ?? null,
+      interactionInserted: Boolean(row.InteractionInserted),
+      score: row.LeadScore === null || row.LeadScore === undefined ? null : Number(row.LeadScore),
+      band: row.ScoreBand || row.LeadTemperature || null,
+      qualified: Boolean(row.Qualified),
     };
   }
 
@@ -989,23 +1017,29 @@ export class SqlServerRepository {
     const interactions = (sets[2] || []).map((item) => ({
       id: `interaction:${item.SocialInteractionId}`,
       platform: item.Platform,
+      externalInteractionId: item.ExternalInteractionId || null,
       platformUserId: item.PlatformUserId || null,
-      platformPostId: item.PlatformPostId || null,
+      platformPostId: item.ExternalPostId || item.PlatformPostId || null,
       platformConversationId: item.PlatformConversationId || null,
       interactionType: item.InteractionType,
       message: item.MessageText || "",
       occurredAt: iso(item.OccurredAt),
       direction: item.Direction,
       intent: item.Intent,
+      intentConfidence: item.IntentConfidence === null || item.IntentConfidence === undefined
+        ? null
+        : Number(item.IntentConfidence),
       sentiment: item.Sentiment,
       productService: item.ProductService || "",
       campaignId: item.CampaignExternalId || null,
+      campaignPostId: item.CampaignPostId === null || item.CampaignPostId === undefined ? null : Number(item.CampaignPostId),
       campaignName: item.CampaignName || "",
       advertisementId: item.AdvertisementId || null,
       leadFormId: item.LeadFormId || null,
       sourceType: item.SourceType,
       responseStatus: item.ResponseStatus,
       qualification: jsonValue(item.QualificationJson, {}),
+      processedAt: iso(item.ProcessedAt),
     }));
     const activities = (sets[4] || []).map((item) => ({
       id: `activity:${item.LeadActivityId}`,
@@ -1082,6 +1116,29 @@ export class SqlServerRepository {
     request.input("Status", this.sql.NVarChar(50), status);
     const response = await request.execute("dbo.SocialLead_UpdateStatus");
     return response.recordset?.[0] || null;
+  }
+
+  async rescoreLead(leadId, asOf = new Date()) {
+    const request = this.request();
+    request.input("LeadId", this.sql.BigInt, Number(leadId));
+    request.input("ScoredAt", this.sql.DateTime2, new Date(asOf));
+    request.input("ReturnResult", this.sql.Bit, 1);
+    const response = await request.execute("dbo.LeadScore_Recalculate");
+    const row = response.recordset?.[0];
+    if (!row) return null;
+    return {
+      leadId: Number(row.LeadId),
+      score: Number(row.LeadScore || 0),
+      band: row.ScoreBand || scoreBand(row.LeadScore),
+      qualified: Boolean(row.Qualified),
+      intentScore: Number(row.IntentScore || 0),
+      engagementScore: Number(row.EngagementScore || 0),
+      fitScore: Number(row.FitScore || 0),
+      recencyScore: Number(row.RecencyScore || 0),
+      sourceScore: Number(row.SourceScore || 0),
+      reason: row.ScoreReason || "",
+      lastScoredAt: iso(row.LastScoredAt),
+    };
   }
 
   async deleteLead(leadId) {

@@ -91,10 +91,11 @@ test("server-renders Login and denies unauthenticated CRM/API access", async () 
 });
 
 test("dashboard exposes social listener configuration and live diagnostics", async () => {
-  const [page, layout, leadsRoute] = await Promise.all([
+  const [page, layout, leadsRoute, interactionsRoute] = await Promise.all([
     readFile(new URL("../app/page.tsx", import.meta.url), "utf8"),
     readFile(new URL("../app/layout.tsx", import.meta.url), "utf8"),
     readFile(new URL("../app/api/social/leads/route.ts", import.meta.url), "utf8"),
+    readFile(new URL("../app/api/social/interactions/route.ts", import.meta.url), "utf8"),
   ]);
 
   assert.match(page, /type SocialChannelConfig/i);
@@ -116,6 +117,10 @@ test("dashboard exposes social listener configuration and live diagnostics", asy
   assert.match(page, /value=\{values\.x\}/i);
   assert.match(page, /label="Last Intent" name="lastIntent"/i);
   assert.match(page, /AI Response[\s\S]+?<textarea[\s\S]+?name="crmnotes"/i);
+  assert.match(page, /LATEST COMMENT OR DM/i);
+  assert.match(page, /Comment and DM history/i);
+  assert.match(page, /scoreReason/i);
+  assert.match(page, /item\.direction\.toLowerCase\(\)/i);
   assert.match(page, /\{\(l\.intent \|\| "—"\)\.replaceAll\("_", " "\)\}/i);
   assert.match(page, /\{l\.crmNotes \|\| "—"\}/i);
   const leadHeader = page.match(/className="data-table lead-cols table-head">([\s\S]+?)<\/div>/i);
@@ -157,6 +162,7 @@ test("dashboard exposes social listener configuration and live diagnostics", asy
   assert.doesNotMatch(page, /name="(facebook|instagram|x)"[^>]*(readOnly|disabled)/i);
   assert.match(leadsRoute, /export async function PUT/i);
   assert.match(leadsRoute, /proxySocialRequest\(isStatusUpdate \? "\/leads\/status" : "\/leads"/i);
+  assert.match(interactionsRoute, /forwardJson\(request, "\/lead-interactions"\)/i);
   assert.match(layout, /Alianza CRM Marketing 360/i);
   assert.match(layout, /AI-powered marketing funnel, lead capture and social campaign intelligence/i);
 });
