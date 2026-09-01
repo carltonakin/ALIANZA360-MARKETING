@@ -14,6 +14,7 @@ const cloudinaryCampaignMediaMigrationUrl = new URL("../sql/010_cloudinary_campa
 const authenticationMigrationUrl = new URL("../sql/011_authentication_user_management.sql", import.meta.url);
 const leadAiResponseMigrationUrl = new URL("../sql/012_lead_intent_ai_response.sql", import.meta.url);
 const leadHistoryMigrationUrl = new URL("../sql/013_lead_scoring_interaction_history.sql", import.meta.url);
+const leadInteractionApiMigrationUrl = new URL("../sql/014_crm_lead_interaction_api.sql", import.meta.url);
 
 class FakeRequest {
   constructor(executions, result = { recordset: [] }) {
@@ -293,6 +294,22 @@ test("lead history migration adds explainable scoring, identity reuse, and inter
   assert.doesNotMatch(sql, /DROP TABLE|TRUNCATE TABLE/i);
 });
 
+test("CRM lead interaction API migration supports explicit leads, race-safe idempotency, and AI intent rescoring", async () => {
+  const sql = await readFile(leadInteractionApiMigrationUrl, "utf8");
+  assert.match(sql, /CREATE OR ALTER PROCEDURE dbo\.SocialEvent_Process/i);
+  assert.match(sql, /@RequestedLeadId BIGINT = NULL/i);
+  assert.match(sql, /SocialPlatformId = @SocialPlatformId AND si\.ExternalInteractionId = @ExternalEventId/i);
+  assert.match(sql, /WITH \(UPDLOCK, HOLDLOCK\)/i);
+  assert.match(sql, /@ErrorNumber IN \(2601, 2627\)/i);
+  assert.match(sql, /@SocialInteractionId InteractionId/i);
+  assert.match(sql, /l\.ScoreReason/i);
+  assert.match(sql, /CREATE OR ALTER PROCEDURE dbo\.LeadInteraction_UpdateIntent/i);
+  assert.match(sql, /SocialInteractionId = @InteractionId AND LeadId = @LeadId/i);
+  assert.match(sql, /JSON_MODIFY[\s\S]+aiClassification/i);
+  assert.match(sql, /EXEC dbo\.LeadScore_Recalculate/i);
+  assert.doesNotMatch(sql, /DROP TABLE|TRUNCATE TABLE/i);
+});
+
 test("SQL integer normalization rounds finite media metadata and nulls invalid values", () => {
   assert.equal(toSqlInteger(891087.1719038817), 891087);
   assert.equal(toSqlInteger(891087), 891087);
@@ -311,7 +328,8 @@ test("SQL Server repository parameterizes event and lead persistence", async () 
   const { repository, executions } = fakeRepository({
     recordset: [{
       Duplicate: false, LeadCreated: true, LeadUpdated: false, InteractionInserted: true,
-      LeadId: 42, SocialEventId: 99, LeadScore: 72, ScoreBand: "QUALIFIED", Qualified: true,
+      LeadId: 42, SocialEventId: 99, InteractionId: 101, LeadScore: 72,
+      ScoreBand: "QUALIFIED", ScoreReason: "Historical intent score.", Qualified: true,
     }],
   });
   const result = await repository.processEvent(event, lead);
@@ -321,10 +339,12 @@ test("SQL Server repository parameterizes event and lead persistence", async () 
     leadUpdated: false,
     leadId: 42,
     socialEventId: 99,
+    interactionId: 101,
     interactionInserted: true,
     score: 72,
     band: "QUALIFIED",
     qualified: true,
+    scoreReason: "Historical intent score.",
   });
   assert.equal(executions.length, 1);
   assert.equal(executions[0].procedure, "dbo.SocialEvent_Process");
@@ -335,6 +355,44 @@ test("SQL Server repository parameterizes event and lead persistence", async () 
   assert.equal(executions[0].parameters.get("IntentConfidence").value, null);
   assert.equal(executions[0].parameters.get("CampaignPostId").value, null);
   assert.equal(executions[0].parameters.get("RawRetentionDays").value, 7);
+  assert.equal(executions[0].parameters.get("RequestedLeadId").value, null);
+});
+
+test("SQL Server repository parameterizes AI classification and returns CRM-owned rescoring", async () => {
+  const { repository, executions } = fakeRepository({
+    recordset: [{
+      LeadId: 42,
+      InteractionId: 101,
+      Intent: "APPOINTMENT_REQUEST",
+      IntentConfidence: 0.96,
+      AIClassificationJson: JSON.stringify({ pricingIntent: true, purchaseIntent: true }),
+      LeadScore: 84,
+      ScoreBand: "HOT",
+      Qualified: true,
+      IntentScore: 30,
+      EngagementScore: 20,
+      FitScore: 10,
+      RecencyScore: 15,
+      SourceScore: 9,
+      ScoreReason: "CRM historical score.",
+      LastScoredAt: new Date("2030-01-01T12:00:00.000Z"),
+    }],
+  });
+  const result = await repository.updateLeadInteractionIntent(42, 101, {
+    intent: "APPOINTMENT_REQUEST",
+    intentConfidence: 0.96,
+    pricingIntent: true,
+    purchaseIntent: true,
+  });
+  assert.equal(executions[0].procedure, "dbo.LeadInteraction_UpdateIntent");
+  assert.equal(executions[0].parameters.get("LeadId").value, 42);
+  assert.equal(executions[0].parameters.get("InteractionId").value, 101);
+  assert.equal(executions[0].parameters.get("Intent").value, "APPOINTMENT_REQUEST");
+  assert.equal(executions[0].parameters.get("PricingIntent").value, true);
+  assert.equal(result.score, 84);
+  assert.equal(result.band, "HOT");
+  assert.equal(result.scoreReason, "CRM historical score.");
+  assert.deepEqual(result.aiClassification, { pricingIntent: true, purchaseIntent: true });
 });
 
 test("SQL Server repository parameterizes authentication without returning password hashes", async () => {

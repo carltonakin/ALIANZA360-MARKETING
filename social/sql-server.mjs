@@ -96,6 +96,40 @@ function mapLead(row) {
   };
 }
 
+function mapLeadInteraction(row) {
+  const qualification = jsonValue(row.QualificationJson, {});
+  return {
+    id: `interaction:${row.SocialInteractionId ?? row.InteractionId}`,
+    platform: row.Platform || null,
+    externalInteractionId: row.ExternalInteractionId || null,
+    platformUserId: row.PlatformUserId || null,
+    platformPostId: row.ExternalPostId || row.PlatformPostId || null,
+    platformConversationId: row.PlatformConversationId || null,
+    interactionType: row.InteractionType,
+    message: row.MessageText || "",
+    occurredAt: iso(row.OccurredAt),
+    direction: row.Direction,
+    intent: row.Intent,
+    intentConfidence: row.IntentConfidence === null || row.IntentConfidence === undefined
+      ? null
+      : Number(row.IntentConfidence),
+    sentiment: row.Sentiment,
+    productService: row.ProductService || "",
+    campaignId: row.CampaignExternalId || null,
+    campaignPostId: row.CampaignPostId === null || row.CampaignPostId === undefined
+      ? null
+      : Number(row.CampaignPostId),
+    campaignName: row.CampaignName || "",
+    advertisementId: row.AdvertisementId || null,
+    leadFormId: row.LeadFormId || null,
+    sourceType: row.SourceType,
+    responseStatus: row.ResponseStatus,
+    qualification,
+    aiClassification: qualification.aiClassification || {},
+    processedAt: iso(row.ProcessedAt),
+  };
+}
+
 function mapChannelConfiguration(row, encryptionKey) {
   const secretFields = String(row.SecretFields || "").split(",").filter(Boolean);
   const configuration = {
@@ -513,7 +547,15 @@ export class SqlServerRepository {
     request.input("CampaignPostId", this.sql.BigInt, numericId(event.campaignPostId));
     request.input("SourceType", this.sql.NVarChar(16), intelligence.sourceType || "ORGANIC");
     request.input("RawRetentionDays", this.sql.Int, this.rawRetentionDays);
-    const response = await request.execute("dbo.SocialEvent_Process");
+    request.input("RequestedLeadId", this.sql.BigInt, numericId(event.leadId));
+    let response;
+    try {
+      response = await request.execute("dbo.SocialEvent_Process");
+    } catch (error) {
+      if (error?.number === 51122) error.statusCode = 404;
+      if (error?.number === 51123) error.statusCode = 409;
+      throw error;
+    }
     const row = response.recordset?.[0] || {};
     return {
       duplicate: Boolean(row.Duplicate),
@@ -521,10 +563,12 @@ export class SqlServerRepository {
       leadUpdated: Boolean(row.LeadUpdated),
       leadId: row.LeadId ?? null,
       socialEventId: row.SocialEventId ?? null,
+      interactionId: row.InteractionId ?? null,
       interactionInserted: Boolean(row.InteractionInserted),
       score: row.LeadScore === null || row.LeadScore === undefined ? null : Number(row.LeadScore),
       band: row.ScoreBand || row.LeadTemperature || null,
       qualified: Boolean(row.Qualified),
+      scoreReason: row.ScoreReason || "",
     };
   }
 
@@ -1014,33 +1058,7 @@ export class SqlServerRepository {
     const sets = response.recordsets || [];
     const row = sets[0]?.[0];
     if (!row) return null;
-    const interactions = (sets[2] || []).map((item) => ({
-      id: `interaction:${item.SocialInteractionId}`,
-      platform: item.Platform,
-      externalInteractionId: item.ExternalInteractionId || null,
-      platformUserId: item.PlatformUserId || null,
-      platformPostId: item.ExternalPostId || item.PlatformPostId || null,
-      platformConversationId: item.PlatformConversationId || null,
-      interactionType: item.InteractionType,
-      message: item.MessageText || "",
-      occurredAt: iso(item.OccurredAt),
-      direction: item.Direction,
-      intent: item.Intent,
-      intentConfidence: item.IntentConfidence === null || item.IntentConfidence === undefined
-        ? null
-        : Number(item.IntentConfidence),
-      sentiment: item.Sentiment,
-      productService: item.ProductService || "",
-      campaignId: item.CampaignExternalId || null,
-      campaignPostId: item.CampaignPostId === null || item.CampaignPostId === undefined ? null : Number(item.CampaignPostId),
-      campaignName: item.CampaignName || "",
-      advertisementId: item.AdvertisementId || null,
-      leadFormId: item.LeadFormId || null,
-      sourceType: item.SourceType,
-      responseStatus: item.ResponseStatus,
-      qualification: jsonValue(item.QualificationJson, {}),
-      processedAt: iso(item.ProcessedAt),
-    }));
+    const interactions = (sets[2] || []).map(mapLeadInteraction);
     const activities = (sets[4] || []).map((item) => ({
       id: `activity:${item.LeadActivityId}`,
       type: item.ActivityType,
@@ -1137,6 +1155,39 @@ export class SqlServerRepository {
       recencyScore: Number(row.RecencyScore || 0),
       sourceScore: Number(row.SourceScore || 0),
       reason: row.ScoreReason || "",
+      lastScoredAt: iso(row.LastScoredAt),
+    };
+  }
+
+  async updateLeadInteractionIntent(leadId, interactionId, classification) {
+    const request = this.request();
+    request.input("LeadId", this.sql.BigInt, Number(leadId));
+    request.input("InteractionId", this.sql.BigInt, numericId(interactionId));
+    request.input("Intent", this.sql.NVarChar(64), classification.intent);
+    request.input("IntentConfidence", this.sql.Decimal(5, 4), classification.intentConfidence ?? null);
+    request.input("PricingIntent", this.sql.Bit, classification.pricingIntent ?? null);
+    request.input("PurchaseIntent", this.sql.Bit, classification.purchaseIntent ?? null);
+    const response = await request.execute("dbo.LeadInteraction_UpdateIntent");
+    const row = response.recordset?.[0];
+    if (!row) return null;
+    return {
+      leadId: Number(row.LeadId),
+      interactionId: Number(row.InteractionId),
+      intent: row.Intent,
+      intentConfidence: row.IntentConfidence === null || row.IntentConfidence === undefined
+        ? null
+        : Number(row.IntentConfidence),
+      aiClassification: jsonValue(row.AIClassificationJson, {}),
+      score: Number(row.LeadScore || 0),
+      band: row.ScoreBand || scoreBand(row.LeadScore),
+      qualified: Boolean(row.Qualified),
+      intentScore: Number(row.IntentScore || 0),
+      engagementScore: Number(row.EngagementScore || 0),
+      fitScore: Number(row.FitScore || 0),
+      recencyScore: Number(row.RecencyScore || 0),
+      sourceScore: Number(row.SourceScore || 0),
+      reason: row.ScoreReason || "",
+      scoreReason: row.ScoreReason || "",
       lastScoredAt: iso(row.LastScoredAt),
     };
   }

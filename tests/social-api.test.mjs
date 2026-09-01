@@ -261,6 +261,7 @@ test("normalized interaction API reuses leads, deduplicates history, scores it, 
   const duplicate = await duplicateResponse.json();
   assert.equal(duplicateResponse.status, 200);
   assert.equal(duplicate.duplicate, true);
+  assert.equal(duplicate.duplicateInteraction, true);
   assert.equal(duplicate.interactionInserted, false);
   assert.equal(repository.interactions.size, 2);
 
@@ -301,6 +302,116 @@ test("normalized interaction API reuses leads, deduplicates history, scores it, 
   assert.equal(rescoreResponse.status, 200);
   assert.equal(rescored.score, second.score);
   assert.equal(rescored.band, "QUALIFIED");
+});
+
+test("CRM lead interaction API owns intent scoring, history, and lead-targeted outbound replies", async () => {
+  const { app, repository } = await createApp();
+  const inboundResponse = await app.handle(serviceRequest("/lead-interactions", {
+    method: "POST",
+    headers: { "content-type": "application/json" },
+    body: JSON.stringify({
+      platform: "instagram",
+      externalUserId: "crm-api-user-1",
+      username: "crm_api_user",
+      externalInteractionId: "crm-api-comment-1",
+      interactionType: "COMMENT",
+      direction: "INBOUND",
+      messageText: "Can someone help me?",
+      occurredAt: new Date().toISOString(),
+    }),
+  }));
+  const inbound = await inboundResponse.json();
+  assert.equal(inboundResponse.status, 201);
+  assert.equal(inbound.leadId, 1);
+  assert.equal(inbound.interactionId, 1);
+  assert.equal(inbound.duplicateInteraction, false);
+  assert.equal(typeof inbound.scoreReason, "string");
+
+  const intentResponse = await app.handle(serviceRequest("/leads/1/intent", {
+    method: "POST",
+    headers: { "content-type": "application/json" },
+    body: JSON.stringify({
+      interactionId: inbound.interactionId,
+      intent: "booking",
+      intentConfidence: 0.96,
+      pricingIntent: true,
+      purchaseIntent: true,
+    }),
+  }));
+  const intent = await intentResponse.json();
+  assert.equal(intentResponse.status, 200);
+  assert.equal(intent.leadId, 1);
+  assert.equal(intent.interactionId, 1);
+  assert.equal(intent.intent, "APPOINTMENT_REQUEST");
+  assert.equal(intent.intentConfidence, 0.96);
+  assert.deepEqual(intent.aiClassification, {
+    intent: "APPOINTMENT_REQUEST",
+    intentConfidence: 0.96,
+    pricingIntent: true,
+    purchaseIntent: true,
+  });
+  assert.ok(intent.score > inbound.score);
+  assert.equal(typeof intent.scoreReason, "string");
+
+  const historyResponse = await app.handle(serviceRequest("/leads/1/interactions"));
+  const history = await historyResponse.json();
+  assert.equal(historyResponse.status, 200);
+  assert.equal(history.leadId, 1);
+  assert.equal(history.interactions.length, 1);
+  assert.equal(history.interactions[0].intent, "APPOINTMENT_REQUEST");
+
+  const outboundPayload = {
+    leadId: 1,
+    platform: "instagram",
+    externalInteractionId: "crm-api-reply-1",
+    interactionType: "DM",
+    direction: "OUTBOUND",
+    messageText: "Friday is available. I can help you book it.",
+    deliveryConfirmed: true,
+    occurredAt: new Date(Date.now() + 1_000).toISOString(),
+  };
+  const outboundResponse = await app.handle(serviceRequest("/lead-interactions", {
+    method: "POST",
+    headers: { "content-type": "application/json" },
+    body: JSON.stringify(outboundPayload),
+  }));
+  const outbound = await outboundResponse.json();
+  assert.equal(outboundResponse.status, 201);
+  assert.equal(outbound.leadId, 1);
+  assert.equal(outbound.interactionInserted, true);
+  assert.equal(outbound.score, intent.score);
+
+  const duplicateResponse = await app.handle(serviceRequest("/lead-interactions", {
+    method: "POST",
+    headers: { "content-type": "application/json" },
+    body: JSON.stringify(outboundPayload),
+  }));
+  const duplicate = await duplicateResponse.json();
+  assert.equal(duplicateResponse.status, 200);
+  assert.equal(duplicate.duplicateInteraction, true);
+  assert.equal(duplicate.interactionInserted, false);
+
+  const detailResponse = await app.handle(serviceRequest("/leads/1"));
+  const detail = await detailResponse.json();
+  assert.equal(detailResponse.status, 200);
+  assert.equal(detail.lead.lastResponseText, outboundPayload.messageText);
+  assert.equal(detail.interactions.length, 2);
+  assert.equal(repository.leads.size, 1);
+
+  const wrongOwner = await app.handle(serviceRequest("/leads/999/intent", {
+    method: "POST",
+    headers: { "content-type": "application/json" },
+    body: JSON.stringify({ interactionId: 1, intent: "booking", intentConfidence: 1 }),
+  }));
+  assert.equal(wrongOwner.status, 404);
+
+  const clientScore = await app.handle(serviceRequest("/lead-interactions", {
+    method: "POST",
+    headers: { "content-type": "application/json" },
+    body: JSON.stringify({ ...outboundPayload, externalInteractionId: "crm-api-reply-2", leadScore: 100 }),
+  }));
+  assert.equal(clientScore.status, 400);
+  assert.match((await clientScore.json()).error, /CRM-owned/i);
 });
 
 test("social lead status endpoint rejects malformed updates", async () => {

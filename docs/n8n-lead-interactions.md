@@ -1,30 +1,32 @@
-# n8n lead interaction contract
+# CRM lead interaction API for n8n
 
-n8n monitors provider comments and DMs, but CRM360 owns lead identity, deduplication, and scoring. Send normalized events directly to the Social Listener with `Authorization: Bearer <SERVICE_AUTH_TOKEN>`.
+CRM360 owns lead identity, interaction idempotency, historical scoring, and MSSQL writes. n8n owns Instagram comment/DM orchestration, and OpenAI owns classification and reply generation only. Neither n8n nor OpenAI may submit or directly update CRM scoring fields.
 
-## Record an interaction
+For n8n, only `POST /api/leads/interactions` and `POST /api/leads/{leadId}/intent` use `Authorization: Bearer <SERVICE_AUTH_TOKEN>`. The application validates that token against the server-side `SERVICE_AUTH_TOKEN` environment variable before forwarding to the internal Social Listener. These two service routes do not accept a CRM browser session as a substitute. Missing, malformed, or incorrect Bearer credentials return `401` with `{ "ok": false, "error": "Unauthorized." }`.
 
-`POST /lead-interactions`
+Other application routes, including lead detail and history retrieval, retain the existing CRM user/session and role protections.
+
+## Record an inbound interaction
+
+`POST /api/leads/interactions`
 
 ```json
 {
   "platform": "instagram",
-  "externalUserId": "provider-user-123",
-  "username": "customer_name",
-  "externalInteractionId": "provider-comment-456",
-  "externalPostId": "provider-post-789",
-  "campaignId": "provider-campaign-10",
-  "campaignPostId": 42,
+  "externalUserId": "17841400123456789",
+  "username": "johnsmith",
+  "externalInteractionId": "ig_comment_987654",
+  "externalPostId": "ig_post_123456",
   "interactionType": "COMMENT",
   "direction": "INBOUND",
-  "messageText": "Can you send pricing?",
-  "intent": "PRICE_REQUEST",
-  "intentConfidence": 0.96,
-  "createdAt": "2030-01-02T15:04:05.000Z"
+  "messageText": "How much is this and can I book Friday?",
+  "campaignId": 42,
+  "campaignPostId": 81,
+  "occurredAt": "2026-08-31T19:00:00Z"
 }
 ```
 
-Required values:
+Required values are:
 
 - `platform`: `facebook`, `instagram`, or `x`
 - `externalInteractionId`: the provider's immutable comment or message ID
@@ -33,49 +35,84 @@ Required values:
 - `direction`: `INBOUND` or `OUTBOUND`
 - `messageText`
 
-`intent` and `intentConfidence` may come from the existing OpenAI classification step. CRM360 applies the deterministic scoring formula; n8n and OpenAI must not submit a final score.
+CRM matches `platform + externalUserId` first. When no stable ID exists, it uses `platform + username`. It inserts or reuses the Lead, inserts one `SocialInteractions` row (the existing LeadInteraction equivalent), updates latest inbound fields, recalculates the score from full inbound history, and commits those operations in one MSSQL transaction.
 
-Example response:
+Example authoritative response:
 
 ```json
 {
   "ok": true,
-  "duplicate": false,
-  "leadCreated": false,
-  "leadUpdated": true,
-  "interactionInserted": true,
   "leadId": 392,
+  "leadCreated": false,
+  "interactionId": 5821,
+  "interactionInserted": true,
+  "duplicate": false,
+  "duplicateInteraction": false,
   "score": 87,
   "band": "HOT",
-  "qualified": true
+  "qualified": true,
+  "scoreReason": "Intent 35/35; engagement 20/20 across 3 inbound interactions; fit 12/15; recency 15/15 (0 days); source 15/15."
 }
 ```
 
-Repeated delivery of the same `platform` plus `externalInteractionId` returns `duplicate: true` and `interactionInserted: false`.
+The MSSQL unique key on platform plus external interaction ID is the final race-condition guard. A repeated webhook returns `duplicateInteraction: true` and `interactionInserted: false`; n8n must stop processing that event.
 
-## Record an outbound response
+## Submit OpenAI intent classification
 
-Call the same endpoint only after the provider confirms a successful send. Set:
+`POST /api/leads/{leadId}/intent`
 
 ```json
 {
-  "interactionType": "DM",
-  "direction": "OUTBOUND",
-  "deliveryConfirmed": true
+  "interactionId": 5821,
+  "intent": "booking",
+  "intentConfidence": 0.96,
+  "pricingIntent": true,
+  "purchaseIntent": true
 }
 ```
 
-CRM360 rejects unconfirmed outbound records with HTTP `409`. Outbound messages update `LastResponse*` but do not increase the lead's behavior score.
+CRM verifies that the interaction belongs to the lead, maps supported intent aliases to CRM categories, stores the AI classification metadata with the interaction, and recalculates the deterministic historical score. A mismatched lead/interaction pair returns `404`. Submitted `score`, `leadScore`, score components, bands, reasons, or scoring timestamps are rejected because those fields are CRM-owned.
 
-## Rescore and branch
+OpenAI may classify intent and generate a reply, but it does not write MSSQL and does not calculate the final lead score.
 
-New interactions are scored automatically. To refresh recency without adding an interaction, call `POST /leads/{leadId}/score` with the same bearer token.
+## Record a successful outbound AI response
 
-Branch n8n from the CRM response:
+After Instagram confirms that a comment reply or DM was sent, call `POST /api/leads/interactions`:
 
-- `COLD` (`0-29`): store and monitor
-- `WARM` (`30-59`): nurture
-- `QUALIFIED` (`60-79`): qualified-lead workflow
-- `HOT` (`80-100`): priority response and optional sales notification
+```json
+{
+  "leadId": 392,
+  "platform": "instagram",
+  "externalInteractionId": "ig_reply_456789",
+  "externalPostId": "ig_post_123456",
+  "interactionType": "DM",
+  "direction": "OUTBOUND",
+  "messageText": "Yes, Friday is available. I can help you with the booking.",
+  "deliveryConfirmed": true,
+  "occurredAt": "2026-08-31T19:04:00Z"
+}
+```
 
-The authenticated Next.js application also exposes proxy routes at `POST /api/social/interactions` and `POST /api/social/leads/{leadId}/score`.
+`leadId` allows the outbound response to be attached without repeating the provider user identity. CRM validates that lead, deduplicates the provider response ID, inserts the outbound history row, and updates `LastResponseAt`, `LastResponseType`, and `LastResponseText`. Unconfirmed outbound records return `409` and are not stored. Outbound responses do not increase behavioral scoring.
+
+## Retrieve CRM history and details
+
+- `GET /api/leads/{leadId}/interactions` returns comments, DMs, and outbound responses newest first.
+- `GET /api/leads/{leadId}` returns the Lead, component scores, score reason, latest inbound interaction, latest outbound response, social accounts, and unified history.
+
+These retrieval routes require the existing authenticated CRM user session; the n8n service-token exception does not apply to them.
+
+## Required n8n flow
+
+1. Receive and normalize the Instagram comment or DM.
+2. POST the inbound event to `/api/leads/interactions`.
+3. Stop when `duplicateInteraction` is `true`.
+4. Send the new message/context to OpenAI for classification and reply generation.
+5. POST the OpenAI classification to `/api/leads/{leadId}/intent`.
+6. Branch using the CRM-returned score and band.
+7. When workflow policy permits, post the generated reply through the Instagram API.
+8. Only after a successful provider send, record it as an `OUTBOUND` interaction with `deliveryConfirmed: true`.
+
+Branching bands are `COLD` (0-29), `WARM` (30-59), `QUALIFIED` (60-79), and `HOT` (80-100). CRM may raise or lower scores as interactions age because recency is recalculated from history.
+
+The internal Social Listener retains equivalent service routes (`/lead-interactions`, `/leads/{leadId}/intent`, `/leads/{leadId}/interactions`, and `/leads/{leadId}`) for same-host operation. n8n should normally use the public `/api/leads/...` routes.

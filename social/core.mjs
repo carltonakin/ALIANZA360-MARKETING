@@ -701,9 +701,11 @@ export class InMemorySocialRepository {
         leadUpdated: false,
         interactionInserted: false,
         leadId: existingLead?.id || null,
+        interactionId: existingInteraction?.id || null,
         score: existingLead?.leadScore ?? null,
         band: existingLead?.scoreBand || existingLead?.leadTemperature || null,
         qualified: Number(existingLead?.leadScore || 0) >= 60,
+        scoreReason: existingLead?.scoreReason || "",
       };
     }
     this.events.set(eventKey, structuredClone(event));
@@ -712,13 +714,27 @@ export class InMemorySocialRepository {
     let savedLead = null;
     let leadKey = null;
     if (lead) {
+      const requestedLeadId = event.leadId ? `social:${Number(event.leadId)}` : null;
+      const requestedEntry = requestedLeadId
+        ? [...this.leads.entries()].find(([, item]) => item.id === requestedLeadId)
+        : null;
+      if (requestedLeadId && !requestedEntry) {
+        const error = new Error("Lead not found.");
+        error.statusCode = 404;
+        throw error;
+      }
       const identity = event.externalUserId || (event.username ? `username:${event.username.toLowerCase()}` : null);
       const accountKey = identity ? `${event.channel}:${identity}` : null;
       const linkedLeadId = accountKey ? this.socialAccounts.get(accountKey)?.leadId : null;
+      if (requestedLeadId && linkedLeadId && linkedLeadId !== requestedLeadId) {
+        const error = new Error("The supplied social identity belongs to a different lead.");
+        error.statusCode = 409;
+        throw error;
+      }
       const linkedEntry = linkedLeadId
         ? [...this.leads.entries()].find(([, item]) => item.id === linkedLeadId)
         : null;
-      leadKey = linkedEntry?.[0] || lead.email?.toLowerCase() || lead.phone ||
+      leadKey = requestedEntry?.[0] || linkedEntry?.[0] || lead.email?.toLowerCase() || lead.phone ||
         `${event.channel}:${event.externalUserId || event.username}`;
       const socialFields = {
         facebook: event.channel === "facebook" ? event.username || "" : "",
@@ -730,6 +746,7 @@ export class InMemorySocialRepository {
         savedLead = {
           ...currentLead,
           ...structuredClone(lead),
+          name: lead.name || currentLead.name,
           email: lead.email || currentLead.email || null,
           phone: lead.phone || currentLead.phone || null,
           productServiceInterest: lead.productServiceInterest || currentLead.productServiceInterest || null,
@@ -738,8 +755,12 @@ export class InMemorySocialRepository {
           facebook: socialFields.facebook || currentLead.facebook || "",
           instagram: socialFields.instagram || currentLead.instagram || "",
           x: socialFields.x || currentLead.x || "",
-          lastIntent: intelligence.intent,
-          lastContactAt: event.occurredAt,
+          lastIntent: String(event.direction || "INBOUND").toUpperCase() === "INBOUND"
+            ? intelligence.intent
+            : currentLead.lastIntent,
+          lastContactAt: String(event.direction || "INBOUND").toUpperCase() === "INBOUND"
+            ? event.occurredAt
+            : currentLead.lastContactAt,
           qualification: { ...currentLead.qualification, ...intelligence.qualification },
         };
         this.leads.set(leadKey, savedLead);
@@ -871,9 +892,11 @@ export class InMemorySocialRepository {
       leadUpdated,
       interactionInserted: true,
       leadId: savedLead?.id || null,
+      interactionId: interaction.id,
       score: savedLead?.leadScore ?? null,
       band: savedLead?.scoreBand || null,
       qualified: Number(savedLead?.leadScore || 0) >= 60,
+      scoreReason: savedLead?.scoreReason || "",
     };
   }
 
@@ -975,6 +998,12 @@ export class InMemorySocialRepository {
     const [key, lead] = entry;
     const interactions = [...this.interactions.values()].filter((item) => item.leadId === id);
     const scoring = calculateHistoricalLeadScore({ lead, interactions, asOf });
+    const latestInbound = interactions
+      .filter((item) => String(item.direction || "INBOUND").toUpperCase() === "INBOUND")
+      .sort((left, right) => String(right.occurredAt).localeCompare(String(left.occurredAt)))[0];
+    const latestOutbound = interactions
+      .filter((item) => String(item.direction || "").toUpperCase() === "OUTBOUND")
+      .sort((left, right) => String(right.occurredAt).localeCompare(String(left.occurredAt)))[0];
     this.leads.set(key, {
       ...lead,
       leadScore: scoring.score,
@@ -987,8 +1016,42 @@ export class InMemorySocialRepository {
       sourceScore: scoring.sourceScore,
       scoreReason: scoring.reason,
       lastScoredAt: scoring.lastScoredAt,
+      lastIntent: latestInbound?.intent || lead.lastIntent,
+      lastInteractionAt: latestInbound?.occurredAt || lead.lastInteractionAt || null,
+      lastInteractionType: latestInbound?.interactionType || lead.lastInteractionType || null,
+      lastInteractionText: latestInbound?.message || lead.lastInteractionText || null,
+      lastResponseAt: latestOutbound?.occurredAt || lead.lastResponseAt || null,
+      lastResponseType: latestOutbound?.interactionType || lead.lastResponseType || null,
+      lastResponseText: latestOutbound?.message || lead.lastResponseText || null,
     });
     return { leadId: id, ...scoring };
+  }
+
+  async updateLeadInteractionIntent(leadId, interactionId, classification) {
+    const normalizedLeadId = `social:${Number(leadId)}`;
+    const normalizedInteractionId = `interaction:${Number(String(interactionId).replace(/^[^:]+:/, ""))}`;
+    const interaction = [...this.interactions.values()].find((item) =>
+      item.id === normalizedInteractionId && item.leadId === normalizedLeadId);
+    if (!interaction) return null;
+
+    interaction.intent = classification.intent;
+    interaction.intentConfidence = classification.intentConfidence;
+    interaction.aiClassification = {
+      intent: classification.intent,
+      intentConfidence: classification.intentConfidence,
+      pricingIntent: classification.pricingIntent,
+      purchaseIntent: classification.purchaseIntent,
+    };
+    const scoring = await this.rescoreLead(leadId);
+    return {
+      leadId: normalizedLeadId,
+      interactionId: normalizedInteractionId,
+      intent: interaction.intent,
+      intentConfidence: interaction.intentConfidence,
+      aiClassification: structuredClone(interaction.aiClassification),
+      ...scoring,
+      scoreReason: scoring?.reason || "",
+    };
   }
 
   async createLead(input) {
@@ -1667,7 +1730,9 @@ export class SocialListener {
       temperatureThresholds: scoring.thresholds,
     });
     const lead = adapter.extractLead(event, intelligence) || (ensureLead ? {
-      name: event.displayName || event.username || `${CHANNEL_NAMES[event.channel]} prospect`,
+      name: event.leadId
+        ? null
+        : event.displayName || event.username || `${CHANNEL_NAMES[event.channel]} prospect`,
       email: event.email,
       phone: event.phone,
       socialUsername: event.username,

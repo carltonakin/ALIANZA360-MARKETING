@@ -11,6 +11,7 @@ const nextCli = path.join(projectRoot, "node_modules", "next", "dist", "bin", "n
 let productionServer;
 let dashboardUrl;
 let serverOutput = "";
+const testServiceToken = "render-service-auth-token";
 
 async function reservePort() {
   const server = net.createServer();
@@ -33,7 +34,13 @@ test.before(async () => {
     [nextCli, "start", "--hostname", "127.0.0.1", "--port", String(port)],
     {
       cwd: projectRoot,
-      env: { ...process.env, NODE_ENV: "production" },
+      env: {
+        ...process.env,
+        NODE_ENV: "production",
+        SERVICE_AUTH_TOKEN: testServiceToken,
+        SOCIAL_LISTENER_SERVICE_URL: "http://127.0.0.1:1",
+        SOCIAL_LISTENER_SERVICE_TOKEN: "render-downstream-token",
+      },
       stdio: ["ignore", "pipe", "pipe"],
       windowsHide: true,
     },
@@ -88,6 +95,48 @@ test("server-renders Login and denies unauthenticated CRM/API access", async () 
 
   const api = await fetch(`${dashboardUrl}/api/data`);
   assert.equal(api.status, 401);
+});
+
+test("n8n routes require service Bearer auth without falling through to CRM session auth", async () => {
+  const post = (path, authorization) => fetch(`${dashboardUrl}${path}`, {
+    method: "POST",
+    headers: {
+      "content-type": "application/json",
+      ...(authorization ? { authorization } : {}),
+    },
+    body: "{}",
+  });
+
+  const missing = await post("/api/leads/interactions");
+  assert.equal(missing.status, 401);
+  assert.deepEqual(await missing.json(), { ok: false, error: "Unauthorized." });
+
+  const wrong = await post("/api/leads/interactions", "Bearer definitely-wrong-token");
+  assert.equal(wrong.status, 401);
+  assert.deepEqual(await wrong.json(), { ok: false, error: "Unauthorized." });
+
+  const missingScheme = await post("/api/leads/interactions", testServiceToken);
+  assert.equal(missingScheme.status, 401);
+  assert.deepEqual(await missingScheme.json(), { ok: false, error: "Unauthorized." });
+
+  const interaction = await post("/api/leads/interactions", `Bearer ${testServiceToken}`);
+  assert.notEqual(interaction.status, 401);
+  assert.doesNotMatch(await interaction.text(), /Authentication is required/i);
+
+  const intent = await post("/api/leads/1/intent", `Bearer ${testServiceToken}`);
+  assert.notEqual(intent.status, 401);
+  assert.doesNotMatch(await intent.text(), /Authentication is required/i);
+
+  const unrelated = await fetch(`${dashboardUrl}/api/leads/1`, {
+    headers: { authorization: `Bearer ${testServiceToken}` },
+  });
+  assert.equal(unrelated.status, 401);
+  assert.deepEqual(await unrelated.json(), { ok: false, error: "Authentication is required." });
+
+  const unrelatedApi = await fetch(`${dashboardUrl}/api/data`, {
+    headers: { authorization: `Bearer ${testServiceToken}` },
+  });
+  assert.equal(unrelatedApi.status, 401);
 });
 
 test("dashboard exposes social listener configuration and live diagnostics", async () => {
@@ -165,6 +214,32 @@ test("dashboard exposes social listener configuration and live diagnostics", asy
   assert.match(interactionsRoute, /forwardJson\(request, "\/lead-interactions"\)/i);
   assert.match(layout, /Alianza CRM Marketing 360/i);
   assert.match(layout, /AI-powered marketing funnel, lead capture and social campaign intelligence/i);
+});
+
+test("CRM lead interaction routes expose the n8n contract through service-token authentication", async () => {
+  const [interactionRoute, intentRoute, historyRoute, detailRoute, proxy, documentation] = await Promise.all([
+    readFile(new URL("../app/api/leads/interactions/route.ts", import.meta.url), "utf8"),
+    readFile(new URL("../app/api/leads/[leadId]/intent/route.ts", import.meta.url), "utf8"),
+    readFile(new URL("../app/api/leads/[leadId]/interactions/route.ts", import.meta.url), "utf8"),
+    readFile(new URL("../app/api/leads/[leadId]/route.ts", import.meta.url), "utf8"),
+    readFile(new URL("../proxy.ts", import.meta.url), "utf8"),
+    readFile(new URL("../docs/n8n-lead-interactions.md", import.meta.url), "utf8"),
+  ]);
+  assert.match(interactionRoute, /forwardJson\(request, "\/lead-interactions"\)/i);
+  assert.match(intentRoute, /forwardJson\(request, `\/leads\/\$\{leadId\}\/intent`\)/i);
+  assert.match(historyRoute, /proxySocialRequest\(`\/leads\/\$\{leadId\}\/interactions`\)/i);
+  assert.match(detailRoute, /proxySocialRequest\(`\/leads\/\$\{leadId\}`\)/i);
+  assert.match(proxy, /isLeadIntegrationApi/i);
+  assert.match(proxy, /hasServiceAuthorization/i);
+  assert.match(proxy, /process\.env\.SERVICE_AUTH_TOKEN/i);
+  assert.match(proxy, /request\.method !== "POST"/i);
+  assert.match(proxy, /pathname === "\/api\/leads\/interactions"/i);
+  assert.match(proxy, /\\d\+\\\/intent\$/i);
+  assert.match(documentation, /duplicateInteraction/i);
+  assert.match(documentation, /deliveryConfirmed/i);
+  assert.match(documentation, /OpenAI may classify intent and generate a reply/i);
+  assert.match(documentation, /Neither n8n nor OpenAI may submit or directly update CRM scoring fields/i);
+  assert.doesNotMatch(`${interactionRoute}\n${intentRoute}\n${historyRoute}\n${detailRoute}\n${proxy}`, /service-token|password|secret-key/i);
 });
 
 test("production dashboard uses the SQL-backed API without demo-record fallback", async () => {

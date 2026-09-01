@@ -442,8 +442,50 @@ const INTENT_ALIASES = Object.freeze({
   DEMO: "DEMO_REQUEST",
   INFORMATION: "INFORMATION_REQUEST",
 });
+const CRM_OWNED_SCORING_FIELDS = new Set([
+  "score", "leadscore", "scoreband", "intentscore", "engagementscore",
+  "fitscore", "recencyscore", "sourcescore", "scorereason", "lastscoredat",
+]);
+
+function rejectClientScoringFields(body) {
+  const supplied = Object.keys(body || {}).find((name) =>
+    CRM_OWNED_SCORING_FIELDS.has(String(name).replaceAll("_", "").toLowerCase()));
+  if (!supplied) return;
+  const error = new Error(`${supplied} is CRM-owned and cannot be supplied by an integration.`);
+  error.statusCode = 400;
+  throw error;
+}
+
+function optionalPositiveId(value, name) {
+  if (value === null || value === undefined || value === "") return null;
+  const id = Number(String(value).replace(/^[^:]+:/, ""));
+  if (!Number.isInteger(id) || id < 1) {
+    const error = new Error(`${name} must be a positive integer.`);
+    error.statusCode = 400;
+    throw error;
+  }
+  return id;
+}
+
+function publicNumericId(value) {
+  if (value === null || value === undefined || value === "") return null;
+  const id = Number(String(value).replace(/^[^:]+:/, ""));
+  return Number.isInteger(id) && id > 0 ? id : value;
+}
+
+function interactionApiResult(result) {
+  return {
+    ...result,
+    leadId: publicNumericId(result.leadId),
+    interactionId: publicNumericId(result.interactionId),
+    duplicateInteraction: Boolean(result.duplicate),
+    scoreReason: result.scoreReason || result.reason || "",
+  };
+}
 
 function normalizeLeadInteractionInput(body) {
+  rejectClientScoringFields(body);
+  const leadId = optionalPositiveId(body.leadId, "LeadId");
   const platformValue = cleanLeadValue(body.platform ?? body.channel, 32)?.toLowerCase();
   const platform = platformValue === "twitter" ? "x" : platformValue;
   if (!platform || !SOCIAL_CHANNELS.includes(platform)) {
@@ -464,8 +506,8 @@ function normalizeLeadInteractionInput(body) {
 
   const externalUserId = cleanLeadValue(body.externalUserId ?? body.platformUserId, 255);
   const username = cleanLeadValue(body.username, 255);
-  if (!externalUserId && !username) {
-    const error = new Error("ExternalUserId or Username is required.");
+  if (!leadId && !externalUserId && !username) {
+    const error = new Error("LeadId, ExternalUserId, or Username is required.");
     error.statusCode = 400;
     throw error;
   }
@@ -537,6 +579,7 @@ function normalizeLeadInteractionInput(body) {
     throw error;
   }
   return {
+    leadId,
     channel: platform,
     externalEventId: externalInteractionId,
     externalInteractionId,
@@ -561,6 +604,50 @@ function normalizeLeadInteractionInput(body) {
     intentConfidence,
     sourceType,
     rawPayload: body.rawPayload && typeof body.rawPayload === "object" ? body.rawPayload : body,
+  };
+}
+
+function normalizeLeadIntentInput(body) {
+  rejectClientScoringFields(body);
+  const interactionId = optionalPositiveId(body.interactionId, "InteractionId");
+  if (!interactionId) {
+    const error = new Error("InteractionId is required.");
+    error.statusCode = 400;
+    throw error;
+  }
+
+  const rawIntent = String(body.intent || "").trim().toUpperCase().replaceAll(" ", "_");
+  const intent = INTENT_ALIASES[rawIntent] || rawIntent;
+  if (!intent || !INTENT_CATEGORIES.includes(intent)) {
+    const error = new Error("Intent is not a supported CRM intent category.");
+    error.statusCode = 400;
+    throw error;
+  }
+
+  const confidenceValue = body.intentConfidence;
+  const intentConfidence = confidenceValue === null || confidenceValue === undefined || confidenceValue === ""
+    ? null
+    : Number(confidenceValue);
+  if (intentConfidence !== null && (!Number.isFinite(intentConfidence) || intentConfidence < 0 || intentConfidence > 1)) {
+    const error = new Error("IntentConfidence must be between 0 and 1.");
+    error.statusCode = 400;
+    throw error;
+  }
+
+  for (const field of ["pricingIntent", "purchaseIntent"]) {
+    if (body[field] !== undefined && typeof body[field] !== "boolean") {
+      const error = new Error(`${field} must be true or false.`);
+      error.statusCode = 400;
+      throw error;
+    }
+  }
+
+  return {
+    interactionId,
+    intent,
+    intentConfidence,
+    pricingIntent: body.pricingIntent ?? null,
+    purchaseIntent: body.purchaseIntent ?? null,
   };
 }
 
@@ -3519,7 +3606,46 @@ export async function createSocialListenerApp({
       ) {
         const event = normalizeLeadInteractionInput(await readJson(request));
         const result = await listener.processNormalizedEvent(event, { ensureLead: true });
-        return json({ ok: true, ...result }, result.interactionInserted ? 201 : 200);
+        return json({ ok: true, ...interactionApiResult(result) }, result.interactionInserted ? 201 : 200);
+      }
+
+      const leadIntentPath = url.pathname.match(/^\/leads\/(\d+)\/intent$/);
+      if (request.method === "POST" && leadIntentPath) {
+        if (typeof activeRepository.updateLeadInteractionIntent !== "function") {
+          return json({ error: "Lead intent updates are unavailable." }, 503);
+        }
+        const classification = normalizeLeadIntentInput(await readJson(request));
+        const updated = await activeRepository.updateLeadInteractionIntent(
+          Number(leadIntentPath[1]),
+          classification.interactionId,
+          classification,
+        );
+        return updated
+          ? json({
+              ok: true,
+              ...updated,
+              leadId: publicNumericId(updated.leadId),
+              interactionId: publicNumericId(updated.interactionId),
+              scoreReason: updated.scoreReason || updated.reason || "",
+            })
+          : json({ error: "Lead interaction not found for the supplied lead." }, 404);
+      }
+
+      const leadInteractionsPath = url.pathname.match(/^\/leads\/(\d+)\/interactions$/);
+      if (request.method === "GET" && leadInteractionsPath) {
+        const leadId = Number(leadInteractionsPath[1]);
+        const unified = await activeRepository.getUnifiedLead(leadId);
+        return unified
+          ? json({ ok: true, leadId, interactions: unified.interactions || [] })
+          : json({ error: "Social lead not found." }, 404);
+      }
+
+      const leadDetailPath = url.pathname.match(/^\/leads\/(\d+)$/);
+      if (request.method === "GET" && leadDetailPath) {
+        const lead = await activeRepository.getUnifiedLead(Number(leadDetailPath[1]));
+        return lead
+          ? json({ ok: true, ...lead })
+          : json({ error: "Social lead not found." }, 404);
       }
 
       const leadScorePath = url.pathname.match(/^\/leads\/(\d+)\/score$/);

@@ -20,6 +20,29 @@ function clean(value: string | undefined) {
   return typeof value === "string" ? value.trim() : "";
 }
 
+function equalToken(left: string, right: string) {
+  if (!left || !right || left.length !== right.length) return false;
+  let mismatch = 0;
+  for (let index = 0; index < left.length; index += 1) {
+    mismatch |= left.charCodeAt(index) ^ right.charCodeAt(index);
+  }
+  return mismatch === 0;
+}
+
+function isLeadIntegrationApi(request: NextRequest) {
+  if (request.method !== "POST") return false;
+  const pathname = request.nextUrl.pathname;
+  return pathname === "/api/leads/interactions" || /^\/api\/leads\/\d+\/intent$/.test(pathname);
+}
+
+function hasServiceAuthorization(request: NextRequest) {
+  const expected = clean(process.env.SERVICE_AUTH_TOKEN);
+  const authorization = request.headers.get("authorization") || "";
+  const bearer = authorization.match(/^Bearer\s+(.+)$/i);
+  const provided = bearer?.[1] || "";
+  return equalToken(provided, expected);
+}
+
 function isPublicPath(pathname: string) {
   return pathname === "/login" || pathname.startsWith("/landing/") || PUBLIC_API_PATHS.has(pathname);
 }
@@ -89,6 +112,12 @@ function unauthenticated(request: NextRequest, unavailable = false) {
 export async function proxy(request: NextRequest) {
   const pathname = request.nextUrl.pathname;
   const sessionToken = request.cookies.get(AUTH_COOKIE_NAME)?.value || "";
+
+  if (isLeadIntegrationApi(request)) {
+    return hasServiceAuthorization(request)
+      ? NextResponse.next()
+      : NextResponse.json({ ok: false, error: "Unauthorized." }, { status: 401 });
+  }
 
   if (isPublicPath(pathname)) {
     if (pathname === "/login" && sessionToken) {
