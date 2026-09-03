@@ -164,18 +164,17 @@ Provider connection checks make real read-only identity requests. A channel is
 reported as connected only after the provider returns a valid identity. Meta
 webhooks use `/api/social/webhook/meta`; X ingestion uses listener polling.
 
-The CRM is the system of record for Facebook, Instagram, X, and Sprout data.
+The CRM is the system of record for Facebook, Instagram, and X data.
 Lead social fields, campaigns, landing pages, webinars, generated drafts,
-automation state, metrics, and integration actions are stored through
+automation state, metrics, interactions, and lead scores are stored through
 parameterized SQL Server procedures. Campaigns support independent production
 mode, scheduling, retries, and attribution.
 
-The existing Sprout and direct-provider adapters remain available to the
-inbound Social Listener, but the campaign studio no longer uses their channel
-configuration or publishing controls. Sprout configuration supports an API token or OAuth client credentials. Set
-the applicable `SPROUT_*` values in the listener environment. Sprout publishing
-creates reviewable drafts and stores its external identifiers and delivery
-state in SQL Server.
+The Reports workspace reads live MSSQL data and provides lead scoring,
+temperature, intent, source, campaign, engagement, and hot-lead reports. Report
+filters, sorting, and pagination are executed server-side, and filtered table
+results can be exported as CSV. Lead scores and score bands come directly from
+the authoritative `Leads` record and are never recalculated by reporting.
 
 ## Commands
 

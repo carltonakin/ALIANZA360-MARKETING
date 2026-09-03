@@ -392,6 +392,35 @@ function mapAuthUser(row, { includePasswordHash = false } = {}) {
   return user;
 }
 
+const REPORT_PROCEDURES = Object.freeze({
+  "lead-scoring": "dbo.CRMReport_LeadScoring",
+  "lead-temperature": "dbo.CRMReport_LeadTemperature",
+  "lead-intents": "dbo.CRMReport_LeadIntents",
+  "lead-sources": "dbo.CRMReport_LeadSources",
+  "campaign-lead-performance": "dbo.CRMReport_CampaignLeadPerformance",
+  "lead-engagement": "dbo.CRMReport_LeadEngagement",
+  "hot-leads": "dbo.CRMReport_HotLeads",
+});
+
+const PAGED_REPORTS = new Set(["lead-scoring", "lead-engagement", "hot-leads"]);
+
+function reportFieldName(value) {
+  return value ? `${value[0].toLowerCase()}${value.slice(1)}` : value;
+}
+
+function mapReportRow(row) {
+  return Object.fromEntries(Object.entries(row)
+    .filter(([key]) => key !== "TotalCount")
+    .map(([key, value]) => {
+      const mapped = value instanceof Date
+        ? value.toISOString()
+        : typeof value === "bigint"
+          ? Number(value)
+          : value;
+      return [reportFieldName(key), mapped];
+    }));
+}
+
 export class SqlServerRepository {
   constructor(sql, pool, { rawRetentionDays = 7 } = {}) {
     this.sql = sql;
@@ -865,6 +894,48 @@ export class SqlServerRepository {
     request.input("Limit", this.sql.Int, Math.max(1, Math.min(500, Number(limit) || 100)));
     const response = await request.execute("dbo.SocialLead_GetRecent");
     return (response.recordset || []).map(mapLead);
+  }
+
+  async getReport(reportName, filters = {}) {
+    const procedure = REPORT_PROCEDURES[reportName];
+    if (!procedure) {
+      const error = new Error("Unknown CRM report.");
+      error.statusCode = 404;
+      throw error;
+    }
+
+    const page = Math.max(1, Number(filters.page) || 1);
+    const pageSize = Math.max(1, Math.min(500, Number(filters.pageSize) || 25));
+    const request = this.request();
+    request.input("ScoreBand", this.sql.NVarChar(20), filters.scoreBand || null);
+    request.input("MinScore", this.sql.Int, filters.minScore ?? null);
+    request.input("MaxScore", this.sql.Int, filters.maxScore ?? null);
+    request.input("Intent", this.sql.NVarChar(64), filters.intent || null);
+    request.input("Platform", this.sql.NVarChar(32), filters.platform || null);
+    request.input("Source", this.sql.NVarChar(100), filters.source || null);
+    request.input("CampaignId", this.sql.BigInt, numericId(filters.campaignId));
+    request.input("StartDate", this.sql.DateTime2, filters.startDate ? new Date(filters.startDate) : null);
+    request.input("EndDate", this.sql.DateTime2, filters.endDate ? new Date(filters.endDate) : null);
+    request.input("Search", this.sql.NVarChar(255), filters.search || null);
+    request.input("Sort", this.sql.NVarChar(40), filters.sort || null);
+    request.input("Page", this.sql.Int, page);
+    request.input("PageSize", this.sql.Int, pageSize);
+
+    const response = await request.execute(procedure);
+    const sourceRows = response.recordset || [];
+    const rows = sourceRows.map(mapReportRow);
+    const total = PAGED_REPORTS.has(reportName)
+      ? Number(sourceRows[0]?.TotalCount || 0)
+      : rows.length;
+    return {
+      rows,
+      pagination: {
+        page: PAGED_REPORTS.has(reportName) ? page : 1,
+        pageSize: PAGED_REPORTS.has(reportName) ? pageSize : Math.max(rows.length, 1),
+        total,
+        totalPages: PAGED_REPORTS.has(reportName) ? Math.max(1, Math.ceil(total / pageSize)) : 1,
+      },
+    };
   }
 
   async getScoringConfiguration() {

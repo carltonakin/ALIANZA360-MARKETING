@@ -18,14 +18,12 @@ import {
 } from "./channel-config.mjs";
 import { generateAiDraft } from "./ai.mjs";
 import { CampaignAutomationEngine } from "./campaign-automation.mjs";
-import { CrmSocialOrchestrator } from "./crm-orchestrator.mjs";
 import {
   DEFAULT_SCORING_RULES,
   DEFAULT_TEMPERATURE_THRESHOLDS,
   INTENT_CATEGORIES,
 } from "./intelligence.mjs";
 import { SqlServerRepository } from "./sql-server.mjs";
-import { createSproutAdapterFromEnv } from "./sprout.mjs";
 import { createBufferAdapterFromEnv } from "./buffer-adapter.mjs";
 import { BufferCampaignService } from "./buffer-campaigns.mjs";
 import { AuthService } from "./auth.mjs";
@@ -57,6 +55,33 @@ const requestedPort =
   "3000";
 
 const PORT = Number(requestedPort);
+
+const REPORT_PATHS = new Map([
+  ["/reports/leads/scoring", "lead-scoring"],
+  ["/reports/leads/temperature", "lead-temperature"],
+  ["/reports/leads/intents", "lead-intents"],
+  ["/reports/leads/sources", "lead-sources"],
+  ["/reports/campaigns/lead-performance", "campaign-lead-performance"],
+  ["/reports/leads/engagement", "lead-engagement"],
+  ["/reports/leads/hot", "hot-leads"],
+]);
+
+const REPORT_DEFAULT_SORTS = Object.freeze({
+  "lead-scoring": "score_desc",
+  "lead-temperature": "temperature_asc",
+  "lead-intents": "lead_count_desc",
+  "lead-sources": "lead_count_desc",
+  "campaign-lead-performance": "total_leads_desc",
+  "lead-engagement": "last_interaction_desc",
+  "hot-leads": "score_desc",
+});
+
+const REPORT_SORTS = new Set([
+  "score_desc", "score_asc", "name_asc", "name_desc", "last_interaction_asc",
+  "last_interaction_desc", "intent_asc", "temperature_asc", "lead_count_desc",
+  "average_score_desc", "recent_desc", "source_asc", "campaign_asc",
+  "total_leads_desc", "inbound_desc", "outbound_desc",
+]);
 
 if (
   !Number.isInteger(PORT) ||
@@ -877,6 +902,11 @@ function boundedInteger(
   return number;
 }
 
+function optionalBoundedInteger(value, name, limits) {
+  if (value === undefined || value === null || value === "") return null;
+  return boundedInteger(value, name, { ...limits, fallback: limits.min });
+}
+
 function optionalDate(
   value,
   name
@@ -1497,10 +1527,8 @@ export async function createSocialListenerApp({
   env = process.env,
   repository,
   adapters,
-  sproutAdapter,
   bufferAdapter,
   bufferCampaignService,
-  orchestrator,
   authService: providedAuthService,
   fetchImpl,
   logger = console,
@@ -1591,30 +1619,6 @@ export async function createSocialListenerApp({
 
       batchSize:
         env.CAMPAIGN_AUTOMATION_BATCH_SIZE,
-    });
-
-  const activeSproutAdapter =
-    sproutAdapter ||
-    createSproutAdapterFromEnv(
-      env,
-      {
-        fetchImpl,
-        logger,
-      }
-    );
-
-  const socialOrchestrator =
-    orchestrator ||
-    new CrmSocialOrchestrator({
-      repository:
-        activeRepository,
-
-      listener,
-
-      sprout:
-        activeSproutAdapter,
-
-      logger,
     });
 
   const activeBufferAdapter =
@@ -2455,522 +2459,254 @@ export async function createSocialListenerApp({
 
       /*
       |--------------------------------------------------------------------------
-      | INTEGRATIONS
+      | CRM REPORTS
       |--------------------------------------------------------------------------
       */
 
-      if (
-        request.method ===
-          "GET" &&
-        url.pathname ===
-          "/integrations"
-      ) {
-        const limit =
-          boundedInteger(
-            url.searchParams.get(
-              "limit"
-            ),
-
-            "Integration event limit",
-
-            {
-              min: 1,
-              max: 500,
-              fallback: 100,
-            }
-          );
-
-        return json({
-          ok: true,
-
-          integrations:
-            socialOrchestrator.getIntegrationStatuses(),
-
-          channels:
-            await listener.getStatuses(),
-
-          actions:
-            await activeRepository.getIntegrationActions(
-              {
-                limit,
-
-                campaignId:
-                  url.searchParams.get(
-                    "campaignId"
-                  ) || null,
-              }
-            ),
-        });
-      }
-
-      /*
-      |--------------------------------------------------------------------------
-      | SPROUT TEST
-      |--------------------------------------------------------------------------
-      */
-
-      if (
-        request.method ===
-          "POST" &&
-        url.pathname ===
-          "/integrations/sprout/test"
-      ) {
-        const result =
-          await socialOrchestrator.testIntegration(
-            "sprout"
-          );
-
-        return json(
-          {
-            ok:
-              result.status ===
-              "connected",
-
-            integration:
-              result,
-          },
-
-          result.status ===
-            "connected"
-            ? 200
-            : 424
+      const reportName =
+        REPORT_PATHS.get(
+          url.pathname
         );
-      }
-
-      /*
-      |--------------------------------------------------------------------------
-      | SPROUT SYNC
-      |--------------------------------------------------------------------------
-      */
-
-      if (
-        request.method ===
-          "POST" &&
-        url.pathname ===
-          "/integrations/sprout/sync"
-      ) {
-        const body =
-          await readJson(
-            request
-          );
-
-        const since =
-          body.since
-            ? optionalDate(
-                body.since,
-                "Sprout sync start"
-              )
-            : null;
-
-        const result =
-          await socialOrchestrator.syncSprout(
-            {
-              ...(since
-                ? {
-                    since,
-                  }
-                : {}),
-
-              limit:
-                boundedInteger(
-                  body.limit,
-
-                  "Sprout sync limit",
-
-                  {
-                    min: 1,
-                    max: 100,
-                    fallback: 50,
-                  }
-                ),
-            }
-          );
-
-        return json({
-          ok: true,
-
-          result,
-        });
-      }
-
-      /*
-      |--------------------------------------------------------------------------
-      | SPROUT METRICS
-      |--------------------------------------------------------------------------
-      */
-
-      if (
-        request.method ===
-          "POST" &&
-        url.pathname ===
-          "/integrations/sprout/metrics"
-      ) {
-        const body =
-          await readJson(
-            request
-          );
-
-        const start =
-          body.start
-            ? optionalDate(
-                body.start,
-                "Metrics start"
-              )
-            : null;
-
-        const end =
-          body.end
-            ? optionalDate(
-                body.end,
-                "Metrics end"
-              )
-            : null;
-
-        const metrics =
-          await socialOrchestrator.collectSproutMetrics(
-            {
-              ...(start
-                ? {
-                    start,
-                  }
-                : {}),
-
-              ...(end
-                ? {
-                    end,
-                  }
-                : {}),
-            }
-          );
-
-        return json({
-          ok: true,
-
-          metrics,
-        });
-      }
-
-      /*
-      |--------------------------------------------------------------------------
-      | INTEGRATION ACTIONS
-      |--------------------------------------------------------------------------
-      */
 
       if (
         request.method ===
           "GET" &&
-        url.pathname ===
-          "/integration-actions"
+        reportName
       ) {
-        const limit =
-          boundedInteger(
-            url.searchParams.get(
-              "limit"
-            ),
-
-            "Integration action limit",
-
-            {
-              min: 1,
-              max: 500,
-              fallback: 100,
-            }
-          );
-
-        return json({
-          ok: true,
-
-          actions:
-            await activeRepository.getIntegrationActions(
-              {
-                limit,
-
-                campaignId:
-                  url.searchParams.get(
-                    "campaignId"
-                  ) || null,
-              }
-            ),
-        });
-      }
-
-      if (
-        request.method ===
-          "POST" &&
-        url.pathname ===
-          "/integration-actions"
-      ) {
-        const body =
-          await readJson(
-            request
-          );
-
-        const scheduledAt =
-          body.scheduledAt
-            ? optionalDate(
-                body.scheduledAt,
-                "Scheduled delivery time"
-              )
-            : null;
-
         if (
-          scheduledAt &&
-          new Date(
-            scheduledAt
-          ).getTime() <=
-            Date.now()
+          typeof activeRepository.getReport !==
+            "function"
         ) {
           return json(
             {
               error:
-                "Scheduled delivery time must be in the future.",
+                "CRM reporting storage is unavailable.",
             },
+            503
+          );
+        }
 
+        const scoreBand =
+          cleanLeadValue(
+            url.searchParams.get(
+              "scoreBand"
+            ),
+            20
+          )?.toUpperCase() || null;
+
+        if (
+          scoreBand &&
+          ![
+            "COLD",
+            "WARM",
+            "QUALIFIED",
+            "HOT",
+          ].includes(
+            scoreBand
+          )
+        ) {
+          return json(
+            {
+              error:
+                "Score band must be COLD, WARM, QUALIFIED, or HOT.",
+            },
             400
           );
         }
 
-        const campaignId =
-          body.campaignId
-            ? optionalId(
-                body.campaignId
-              )
-            : null;
+        const platform =
+          cleanLeadValue(
+            url.searchParams.get(
+              "platform"
+            ),
+            32
+          )?.toLowerCase() || null;
 
-        const action =
-          await socialOrchestrator.queueAction(
+        if (
+          platform &&
+          !SOCIAL_CHANNELS.includes(
+            platform
+          )
+        ) {
+          return json(
             {
-              provider:
-                String(
-                  body.provider ||
-                    "sprout"
-                ).toLowerCase(),
+              error:
+                "Platform must be instagram, facebook, or x.",
+            },
+            400
+          );
+        }
 
-              actionType:
-                String(
-                  body.actionType ||
-                    "PUBLISH_POST"
-                ).toUpperCase(),
-
-              channel:
-                cleanLeadValue(
-                  body.channel,
-                  32
-                ),
-
-              campaignId,
-
-              leadId:
-                optionalCrmEntityId(
-                  body.leadId,
-                  "Lead ID"
-                ),
-
-              idempotencyKey:
-                cleanLeadValue(
-                  body.idempotencyKey,
-                  255
-                ),
-
-              actorId:
-                cleanLeadValue(
-                  body.actorId,
-                  255
-                ) ||
-                "crm-dashboard",
-
-              maxAttempts:
-                boundedInteger(
-                  body.maxAttempts,
-
-                  "Maximum attempts",
-
-                  {
-                    min: 1,
-                    max: 10,
-                    fallback: 4,
-                  }
-                ),
-
-              payload: {
-                text:
-                  requiredValue(
-                    body.text,
-
-                    "Post text",
-
-                    16_000
-                  ),
-
-                ...(scheduledAt
-                  ? {
-                      scheduledAt,
-                    }
-                  : {}),
-
-                ...(Array.isArray(
-                  body.profileIds
-                )
-                  ? {
-                      profileIds:
-                        body.profileIds
-                          .map(String)
-                          .slice(
-                            0,
-                            100
-                          ),
-                    }
-                  : {}),
-
-                ...(cleanLeadValue(
-                  body.groupId,
-                  255
-                )
-                  ? {
-                      groupId:
-                        cleanLeadValue(
-                          body.groupId,
-                          255
-                        ),
-                    }
-                  : {}),
-
-                ...(Array.isArray(
-                  body.media
-                )
-                  ? {
-                      media:
-                        body.media.slice(
-                          0,
-                          20
-                        ),
-                    }
-                  : {}),
-
-                ...(Array.isArray(
-                  body.tagIds
-                )
-                  ? {
-                      tagIds:
-                        body.tagIds.slice(
-                          0,
-                          100
-                        ),
-                    }
-                  : {}),
-              },
+        const minScore =
+          optionalBoundedInteger(
+            url.searchParams.get(
+              "minScore"
+            ),
+            "Minimum score",
+            {
+              min: 0,
+              max: 100,
             }
           );
 
-        let execution = null;
-
-        const executeNow =
-          booleanValue(
-            body.executeNow,
-            true
+        const maxScore =
+          optionalBoundedInteger(
+            url.searchParams.get(
+              "maxScore"
+            ),
+            "Maximum score",
+            {
+              min: 0,
+              max: 100,
+            }
           );
 
         if (
-          executeNow &&
-          [
-            "PENDING",
-            "RETRY_SCHEDULED",
-          ].includes(
-            action.status
-          )
+          minScore !== null &&
+          maxScore !== null &&
+          minScore > maxScore
         ) {
-          execution =
-            await socialOrchestrator.runDue(
-              {
-                limit: 1,
-
-                actionId:
-                  action.id,
-              }
-            );
+          return json(
+            {
+              error:
+                "Minimum score cannot exceed maximum score.",
+            },
+            400
+          );
         }
 
-        const current =
-          (
-            await activeRepository.getIntegrationActions(
-              {
-                limit: 100,
-                campaignId,
-              }
-            )
-          ).find(
-            (item) =>
-              Number(item.id) ===
-              Number(action.id)
-          ) || action;
-
-        return json(
-          {
-            ok:
-              current.status ===
-                "SUCCEEDED" ||
-              current.status ===
-                "PENDING" ||
-              current.status ===
-                "RETRY_SCHEDULED",
-
-            action:
-              current,
-
-            duplicate:
-              action.duplicate,
-
-            execution,
-          },
-
-          action.duplicate
-            ? 200
-            : 201
-        );
-      }
-
-      if (
-        request.method ===
-          "POST" &&
-        url.pathname ===
-          "/integration-actions/run-due"
-      ) {
-        const body =
-          await readJson(
-            request
+        const startDate =
+          optionalDate(
+            url.searchParams.get(
+              "startDate"
+            ),
+            "Report start date"
           );
 
-        const result =
-          await socialOrchestrator.runDue(
+        const endDate =
+          optionalDate(
+            url.searchParams.get(
+              "endDate"
+            ),
+            "Report end date"
+          );
+
+        if (
+          startDate &&
+          endDate &&
+          new Date(startDate) >
+            new Date(endDate)
+        ) {
+          return json(
             {
-              limit:
-                boundedInteger(
-                  body.limit,
-
-                  "Integration action limit",
-
-                  {
-                    min: 1,
-                    max: 100,
-                    fallback: 10,
-                  }
-                ),
-
-              actionId:
-                body.actionId
-                  ? requiredValue(
-                      body.actionId,
-                      "Integration action ID",
-                      100
-                    )
-                  : null,
-            }
+              error:
+                "Report start date cannot be after the end date.",
+            },
+            400
           );
+        }
+
+        const requestedSort =
+          cleanLeadValue(
+            url.searchParams.get(
+              "sort"
+            ),
+            40
+          );
+
+        if (
+          requestedSort &&
+          !REPORT_SORTS.has(
+            requestedSort
+          )
+        ) {
+          return json(
+            {
+              error:
+                "The requested report sort is invalid.",
+            },
+            400
+          );
+        }
+
+        const filters = {
+          scoreBand,
+          minScore,
+          maxScore,
+          intent:
+            cleanLeadValue(
+              url.searchParams.get(
+                "intent"
+              ),
+              64
+            ),
+          platform,
+          source:
+            cleanLeadValue(
+              url.searchParams.get(
+                "source"
+              ),
+              100
+            ),
+          campaignId:
+            url.searchParams.has(
+              "campaignId"
+            )
+              ? optionalCrmEntityId(
+                  url.searchParams.get(
+                    "campaignId"
+                  ),
+                  "Campaign ID"
+                )
+              : null,
+          startDate,
+          endDate,
+          search:
+            cleanLeadValue(
+              url.searchParams.get(
+                "search"
+              ),
+              255
+            ),
+          sort:
+            requestedSort ||
+            REPORT_DEFAULT_SORTS[
+              reportName
+            ],
+          page:
+            boundedInteger(
+              url.searchParams.get(
+                "page"
+              ),
+              "Report page",
+              {
+                min: 1,
+                max: 1_000_000,
+                fallback: 1,
+              }
+            ),
+          pageSize:
+            boundedInteger(
+              url.searchParams.get(
+                "pageSize"
+              ),
+              "Report page size",
+              {
+                min: 1,
+                max: 500,
+                fallback: 25,
+              }
+            ),
+        };
 
         return json({
           ok: true,
-
-          result,
+          report:
+            reportName,
+          ...await activeRepository.getReport(
+            reportName,
+            filters
+          ),
         });
       }
 
@@ -4133,8 +3869,6 @@ export async function createSocialListenerApp({
 
     automationEngine,
 
-    socialOrchestrator,
-
     bufferCampaignService:
       activeBufferCampaignService,
 
@@ -4231,16 +3965,6 @@ async function start() {
       ) || 60_000
     );
 
-  const integrationIntervalMs =
-    Math.max(
-      5_000,
-
-      Number(
-        process.env
-          .SPROUT_ACTION_INTERVAL_MS
-      ) || 60_000
-    );
-
   /*
   |--------------------------------------------------------------------------
   | SEND ALL OTHER REQUESTS TO EXISTING CRM HANDLER
@@ -4255,7 +3979,7 @@ async function start() {
   | /content
   | /campaign-automation
   | /webhooks/meta
-  | /integrations
+  | /reports/leads/scoring
   | etc.
   |
   | continues through the existing social listener.
@@ -4388,45 +4112,6 @@ async function start() {
 
   /*
   |--------------------------------------------------------------------------
-  | SPROUT / INTEGRATION ACTION TIMER
-  |--------------------------------------------------------------------------
-  */
-
-  const integrationTimer =
-    setInterval(
-      () => {
-        socialListenerApp.socialOrchestrator
-          .runDue()
-          .catch(
-            (error) => {
-              console.error(
-                JSON.stringify({
-                  component:
-                    "crm_social_orchestrator",
-
-                  operation:
-                    "integration_action_tick",
-
-                  status:
-                    "error",
-
-                  error:
-                    safeMessage(
-                      error
-                    ),
-                })
-              );
-            }
-          );
-      },
-
-      integrationIntervalMs
-    );
-
-  integrationTimer.unref();
-
-  /*
-  |--------------------------------------------------------------------------
   | SERVER CLOSE CLEANUP
   |--------------------------------------------------------------------------
   */
@@ -4436,10 +4121,6 @@ async function start() {
     () => {
       clearInterval(
         automationTimer
-      );
-
-      clearInterval(
-        integrationTimer
       );
 
       socialListenerApp

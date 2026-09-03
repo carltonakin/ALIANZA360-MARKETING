@@ -11,6 +11,7 @@ import {
 import { useRouter } from "next/navigation";
 import { browserVideoValidationErrors, INSTAGRAM_VIDEO_MAX_BYTES } from "../lib/instagram-video-validation.mjs";
 import type { AuthUser } from "./auth/shared";
+import Reports from "./reports";
 
 // Type definitions
 type Lead = {
@@ -264,40 +265,6 @@ type SocialApiResponse = {
   channels?: SocialChannelResult[];
 };
 
-type SocialIntegration = {
-  provider: "sprout";
-  name: string;
-  configured: boolean;
-  status: string;
-  reason: string;
-  checkedAt: string | null;
-  customerId: string | null;
-  profileCount: number;
-  listeningTopicCount: number;
-  publishingReady: boolean;
-  publishingMissing: string[];
-  capabilities: string[];
-};
-
-type IntegrationAction = {
-  id: number | string;
-  provider: string;
-  channel: string | null;
-  direction: "INBOUND" | "OUTBOUND";
-  eventType: string;
-  idempotencyKey: string;
-  externalId: string | null;
-  externalStatus: string | null;
-  status: string;
-  attemptCount: number;
-  maxAttempts: number;
-  nextAttemptAt: string | null;
-  processedAt: string | null;
-  campaignId: number | string | null;
-  lastError: string | null;
-  createdAt: string;
-};
-
 type SocialBackendConfig = {
   configured: boolean;
   serviceUrl: string;
@@ -314,6 +281,7 @@ const nav = [
   ["♙", "Leads"],
   ["▷", "Webinar"],
   ["▱", "Landing Pages"],
+  ["▤", "Reports"],
   ["◉", "Social Listener"],
   ["⚙", "Settings"],
 ];
@@ -337,8 +305,6 @@ export default function Home() {
   const [campaigns, setCampaigns] = useState<Campaign[]>([]);
   const [pages, setPages] = useState<Landing[]>([]);
   const [webinars, setWebinars] = useState<WebinarRecord[]>([]);
-  const [socialIntegrations, setSocialIntegrations] = useState<SocialIntegration[]>([]);
-  const [integrationActions, setIntegrationActions] = useState<IntegrationAction[]>([]);
   const [dataError, setDataError] = useState("");
   const [connected, setConnected] = useState(false);
   const [bufferChannels, setBufferChannels] = useState<BufferChannel[]>([]);
@@ -495,10 +461,7 @@ export default function Home() {
 
   const load = async () => {
     try {
-      const [crmResponse, integrationResponse] = await Promise.all([
-        fetch("/api/data", { cache: "no-store" }),
-        fetch("/api/social/integrations?limit=50", { cache: "no-store" }),
-      ]);
+      const crmResponse = await fetch("/api/data", { cache: "no-store" });
       if (!crmResponse.ok) {
         const errorData = await crmResponse.json().catch(() => ({})) as { error?: string; message?: string };
         throw new Error(errorData.message || errorData.error || "Production data could not be loaded from SQL Server.");
@@ -520,26 +483,11 @@ export default function Home() {
       setPages(d.pages ?? []);
       setWebinars(d.webinars ?? []);
       setDataError("");
-
-      if (integrationResponse.ok) {
-        const integrationData = (await integrationResponse.json()) as {
-          integrations?: SocialIntegration[];
-          actions?: IntegrationAction[];
-        };
-        setSocialIntegrations(integrationData.integrations ?? []);
-        setIntegrationActions(integrationData.actions ?? []);
-      } else {
-        setSocialIntegrations([]);
-        setIntegrationActions([]);
-        notify("Integration activity could not be loaded from SQL Server.");
-      }
     } catch (error) {
       setLeads([]);
       setCampaigns([]);
       setPages([]);
       setWebinars([]);
-      setSocialIntegrations([]);
-      setIntegrationActions([]);
       const message = error instanceof Error ? error.message : "Production data could not be loaded from SQL Server.";
       setDataError(message);
       notify(message);
@@ -908,29 +856,6 @@ export default function Home() {
     }
   };
 
-  const runSproutOperation = async (operation: "test" | "sync" | "metrics") => {
-    setBusy(true);
-    try {
-      const response = await fetch("/api/social/integrations", {
-        method: "POST",
-        headers: { "content-type": "application/json" },
-        body: JSON.stringify({ operation }),
-      });
-      const data = await response.json() as { integration?: SocialIntegration; result?: { processed?: number; duplicates?: number }; metrics?: { profiles?: unknown[]; posts?: unknown[] }; message?: string; error?: string };
-      if (!response.ok) throw new Error(data.message || data.error || `Sprout ${operation} failed`);
-      await load();
-      notify(operation === "test"
-        ? "Sprout customer access validated"
-        : operation === "metrics"
-          ? `Sprout metrics refreshed: ${data.metrics?.posts?.length || 0} posts`
-          : `Sprout sync completed: ${data.result?.processed || 0} new, ${data.result?.duplicates || 0} duplicate`);
-    } catch (error) {
-      notify(error instanceof Error ? error.message : `Sprout ${operation} failed`);
-    } finally {
-      setBusy(false);
-    }
-  };
-
   const totalValue = leads.reduce((n, l) => n + l.value, 0);
 
   return (
@@ -953,7 +878,7 @@ export default function Home() {
         </div>
         <nav>
           <p className="nav-label">WORKSPACE</p>
-          {nav.slice(0, 7).map(([i, n]) => (
+          {nav.slice(0, 8).map(([i, n]) => (
             <button
               key={n}
               className={active === n ? "active" : ""}
@@ -1085,6 +1010,7 @@ export default function Home() {
               }}
             />
           )}
+          {active === "Reports" && <Reports />}
           {active === "Webinar" && (
             <Webinar
               pages={pages}
@@ -1113,10 +1039,6 @@ export default function Home() {
               onConfigure={() => authUser?.role === "ADMIN"
                 ? setActive("Settings")
                 : notify("Administrator access is required for Settings")}
-              integrations={socialIntegrations}
-              integrationActions={integrationActions}
-              onSproutOperation={runSproutOperation}
-              busy={busy}
             />
           )}
           {active === "Settings" && authUser?.role === "ADMIN" && (
@@ -1773,10 +1695,6 @@ function Social({
   onTestChannel,
   channelTestResults,
   onConfigure,
-  integrations,
-  integrationActions,
-  onSproutOperation,
-  busy,
 }: {
   connected: boolean;
   leads: Lead[];
@@ -1787,16 +1705,10 @@ function Social({
   onTestChannel: (channelName: string) => Promise<void>;
   channelTestResults: { [key: string]: string };
   onConfigure: () => void;
-  integrations: SocialIntegration[];
-  integrationActions: IntegrationAction[];
-  onSproutOperation: (operation: "test" | "sync" | "metrics") => Promise<void>;
-  busy: boolean;
 }) {
   const connectedCount = socialChannels.filter(
     (channel) => channel.status === "connected"
   ).length;
-  const sprout = integrations.find((integration) => integration.provider === "sprout");
-  const recentActions = integrationActions.slice(0, 6);
 
   return (
     <>
@@ -1804,46 +1716,6 @@ function Social({
         title="Social Listener"
         sub="Monitor intent, normalize conversations and route qualified prospects into CRM"
       />
-
-      <article className="panel integration-control-plane">
-        <div className="integration-control-head">
-          <div>
-            <span className="insight-tag">CRM CONTROL PLANE</span>
-            <h3>Sprout Social integration</h3>
-            <p>The CRM owns campaign decisions, lead state, workflows and history. Sprout is the delivery and listening adapter.</p>
-          </div>
-          <span className={`integration-state ${sprout?.status === "connected" ? "connected" : ""}`}>
-            {(sprout?.status || "missing_configuration").replaceAll("_", " ")}
-          </span>
-        </div>
-        <div className="integration-summary">
-          <span><strong>{sprout?.profileCount || 0}</strong> profiles</span>
-          <span><strong>{sprout?.listeningTopicCount || 0}</strong> listening topics</span>
-          <span><strong>{sprout?.publishingReady ? "Ready" : "Setup needed"}</strong> draft publishing</span>
-          <span><strong>{recentActions.length}</strong> recent events</span>
-        </div>
-        <p className="integration-reason">{sprout?.reason || "Add the Sprout server variables to enable this adapter."}</p>
-        {!sprout?.publishingReady && Boolean(sprout?.publishingMissing?.length) && (
-          <small className="integration-missing">Publishing needs: {sprout?.publishingMissing.join(", ")}</small>
-        )}
-        <div className="integration-buttons">
-          <button className="ghost" type="button" disabled={busy} onClick={() => void onSproutOperation("test")}>Test Sprout access</button>
-          <button className="ghost" type="button" disabled={busy || !sprout?.configured} onClick={() => void onSproutOperation("metrics")}>Refresh metrics</button>
-          <button className="primary" type="button" disabled={busy || !sprout?.configured} onClick={() => void onSproutOperation("sync")}>Sync engagement to CRM</button>
-        </div>
-        <div className="integration-ledger">
-          <div className="integration-ledger-head"><span>Direction</span><span>CRM action</span><span>Delivery</span><span>External ID</span><span>Updated</span></div>
-          {recentActions.length ? recentActions.map((action) => (
-            <div key={action.id}>
-              <span>{action.direction}</span>
-              <span>{action.eventType.replaceAll("_", " ")}</span>
-              <span className={`ledger-status ${action.status.toLowerCase()}`}>{action.status.replaceAll("_", " ")}</span>
-              <span>{action.externalId || "-"}</span>
-              <span>{formatSocialTime(action.processedAt || action.createdAt)}</span>
-            </div>
-          )) : <p>No integration events have been recorded yet.</p>}
-        </div>
-      </article>
 
       <article className="panel" style={{ marginBottom: "14px", display: "grid", gap: "12px" }}>
         <div className="panel-head">

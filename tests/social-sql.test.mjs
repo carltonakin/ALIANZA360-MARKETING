@@ -15,6 +15,7 @@ const authenticationMigrationUrl = new URL("../sql/011_authentication_user_manag
 const leadAiResponseMigrationUrl = new URL("../sql/012_lead_intent_ai_response.sql", import.meta.url);
 const leadHistoryMigrationUrl = new URL("../sql/013_lead_scoring_interaction_history.sql", import.meta.url);
 const leadInteractionApiMigrationUrl = new URL("../sql/014_crm_lead_interaction_api.sql", import.meta.url);
+const reportsMigrationUrl = new URL("../sql/015_crm_reports.sql", import.meta.url);
 
 class FakeRequest {
   constructor(executions, result = { recordset: [] }) {
@@ -479,7 +480,7 @@ test("SQL Server repository parameterizes campaign automation lifecycle", async 
 test("SQL Server repository parameterizes CRM integration actions and workflow history", async () => {
   const row = {
     IntegrationEventId: 91,
-    Provider: "sprout",
+    Provider: "legacy-provider",
     Direction: "OUTBOUND",
     EventType: "PUBLISH_POST",
     IdempotencyKey: "action-91",
@@ -493,7 +494,7 @@ test("SQL Server repository parameterizes CRM integration actions and workflow h
   };
   const { repository, executions } = fakeRepository({ recordset: [row] });
   const action = await repository.createIntegrationAction({
-    provider: "sprout", channel: "instagram", direction: "OUTBOUND", eventType: "PUBLISH_POST",
+    provider: "legacy-provider", channel: "instagram", direction: "OUTBOUND", eventType: "PUBLISH_POST",
     idempotencyKey: "action-91", campaignId: "campaign:7", request: { text: "Join the webinar" }, maxAttempts: 4,
   });
   assert.equal(action.id, 91);
@@ -503,15 +504,15 @@ test("SQL Server repository parameterizes CRM integration actions and workflow h
   });
   await repository.completeIntegrationAction(91, {
     lockToken: "45b31b29-7d22-4a5b-bbf7-6ff695185819", succeeded: true,
-    externalId: "sprout-501", externalStatus: "PENDING", response: { isDraft: true }, processedAt: "2026-08-18T12:00:01Z",
+    externalId: "legacy-501", externalStatus: "PENDING", response: { isDraft: true }, processedAt: "2026-08-18T12:00:01Z",
   });
   await repository.startWorkflowRun({
     workflowType: "SOCIAL_OUTBOUND", triggerType: "INTEGRATION_EVENT", triggerRecordId: 91,
-    integrationEventId: 91, context: { provider: "sprout" },
+    integrationEventId: 91, context: { provider: "legacy-provider" },
   });
   await repository.insertAuditLog({
     entityType: "IntegrationEvent", entityId: 91, action: "ACTION_SUCCEEDED", actorType: "SYSTEM",
-    actorId: "crm-social-orchestrator", correlationId: "action-91", details: { externalId: "sprout-501" },
+    actorId: "crm-integration-orchestrator", correlationId: "action-91", details: { externalId: "legacy-501" },
   });
   assert.deepEqual(executions.map((item) => item.procedure), [
     "dbo.CRMIntegrationEvent_Create",
@@ -521,7 +522,7 @@ test("SQL Server repository parameterizes CRM integration actions and workflow h
     "dbo.CRMAuditLog_Insert",
   ]);
   assert.equal(executions[0].parameters.get("CampaignId").value, 7);
-  assert.equal(executions[2].parameters.get("ExternalId").value, "sprout-501");
+  assert.equal(executions[2].parameters.get("ExternalId").value, "legacy-501");
   assert.equal(executions[2].parameters.get("ResponseJson").value, JSON.stringify({ isDraft: true }));
 });
 
@@ -781,6 +782,62 @@ test("SQL Server repository parameterizes Buffer campaign and post lifecycle pro
   assert.equal(executions[3].parameters.get("BufferPostId").value, "buffer-post-9");
   assert.equal(executions[6].parameters.get("SyncableOnly").value, 1);
   assert.equal(executions[6].parameters.get("ActiveOnly").value, 0);
+});
+
+test("CRM report migration exposes all report procedures and reuses authoritative lead scoring fields", async () => {
+  const sql = await readFile(reportsMigrationUrl, "utf8");
+  for (const procedure of [
+    "CRMReport_LeadScoring",
+    "CRMReport_LeadTemperature",
+    "CRMReport_LeadIntents",
+    "CRMReport_LeadSources",
+    "CRMReport_CampaignLeadPerformance",
+    "CRMReport_LeadEngagement",
+    "CRMReport_HotLeads",
+  ]) {
+    assert.match(sql, new RegExp(`CREATE OR ALTER PROCEDURE dbo\\.${procedure}`, "i"));
+  }
+  assert.match(sql, /COALESCE\(l\.LeadScore, 0\) LeadScore/i);
+  assert.match(sql, /COALESCE\(NULLIF\(l\.ScoreBand/i);
+  assert.match(sql, /SocialAccounts[\s\S]*InstagramUsername[\s\S]*FacebookUsername[\s\S]*XUsername/i);
+  assert.match(sql, /OFFSET \(@Page - 1\) \* @PageSize ROWS FETCH NEXT @PageSize ROWS ONLY/i);
+  assert.doesNotMatch(sql, /UPDATE\s+dbo\.Leads/i);
+});
+
+test("SQL Server repository parameterizes report filters and maps paged results", async () => {
+  const { repository, executions } = fakeRepository({
+    recordset: [{
+      LeadId: 7,
+      LeadName: "Priority Lead",
+      InstagramUsername: "priority",
+      LeadScore: 91,
+      Intent: "PRICING",
+      Temperature: "HOT",
+      LastInteractionDate: new Date("2026-08-20T12:00:00Z"),
+      TotalCount: 42,
+    }],
+  });
+  const result = await repository.getReport("lead-scoring", {
+    scoreBand: "HOT",
+    minScore: 80,
+    platform: "instagram",
+    campaignId: "campaign:7",
+    startDate: "2026-08-01T00:00:00.000Z",
+    endDate: "2026-08-31T23:59:59.999Z",
+    search: "Priority",
+    sort: "score_desc",
+    page: 2,
+    pageSize: 25,
+  });
+  assert.equal(executions[0].procedure, "dbo.CRMReport_LeadScoring");
+  assert.equal(executions[0].parameters.get("CampaignId").value, 7);
+  assert.equal(executions[0].parameters.get("ScoreBand").value, "HOT");
+  assert.equal(executions[0].parameters.get("Search").value, "Priority");
+  assert.equal(result.rows[0].leadScore, 91);
+  assert.equal(result.rows[0].lastInteractionDate, "2026-08-20T12:00:00.000Z");
+  assert.equal(result.pagination.total, 42);
+  assert.equal(result.pagination.totalPages, 2);
+  await assert.rejects(() => repository.getReport("unknown"), /Unknown CRM report/);
 });
 
 const hasSqlServer = Boolean(process.env.SQL_SERVER_CONNECTION_STRING || (process.env.DB_SERVER && process.env.DB_NAME && process.env.DB_USER && process.env.DB_PASSWORD));

@@ -879,94 +879,54 @@ test("automation, scoring, and unified lead endpoints are independently operable
   assert.equal((await unifiedResponse.json()).lead.email, "unified@example.test");
 });
 
-test("CRM integration endpoints queue, execute, deduplicate, and report Sprout actions", async () => {
+test("CRM report endpoints validate filters and pass normalized pagination to the repository", async () => {
   const repository = new InMemorySocialRepository();
-  let deliveries = 0;
-  const sproutAdapter = {
-    status: () => ({
-      provider: "sprout", name: "Sprout Social", configured: true, status: "configured",
-      reason: "Ready for validation.", checkedAt: null, customerId: "customer-42", profileCount: 1,
-      listeningTopicCount: 1, publishingReady: true, publishingMissing: [], capabilities: ["draft_publishing"],
-    }),
-    healthCheck: async () => ({
-      provider: "sprout", name: "Sprout Social", configured: true, status: "connected",
-      reason: "Sprout customer access was validated.", checkedAt: "2026-08-18T12:00:00Z",
-      customerId: "customer-42", profileCount: 1, listeningTopicCount: 1,
-      publishingReady: true, publishingMissing: [], capabilities: ["draft_publishing"],
-    }),
-    createPublishingDraft: async () => {
-      deliveries += 1;
-      return { externalId: "sprout-post-501", externalIds: ["sprout-post-501"], externalStatus: "PENDING", isDraft: true };
-    },
-    fetchInboundEvents: async () => [],
-    collectMetrics: async () => ({ profiles: [{ impressions: 100 }], posts: [{ text: "Webinar" }] }),
+  let request;
+  repository.getReport = async (reportName, filters) => {
+    request = { reportName, filters };
+    return {
+      rows: [{ leadId: 7, leadName: "Priority Lead", leadScore: 91, temperature: "HOT" }],
+      pagination: { page: filters.page, pageSize: filters.pageSize, total: 1, totalPages: 1 },
+    };
   };
   const app = await createSocialListenerApp({
     env: serviceEnv,
     repository,
     adapters: adapters(async () => providerResponse({ id: "provider-1" })),
-    sproutAdapter,
     logger: silentLogger,
   });
 
-  const statusResponse = await app.handle(serviceRequest("/integrations"));
-  assert.equal(statusResponse.status, 200);
-  const status = await statusResponse.json();
-  assert.equal(status.integrations[0].provider, "sprout");
-  assert.equal(status.actions.length, 0);
-
-  const requestBody = {
-    provider: "sprout", actionType: "PUBLISH_POST", campaignId: null,
-    text: "Register for the webinar", idempotencyKey: "api-action-1", executeNow: true,
-  };
-  const create = () => app.handle(serviceRequest("/integration-actions", {
-    method: "POST",
-    headers: { "content-type": "application/json" },
-    body: JSON.stringify(requestBody),
-  }));
-  const createdResponse = await create();
-  assert.equal(createdResponse.status, 201);
-  const created = await createdResponse.json();
-  assert.equal(created.action.status, "SUCCEEDED");
-  assert.equal(created.action.externalId, "sprout-post-501");
-  assert.equal(created.action.externalStatus, "PENDING");
-
-  const duplicateResponse = await create();
-  assert.equal(duplicateResponse.status, 200);
-  assert.equal((await duplicateResponse.json()).duplicate, true);
-  assert.equal(deliveries, 1);
-  assert.equal((await repository.getIntegrationActions()).length, 1);
-
-  const testResponse = await app.handle(serviceRequest("/integrations/sprout/test", { method: "POST" }));
-  assert.equal(testResponse.status, 200);
-  assert.equal((await testResponse.json()).integration.status, "connected");
-
-  const metricsResponse = await app.handle(serviceRequest("/integrations/sprout/metrics", {
-    method: "POST",
-    headers: { "content-type": "application/json" },
-    body: "{}",
-  }));
-  assert.equal(metricsResponse.status, 200);
-  assert.equal((await metricsResponse.json()).metrics.posts.length, 1);
-});
-
-test("CRM integration action API rejects credentials in unknown fields and never persists them", async () => {
-  const repository = new InMemorySocialRepository();
-  const app = await createSocialListenerApp({
-    env: serviceEnv,
-    repository,
-    adapters: adapters(async () => providerResponse({ id: "provider-1" })),
-    sproutAdapter: {
-      status: () => ({ provider: "sprout", configured: true, status: "configured" }),
-      createPublishingDraft: async () => ({ externalId: "501", externalStatus: "PENDING", isDraft: true }),
+  const response = await app.handle(serviceRequest(
+    "/reports/leads/scoring?scoreBand=hot&minScore=80&platform=instagram&campaignId=campaign%3A7&page=2&pageSize=50&sort=score_desc",
+  ));
+  assert.equal(response.status, 200);
+  const body = await response.json();
+  assert.equal(body.report, "lead-scoring");
+  assert.equal(body.rows[0].leadScore, 91);
+  assert.deepEqual(request, {
+    reportName: "lead-scoring",
+    filters: {
+      scoreBand: "HOT",
+      minScore: 80,
+      maxScore: null,
+      intent: null,
+      platform: "instagram",
+      source: null,
+      campaignId: "campaign:7",
+      startDate: null,
+      endDate: null,
+      search: null,
+      sort: "score_desc",
+      page: 2,
+      pageSize: 50,
     },
-    logger: silentLogger,
   });
-  const response = await app.handle(serviceRequest("/integration-actions", {
-    method: "POST",
-    headers: { "content-type": "application/json" },
-    body: JSON.stringify({ text: "Safe post", accessToken: "must-never-persist", idempotencyKey: "safe-action" }),
-  }));
-  assert.equal(response.status, 201);
-  assert.doesNotMatch(JSON.stringify(await repository.getIntegrationActions()), /must-never-persist/);
+
+  const invalidRange = await app.handle(serviceRequest("/reports/leads/scoring?minScore=90&maxScore=20"));
+  assert.equal(invalidRange.status, 400);
+  assert.match((await invalidRange.json()).error, /Minimum score/i);
+
+  const invalidBand = await app.handle(serviceRequest("/reports/leads/temperature?scoreBand=VERY_HOT"));
+  assert.equal(invalidBand.status, 400);
+  assert.match((await invalidBand.json()).error, /COLD, WARM, QUALIFIED, or HOT/i);
 });
