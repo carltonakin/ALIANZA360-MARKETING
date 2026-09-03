@@ -76,7 +76,9 @@ tokens and webhook secrets remain server-side control-panel values. Apply all
 SQL migrations with `npm run db:setup:mssql` before using the campaign studio;
 the Buffer lifecycle and campaign editing procedures are installed by
 migrations 006 through 008, Cloudinary identity persistence by migration 010,
-and CRM authentication/user administration by migration 011. Create a Cloudinary product environment and copy its cloud name, API key,
+CRM authentication/user administration by migration 011, and live CRM reporting
+by migration 015. Create a Cloudinary product environment and copy its cloud
+name, API key,
 and API secret from Cloudinary's API Keys settings. Keep the secret server-side
 and never use a `NEXT_PUBLIC_` name. The optional upload preset must permit
 authenticated server uploads if configured. The included `web.config` allows the

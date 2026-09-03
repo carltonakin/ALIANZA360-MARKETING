@@ -405,6 +405,7 @@ const REPORT_PROCEDURES = Object.freeze({
 const PAGED_REPORTS = new Set(["lead-scoring", "lead-engagement", "hot-leads"]);
 
 function reportFieldName(value) {
+  if (value.startsWith("DM")) return `dm${value.slice(2)}`;
   return value ? `${value[0].toLowerCase()}${value.slice(1)}` : value;
 }
 

@@ -813,6 +813,7 @@ test("SQL Server repository parameterizes report filters and maps paged results"
       LeadScore: 91,
       Intent: "PRICING",
       Temperature: "HOT",
+      DMCount: 3,
       LastInteractionDate: new Date("2026-08-20T12:00:00Z"),
       TotalCount: 42,
     }],
@@ -834,6 +835,8 @@ test("SQL Server repository parameterizes report filters and maps paged results"
   assert.equal(executions[0].parameters.get("ScoreBand").value, "HOT");
   assert.equal(executions[0].parameters.get("Search").value, "Priority");
   assert.equal(result.rows[0].leadScore, 91);
+  assert.equal(result.rows[0].dmCount, 3);
+  assert.equal(result.rows[0].dMCount, undefined);
   assert.equal(result.rows[0].lastInteractionDate, "2026-08-20T12:00:00.000Z");
   assert.equal(result.pagination.total, 42);
   assert.equal(result.pagination.totalPages, 2);
