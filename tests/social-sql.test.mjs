@@ -16,6 +16,7 @@ const leadAiResponseMigrationUrl = new URL("../sql/012_lead_intent_ai_response.s
 const leadHistoryMigrationUrl = new URL("../sql/013_lead_scoring_interaction_history.sql", import.meta.url);
 const leadInteractionApiMigrationUrl = new URL("../sql/014_crm_lead_interaction_api.sql", import.meta.url);
 const reportsMigrationUrl = new URL("../sql/015_crm_reports.sql", import.meta.url);
+const replyConversationMigrationUrl = new URL("../sql/016_instagram_two_way_conversations.sql", import.meta.url);
 
 class FakeRequest {
   constructor(executions, result = { recordset: [] }) {
@@ -311,6 +312,32 @@ test("CRM lead interaction API migration supports explicit leads, race-safe idem
   assert.doesNotMatch(sql, /DROP TABLE|TRUNCATE TABLE/i);
 });
 
+test("Instagram reply migration adds a transactional, idempotent n8n delivery queue", async () => {
+  const sql = await readFile(replyConversationMigrationUrl, "utf8");
+  for (const column of [
+    "InReplyToInteractionId", "ExternalReplyId", "ResponseMode", "SentByUserId", "SentAt", "DeliveryError",
+  ]) assert.match(sql, new RegExp(`COL_LENGTH\\(N'dbo\\.SocialInteractions', N'${column}'\\)`, "i"));
+  for (const procedure of ["LeadReply_Create", "LeadReply_Claim", "LeadReply_Complete", "SocialLead_GetUnified"]) {
+    assert.match(sql, new RegExp(`CREATE OR ALTER PROCEDURE dbo\\.${procedure}`, "i"));
+  }
+  assert.match(sql, /CHECK \(ResponseMode IS NULL OR ResponseMode IN \(N'AI_AUTOMATIC', N'AI_ASSISTED', N'MANUAL'\)\)/i);
+  assert.match(sql, /CREATE UNIQUE INDEX UX_SocialInteractions_Platform_ExternalReply/i);
+  assert.match(sql, /SET TRANSACTION ISOLATION LEVEL SERIALIZABLE/i);
+  assert.match(sql, /WITH \(UPDLOCK, HOLDLOCK\)/i);
+  assert.match(sql, /Superseded by a human reply before delivery/i);
+  assert.match(sql, /Provider, Channel, Direction, EventType, IdempotencyKey/i);
+  assert.match(sql, /N'n8n', N'instagram', N'OUTBOUND'/i);
+  assert.match(sql, /UPDLOCK, READPAST, ROWLOCK/i);
+  assert.match(sql, /@Succeeded = 1 AND @ExternalReplyId IS NULL/i);
+  assert.match(sql, /ResponseStatus = CASE WHEN @Succeeded = 1 THEN N'SENT'/i);
+  const completion = sql.slice(
+    sql.indexOf("CREATE OR ALTER PROCEDURE dbo.LeadReply_Complete"),
+    sql.indexOf("CREATE OR ALTER PROCEDURE dbo.SocialLead_GetUnified"),
+  );
+  assert.doesNotMatch(completion, /LeadScore_Recalculate|LeadScore\s*=/i);
+  assert.doesNotMatch(sql, /DROP TABLE|TRUNCATE TABLE/i);
+});
+
 test("SQL integer normalization rounds finite media metadata and nulls invalid values", () => {
   assert.equal(toSqlInteger(891087.1719038817), 891087);
   assert.equal(toSqlInteger(891087), 891087);
@@ -524,6 +551,71 @@ test("SQL Server repository parameterizes CRM integration actions and workflow h
   assert.equal(executions[0].parameters.get("CampaignId").value, 7);
   assert.equal(executions[2].parameters.get("ExternalId").value, "legacy-501");
   assert.equal(executions[2].parameters.get("ResponseJson").value, JSON.stringify({ isDraft: true }));
+});
+
+test("SQL Server repository parameterizes Instagram reply reservation, claim, and completion", async () => {
+  const row = {
+    SocialInteractionId: 40,
+    ReplyId: 40,
+    IntegrationEventId: 90,
+    LeadId: 7,
+    Platform: "instagram",
+    ExternalInteractionId: "crm-reply-key-40",
+    ExternalReplyId: "instagram-reply-40",
+    InReplyToInteractionId: 31,
+    InReplyToExternalInteractionId: "instagram-comment-31",
+    InteractionType: "COMMENT",
+    MessageText: "Thanks for your comment.",
+    Direction: "OUTBOUND",
+    ResponseMode: "MANUAL",
+    SentByUserId: 5,
+    SentByUsername: "agent.five",
+    ResponseStatus: "PENDING",
+    LockToken: "45b31b29-7d22-4a5b-bbf7-6ff695185819",
+    AttemptCount: 1,
+    MaxAttempts: 4,
+  };
+  const { repository, executions } = fakeRepository({ recordset: [row] });
+  const created = await repository.createLeadReply({
+    leadId: "social:7",
+    inReplyToInteractionId: "interaction:31",
+    messageText: "Thanks for your comment.",
+    responseMode: "MANUAL",
+    sentByUserId: 5,
+    idempotencyKey: "crm-reply-key-40",
+    maxAttempts: 4,
+  });
+  assert.equal(created.id, "interaction:40");
+  assert.equal(created.sentByUsername, "agent.five");
+
+  const claimed = await repository.claimLeadReplies({
+    now: "2026-09-03T18:00:00.000Z",
+    limit: 5,
+    lockToken: "45b31b29-7d22-4a5b-bbf7-6ff695185819",
+  });
+  assert.equal(claimed[0].replyId, 40);
+  assert.equal(claimed[0].inReplyToExternalInteractionId, "instagram-comment-31");
+
+  await repository.completeLeadReply(40, {
+    lockToken: "45b31b29-7d22-4a5b-bbf7-6ff695185819",
+    succeeded: true,
+    externalReplyId: "instagram-reply-40",
+    externalStatus: "sent",
+    providerResponse: { id: "instagram-reply-40" },
+    sentAt: "2026-09-03T18:00:01.000Z",
+  });
+
+  assert.deepEqual(executions.map((item) => item.procedure), [
+    "dbo.LeadReply_Create",
+    "dbo.LeadReply_Claim",
+    "dbo.LeadReply_Complete",
+  ]);
+  assert.equal(executions[0].parameters.get("LeadId").value, 7);
+  assert.equal(executions[0].parameters.get("InReplyToInteractionId").value, 31);
+  assert.equal(executions[0].parameters.get("SentByUserId").value, 5);
+  assert.equal(executions[1].parameters.get("Limit").value, 5);
+  assert.equal(executions[2].parameters.get("ExternalReplyId").value, "instagram-reply-40");
+  assert.equal(executions[2].parameters.get("ProviderResponseJson").value, JSON.stringify({ id: "instagram-reply-40" }));
 });
 
 test("SQL Server repository surfaces duplicate procedure results", async () => {

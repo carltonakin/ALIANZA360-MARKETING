@@ -32,7 +32,11 @@ function equalToken(left: string, right: string) {
 function isLeadIntegrationApi(request: NextRequest) {
   if (request.method !== "POST") return false;
   const pathname = request.nextUrl.pathname;
-  return pathname === "/api/leads/interactions" || /^\/api\/leads\/\d+\/intent$/.test(pathname);
+  return pathname === "/api/leads/interactions" ||
+    /^\/api\/leads\/\d+\/intent$/.test(pathname) ||
+    /^\/api\/leads\/\d+\/replies\/automatic$/.test(pathname) ||
+    pathname === "/api/replies/outbound/claim" ||
+    /^\/api\/replies\/\d+\/complete$/.test(pathname);
 }
 
 function hasServiceAuthorization(request: NextRequest) {

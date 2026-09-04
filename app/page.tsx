@@ -195,6 +195,8 @@ type UnifiedLead = {
     id: string;
     platform: string;
     externalInteractionId?: string | null;
+    externalReplyId?: string | null;
+    inReplyToInteractionId?: string | null;
     interactionType: string;
     direction: "INBOUND" | "OUTBOUND";
     message: string;
@@ -203,6 +205,12 @@ type UnifiedLead = {
     intentConfidence?: number | null;
     sentiment: string;
     sourceType: string;
+    responseMode?: "AI_AUTOMATIC" | "AI_ASSISTED" | "MANUAL" | null;
+    sentByUserId?: number | null;
+    sentByUsername?: string | null;
+    responseStatus?: "PENDING" | "SENT" | "FAILED";
+    sentAt?: string | null;
+    deliveryError?: string | null;
   }>;
   conversations: Array<{ id: string; platform: string; importantMessage: string; lastMessageAt: string; status: string }>;
   leadActivities: Array<{ id: string; type: string; summary: string; occurredAt: string }>;
@@ -837,6 +845,15 @@ export default function Home() {
     notify(`Status updated to ${status}`);
   };
 
+  const refreshLead360 = async (leadId: number | string) => {
+    const normalizedLeadId = String(leadId).replace(/^social:/, "");
+    const response = await fetch(`/api/social/leads/${normalizedLeadId}`, { cache: "no-store" });
+    const data = await response.json() as UnifiedLead & { message?: string; error?: string };
+    if (!response.ok) throw new Error(data.message || data.error || "Could not load the lead timeline");
+    setUnifiedLead(data);
+    return data;
+  };
+
   const viewLead360 = async (lead: Lead) => {
     if (!(typeof lead.id === "string" && lead.id.startsWith("social:"))) {
       notify("The 360 timeline is available for SQL-backed social leads");
@@ -844,10 +861,7 @@ export default function Home() {
     }
     setBusy(true);
     try {
-      const response = await fetch(`/api/social/leads/${lead.id.slice("social:".length)}`, { cache: "no-store" });
-      const data = await response.json() as UnifiedLead & { message?: string; error?: string };
-      if (!response.ok) throw new Error(data.message || data.error || "Could not load the lead timeline");
-      setUnifiedLead(data);
+      await refreshLead360(lead.id);
       setModal("lead360");
     } catch (error) {
       notify(error instanceof Error ? error.message : "Could not load the lead timeline");
@@ -1099,7 +1113,9 @@ export default function Home() {
             {modal === "page" && <PageForm key={editingPage?.id || "new"} page={editingPage} campaigns={campaigns} submit={submit} busy={busy} />}
             {modal === "webinar" && <WebinarForm key={editingWebinar?.id || "new"} webinar={editingWebinar} submit={submit} busy={busy} campaigns={campaigns} pages={pages} />}
             {modal === "ai" && <AiDraftForm busy={busy} setBusy={setBusy} onSaved={async (message) => { await load(); setModal(""); notify(message); }} />}
-            {modal === "lead360" && unifiedLead && <Lead360View data={unifiedLead} />}
+            {modal === "lead360" && unifiedLead && (
+              <Lead360View data={unifiedLead} onRefresh={() => refreshLead360(unifiedLead.lead.id)} />
+            )}
           </div>
         </div>
       )}
@@ -1406,11 +1422,39 @@ function Campaigns({
   );
 }
 
-function Lead360View({ data }: { data: UnifiedLead }) {
-  const interactionHistory = data.interactions
-    .filter((item) => ["COMMENT", "REPLY", "DM", "DIRECT_MESSAGE", "STORY_REPLY"].includes(item.interactionType))
+function Lead360View({
+  data,
+  onRefresh,
+}: {
+  data: UnifiedLead;
+  onRefresh: () => Promise<UnifiedLead>;
+}) {
+  const inboundTargets = data.interactions
+    .filter((item) =>
+      item.platform === "instagram" &&
+      item.direction === "INBOUND" &&
+      ["COMMENT", "DM", "DIRECT_MESSAGE", "STORY_REPLY"].includes(item.interactionType))
     .sort((left, right) => String(right.occurredAt).localeCompare(String(left.occurredAt)));
-  const latestInteraction = interactionHistory[0];
+  const interactionHistory = data.interactions
+    .filter((item) =>
+      item.platform === "instagram" &&
+      ["COMMENT", "REPLY", "DM", "DIRECT_MESSAGE", "STORY_REPLY"].includes(item.interactionType))
+    .sort((left, right) => String(left.occurredAt).localeCompare(String(right.occurredAt)));
+  const latestInteraction = interactionHistory.at(-1);
+  const [selectedTargetId, setSelectedTargetId] = useState(inboundTargets[0]?.id || "");
+  const [replyText, setReplyText] = useState("");
+  const [responseMode, setResponseMode] = useState<"MANUAL" | "AI_ASSISTED">("MANUAL");
+  const [replyBusy, setReplyBusy] = useState<"suggestion" | "send" | "">("");
+  const [replyState, setReplyState] = useState<{ tone: "pending" | "success" | "error"; text: string } | null>(null);
+  const replyRequest = useRef<{ key: string; fingerprint: string } | null>(null);
+  const selectedTarget = inboundTargets.find((item) => item.id === selectedTargetId) || inboundTargets[0];
+  const numericLeadId = String(data.lead.id).replace(/^social:/, "");
+  const selectedTargetReply = selectedTarget
+    ? data.interactions.find((item) =>
+        item.direction === "OUTBOUND" &&
+        item.inReplyToInteractionId === selectedTarget.id &&
+        ["PENDING", "SENT"].includes(item.responseStatus || "SENT"))
+    : null;
   const scoreComponents = [
     ["Intent", data.lead.intentScore || 0, 35],
     ["Engagement", data.lead.engagementScore || 0, 20],
@@ -1420,6 +1464,103 @@ function Lead360View({ data }: { data: UnifiedLead }) {
   ] as const;
   const displayInteractionType = (value: string) =>
     ["DIRECT_MESSAGE", "STORY_REPLY"].includes(value) ? "DM" : value.replaceAll("_", " ");
+
+  useEffect(() => {
+    const pending = data.interactions.some((item) => item.direction === "OUTBOUND" && item.responseStatus === "PENDING");
+    if (!pending) return;
+    let cancelled = false;
+    let polling = false;
+    const poll = async () => {
+      if (polling || cancelled) return;
+      polling = true;
+      try {
+        const updated = await onRefresh();
+        const latestReply = updated.interactions.find((item) =>
+          item.direction === "OUTBOUND" && item.inReplyToInteractionId === selectedTargetId);
+        if (latestReply?.responseStatus === "SENT") {
+          setReplyState({ tone: "success", text: "Instagram confirmed that the reply was sent." });
+        } else if (latestReply?.responseStatus === "FAILED") {
+          setReplyState({ tone: "error", text: latestReply.deliveryError || "Instagram could not deliver the reply." });
+        }
+      } catch {
+        // Keep the current delivery state visible and try again while this view is open.
+      } finally {
+        polling = false;
+      }
+    };
+    const timer = window.setInterval(() => void poll(), 2500);
+    return () => {
+      cancelled = true;
+      window.clearInterval(timer);
+    };
+  }, [data.interactions, onRefresh, selectedTargetId]);
+
+  const generateSuggestion = async () => {
+    if (!selectedTarget) return;
+    setReplyBusy("suggestion");
+    setReplyState({ tone: "pending", text: "Generating a draft for human review…" });
+    try {
+      const response = await fetch(`/api/leads/${numericLeadId}/replies/ai-suggestion`, {
+        method: "POST",
+        headers: { "content-type": "application/json" },
+        body: JSON.stringify({ inReplyToInteractionId: selectedTarget.id.replace(/^interaction:/, "") }),
+      });
+      const result = await response.json() as { suggestion?: string; message?: string; error?: string };
+      if (!response.ok || !result.suggestion) {
+        throw new Error(result.message || result.error || "Could not generate an AI suggestion");
+      }
+      setReplyText(result.suggestion);
+      setResponseMode("AI_ASSISTED");
+      replyRequest.current = null;
+      setReplyState({ tone: "success", text: "Draft ready. Review or edit it before sending." });
+    } catch (error) {
+      setReplyState({ tone: "error", text: error instanceof Error ? error.message : "Could not generate an AI suggestion" });
+    } finally {
+      setReplyBusy("");
+    }
+  };
+
+  const sendReply = async () => {
+    const messageText = replyText.trim();
+    if (!selectedTarget || !messageText || selectedTargetReply) return;
+    setReplyBusy("send");
+    setReplyState({ tone: "pending", text: "Queueing the reply for Instagram delivery…" });
+    const fingerprint = `${selectedTarget.id}\u0000${responseMode}\u0000${messageText}`;
+    if (!replyRequest.current || replyRequest.current.fingerprint !== fingerprint) {
+      replyRequest.current = { key: crypto.randomUUID(), fingerprint };
+    }
+    try {
+      const response = await fetch(`/api/leads/${numericLeadId}/replies`, {
+        method: "POST",
+        headers: { "content-type": "application/json" },
+        body: JSON.stringify({
+          inReplyToInteractionId: selectedTarget.id.replace(/^interaction:/, ""),
+          messageText,
+          responseMode,
+          idempotencyKey: replyRequest.current.key,
+        }),
+      });
+      const result = await response.json() as {
+        reply?: UnifiedLead["interactions"][number];
+        message?: string;
+        error?: string;
+      };
+      if (!response.ok || !result.reply) {
+        throw new Error(result.message || result.error || "Could not queue the Instagram reply");
+      }
+      replyRequest.current = null;
+      setReplyText("");
+      setResponseMode("MANUAL");
+      setReplyState(result.reply.responseStatus === "SENT"
+        ? { tone: "success", text: "Instagram confirmed that the reply was sent." }
+        : { tone: "pending", text: "Reply queued. Waiting for Instagram confirmation…" });
+      await onRefresh();
+    } catch (error) {
+      setReplyState({ tone: "error", text: error instanceof Error ? error.message : "Could not queue the Instagram reply" });
+    } finally {
+      setReplyBusy("");
+    }
+  };
 
   return (
     <section className="lead-360">
@@ -1492,7 +1633,83 @@ function Lead360View({ data }: { data: UnifiedLead }) {
         <span><b>{data.appointments.length}</b> appointments</span>
         <span><b>{data.conversionHistory.length}</b> conversions</span>
       </div>
-      <h3>Comment and DM history</h3>
+      <section className="instagram-reply-composer">
+        <div className="reply-composer-heading">
+          <div>
+            <span className="insight-tag">INSTAGRAM CONVERSATION</span>
+            <h3>Reply to a comment or DM</h3>
+          </div>
+          {selectedTarget ? <b>{displayInteractionType(selectedTarget.interactionType)}</b> : null}
+        </div>
+        {inboundTargets.length ? (
+          <>
+            <label>
+              Reply target
+              <select
+                value={selectedTarget?.id || ""}
+                disabled={Boolean(replyBusy)}
+                onChange={(event) => {
+                  setSelectedTargetId(event.target.value);
+                  setReplyText("");
+                  setResponseMode("MANUAL");
+                  setReplyState(null);
+                  replyRequest.current = null;
+                }}
+              >
+                {inboundTargets.map((item) => (
+                  <option key={item.id} value={item.id}>
+                    {displayInteractionType(item.interactionType)} · {formatUtcTime(item.occurredAt)} · {(item.message || item.intent).slice(0, 70)}
+                  </option>
+                ))}
+              </select>
+            </label>
+            <label>
+              Response
+              <textarea
+                rows={4}
+                maxLength={2200}
+                value={replyText}
+                disabled={Boolean(replyBusy) || Boolean(selectedTargetReply)}
+                placeholder={selectedTargetReply ? "This interaction already has a pending or sent reply." : "Write an Instagram reply…"}
+                onChange={(event) => {
+                  setReplyText(event.target.value);
+                  if (responseMode === "AI_ASSISTED") replyRequest.current = null;
+                }}
+              />
+            </label>
+            <div className="reply-composer-actions">
+              <button
+                type="button"
+                disabled={Boolean(replyBusy) || Boolean(selectedTargetReply)}
+                onClick={() => void generateSuggestion()}
+              >
+                {replyBusy === "suggestion" ? "Generating…" : "Generate AI Suggestion"}
+              </button>
+              <span>{responseMode === "AI_ASSISTED" ? "AI-assisted draft · human approval required" : "Manual reply"}</span>
+              <button
+                type="button"
+                className="primary"
+                disabled={Boolean(replyBusy) || !replyText.trim() || Boolean(selectedTargetReply)}
+                onClick={() => void sendReply()}
+              >
+                {replyBusy === "send" ? "Queueing…" : "Send Reply"}
+              </button>
+            </div>
+            {selectedTargetReply ? (
+              <p className={`reply-delivery-state ${selectedTargetReply.responseStatus === "SENT" ? "success" : "pending"}`}>
+                {selectedTargetReply.responseStatus === "SENT"
+                  ? "A reply has already been sent for this interaction."
+                  : "A reply is pending Instagram delivery for this interaction."}
+              </p>
+            ) : replyState ? (
+              <p className={`reply-delivery-state ${replyState.tone}`}>{replyState.text}</p>
+            ) : null}
+          </>
+        ) : (
+          <p>No inbound Instagram comment or DM is available to reply to.</p>
+        )}
+      </section>
+      <h3>Two-way Instagram history</h3>
       <div className="lead-360-timeline">
         {interactionHistory.length ? interactionHistory.map((item) => (
           <div key={item.id}>
@@ -1504,9 +1721,18 @@ function Lead360View({ data }: { data: UnifiedLead }) {
                 <b>{item.platform}</b>
               </strong>
               <small>{item.message || item.intent}</small>
-              <em>{item.intent.replaceAll("_", " ")} · {item.sentiment} · {item.sourceType}</em>
+              <em>
+                {item.direction === "OUTBOUND"
+                  ? [
+                      item.responseMode || "AI_AUTOMATIC",
+                      item.sentByUsername ? `sent by ${item.sentByUsername}` : null,
+                      item.responseStatus || "SENT",
+                      item.deliveryError || null,
+                    ].filter(Boolean).join(" · ")
+                  : `${item.intent.replaceAll("_", " ")} · ${item.sentiment} · ${item.sourceType}`}
+              </em>
             </span>
-            <time>{formatSocialTime(item.occurredAt)}</time>
+            <time>{formatUtcTime(item.sentAt || item.occurredAt)}</time>
           </div>
         )) : <p>No comment or DM history has been recorded yet.</p>}
       </div>
@@ -1673,6 +1899,20 @@ function formatSocialTime(value: string | null) {
   if (!value) return "Not yet";
   const parsed = new Date(value);
   return Number.isNaN(parsed.getTime()) ? value : parsed.toLocaleString();
+}
+
+function formatUtcTime(value: string | null) {
+  if (!value) return "Not yet";
+  const parsed = new Date(value);
+  if (Number.isNaN(parsed.getTime())) return value;
+  return `${parsed.toLocaleString(undefined, {
+    timeZone: "UTC",
+    year: "numeric",
+    month: "short",
+    day: "numeric",
+    hour: "2-digit",
+    minute: "2-digit",
+  })} UTC`;
 }
 
 function channelRequirement(channel: SocialChannelConfig["channel"]) {

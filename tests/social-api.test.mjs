@@ -304,6 +304,240 @@ test("normalized interaction API reuses leads, deduplicates history, scores it, 
   assert.equal(rescored.band, "QUALIFIED");
 });
 
+test("authenticated CRM replies stay pending until n8n confirms Instagram delivery", async () => {
+  const repository = new InMemorySocialRepository();
+  const authService = {
+    async bootstrapDefaultAdmin() {},
+    async authenticate(token) {
+      assert.equal(token, "crm-session-token");
+      return { id: 7, username: "sales.agent", role: "BASIC", isActive: true };
+    },
+  };
+  const app = await createSocialListenerApp({
+    env: serviceEnv,
+    repository,
+    adapters: adapters(async () => providerResponse({ id: "provider" })),
+    authService,
+    logger: silentLogger,
+  });
+  const inboundResponse = await app.handle(serviceRequest("/lead-interactions", {
+    method: "POST",
+    headers: { "content-type": "application/json" },
+    body: JSON.stringify({
+      platform: "instagram",
+      externalUserId: "reply-user-1",
+      username: "reply_buyer",
+      externalInteractionId: "reply-comment-1",
+      interactionType: "COMMENT",
+      direction: "INBOUND",
+      messageText: "Can I book a consultation?",
+      intent: "APPOINTMENT_REQUEST",
+      intentConfidence: 1,
+      occurredAt: "2026-09-03T15:00:00.000Z",
+    }),
+  }));
+  const inbound = await inboundResponse.json();
+  const scoreBeforeReply = inbound.score;
+
+  const queuedResponse = await app.handle(serviceRequest("/leads/1/replies", {
+    method: "POST",
+    headers: {
+      "content-type": "application/json",
+      "x-crm-session-token": "crm-session-token",
+    },
+    body: JSON.stringify({
+      inReplyToInteractionId: inbound.interactionId,
+      messageText: "Absolutely — I can help you choose a consultation time.",
+      responseMode: "MANUAL",
+      idempotencyKey: "crm-manual-reply-1",
+    }),
+  }));
+  const queued = await queuedResponse.json();
+  assert.equal(queuedResponse.status, 202);
+  assert.equal(queued.reply.direction, "OUTBOUND");
+  assert.equal(queued.reply.responseMode, "MANUAL");
+  assert.equal(queued.reply.responseStatus, "PENDING");
+  assert.equal(queued.reply.sentByUserId, 7);
+  assert.equal(queued.reply.sentByUsername, "sales.agent");
+  assert.equal(queued.reply.sentAt, null);
+
+  const duplicateResponse = await app.handle(serviceRequest("/leads/1/replies", {
+    method: "POST",
+    headers: {
+      "content-type": "application/json",
+      "x-crm-session-token": "crm-session-token",
+    },
+    body: JSON.stringify({
+      inReplyToInteractionId: inbound.interactionId,
+      messageText: "Absolutely — I can help you choose a consultation time.",
+      responseMode: "MANUAL",
+      idempotencyKey: "crm-manual-reply-1",
+    }),
+  }));
+  assert.equal(duplicateResponse.status, 200);
+  assert.equal((await duplicateResponse.json()).reply.duplicate, true);
+
+  const claimResponse = await app.handle(serviceRequest("/reply-requests/claim", {
+    method: "POST",
+    headers: { "content-type": "application/json" },
+    body: JSON.stringify({ limit: 10 }),
+  }));
+  const claim = await claimResponse.json();
+  assert.equal(claimResponse.status, 200);
+  assert.equal(claim.replies.length, 1);
+  assert.equal(claim.replies[0].interactionType, "COMMENT");
+  assert.equal(claim.replies[0].inReplyToExternalInteractionId, "reply-comment-1");
+
+  const completionResponse = await app.handle(serviceRequest(`/reply-requests/${claim.replies[0].replyId}/complete`, {
+    method: "POST",
+    headers: { "content-type": "application/json" },
+    body: JSON.stringify({
+      lockToken: claim.lockToken,
+      succeeded: true,
+      externalReplyId: "instagram-reply-501",
+      externalStatus: "sent",
+      sentAt: "2026-09-03T15:01:00.000Z",
+      providerResponse: { id: "instagram-reply-501" },
+    }),
+  }));
+  const completion = await completionResponse.json();
+  assert.equal(completionResponse.status, 200);
+  assert.equal(completion.reply.responseStatus, "SENT");
+  assert.equal(completion.reply.externalReplyId, "instagram-reply-501");
+  assert.equal(completion.reply.sentAt, "2026-09-03T15:01:00.000Z");
+
+  const unified = await (await app.handle(serviceRequest("/leads/1/unified"))).json();
+  assert.equal(unified.interactions.length, 2);
+  assert.deepEqual(unified.interactions.map((item) => item.direction), ["OUTBOUND", "INBOUND"]);
+  assert.equal(unified.lead.leadScore, scoreBeforeReply);
+  assert.equal(unified.lead.lastResponseText, "Absolutely — I can help you choose a consultation time.");
+
+  const conflictingAutomatic = await app.handle(serviceRequest("/leads/1/replies/automatic", {
+    method: "POST",
+    headers: { "content-type": "application/json" },
+    body: JSON.stringify({
+      inReplyToInteractionId: inbound.interactionId,
+      messageText: "Automatic duplicate",
+      idempotencyKey: "automatic-after-success-1",
+    }),
+  }));
+  assert.equal(conflictingAutomatic.status, 409);
+});
+
+test("a human reply suppresses an automatic reply that has not started delivery", async () => {
+  const repository = new InMemorySocialRepository();
+  const authService = {
+    async bootstrapDefaultAdmin() {},
+    async authenticate() {
+      return { id: 9, username: "reviewer", role: "ADMIN", isActive: true };
+    },
+  };
+  const app = await createSocialListenerApp({
+    env: serviceEnv,
+    repository,
+    adapters: adapters(async () => providerResponse({ id: "provider" })),
+    authService,
+    logger: silentLogger,
+  });
+  const inbound = await (await app.handle(serviceRequest("/lead-interactions", {
+    method: "POST",
+    headers: { "content-type": "application/json" },
+    body: JSON.stringify({
+      platform: "instagram",
+      externalUserId: "reply-user-2",
+      externalInteractionId: "reply-dm-2",
+      interactionType: "DM",
+      direction: "INBOUND",
+      messageText: "Please tell me more.",
+      occurredAt: "2026-09-03T16:00:00.000Z",
+    }),
+  }))).json();
+
+  const automatic = await app.handle(serviceRequest("/leads/1/replies/automatic", {
+    method: "POST",
+    headers: { "content-type": "application/json" },
+    body: JSON.stringify({
+      inReplyToInteractionId: inbound.interactionId,
+      messageText: "Automated answer",
+      idempotencyKey: "automatic-pending-2",
+    }),
+  }));
+  assert.equal(automatic.status, 202);
+
+  const human = await app.handle(serviceRequest("/leads/1/replies", {
+    method: "POST",
+    headers: { "content-type": "application/json", "x-crm-session-token": "crm-session-token" },
+    body: JSON.stringify({
+      inReplyToInteractionId: inbound.interactionId,
+      messageText: "Human-reviewed answer",
+      responseMode: "AI_ASSISTED",
+      idempotencyKey: "human-assisted-2",
+    }),
+  }));
+  assert.equal(human.status, 202);
+
+  const claim = await (await app.handle(serviceRequest("/reply-requests/claim", {
+    method: "POST",
+    headers: { "content-type": "application/json" },
+    body: JSON.stringify({ limit: 10 }),
+  }))).json();
+  assert.equal(claim.replies.length, 1);
+  assert.equal(claim.replies[0].responseMode, "AI_ASSISTED");
+  assert.equal(claim.replies[0].messageText, "Human-reviewed answer");
+
+  const unified = await (await app.handle(serviceRequest("/leads/1/unified"))).json();
+  const cancelled = unified.interactions.find((item) => item.responseMode === "AI_AUTOMATIC");
+  assert.equal(cancelled.responseStatus, "FAILED");
+  assert.match(cancelled.deliveryError, /Superseded by a human reply/i);
+});
+
+test("AI-assisted replies generate a draft without sending it", async () => {
+  const repository = new InMemorySocialRepository();
+  const authService = {
+    async bootstrapDefaultAdmin() {},
+    async authenticate() {
+      return { id: 12, username: "draft.reviewer", role: "BASIC", isActive: true };
+    },
+  };
+  const fetchImpl = async (url) => String(url).includes("api.openai.com")
+    ? providerResponse({ id: "resp_reply_draft", output_text: JSON.stringify({ suggestion: "Thanks for reaching out — what time works best for you?" }) })
+    : providerResponse({ id: "provider" });
+  const app = await createSocialListenerApp({
+    env: { ...serviceEnv, OPENAI_API_KEY: "test-openai-key", OPENAI_MODEL: "test-model" },
+    repository,
+    adapters: adapters(fetchImpl),
+    authService,
+    fetchImpl,
+    logger: silentLogger,
+  });
+  const inbound = await (await app.handle(serviceRequest("/lead-interactions", {
+    method: "POST",
+    headers: { "content-type": "application/json" },
+    body: JSON.stringify({
+      platform: "instagram",
+      externalUserId: "reply-user-3",
+      externalInteractionId: "reply-dm-3",
+      interactionType: "DM",
+      direction: "INBOUND",
+      messageText: "When can we talk?",
+      occurredAt: "2026-09-03T17:00:00.000Z",
+    }),
+  }))).json();
+
+  const response = await app.handle(serviceRequest("/leads/1/replies/ai-suggestion", {
+    method: "POST",
+    headers: { "content-type": "application/json", "x-crm-session-token": "crm-session-token" },
+    body: JSON.stringify({ inReplyToInteractionId: inbound.interactionId }),
+  }));
+  const result = await response.json();
+  assert.equal(response.status, 200);
+  assert.equal(result.responseMode, "AI_ASSISTED");
+  assert.equal(result.reviewedBy, "draft.reviewer");
+  assert.match(result.suggestion, /what time works best/i);
+  assert.equal(repository.interactions.size, 1);
+  assert.equal(repository.integrationEvents.size, 0);
+});
+
 test("CRM lead interaction API owns intent scoring, history, and lead-targeted outbound replies", async () => {
   const { app, repository } = await createApp();
   const inboundResponse = await app.handle(serviceRequest("/lead-interactions", {

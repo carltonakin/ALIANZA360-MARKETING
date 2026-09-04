@@ -98,17 +98,23 @@ function mapLead(row) {
 
 function mapLeadInteraction(row) {
   const qualification = jsonValue(row.QualificationJson, {});
+  const direction = String(row.Direction || "INBOUND").toUpperCase();
+  const responseStatus = row.ResponseStatus || (direction === "OUTBOUND" ? "SENT" : "PENDING");
   return {
     id: `interaction:${row.SocialInteractionId ?? row.InteractionId}`,
     platform: row.Platform || null,
     externalInteractionId: row.ExternalInteractionId || null,
+    externalReplyId: row.ExternalReplyId || (direction === "OUTBOUND" ? row.ExternalInteractionId || null : null),
     platformUserId: row.PlatformUserId || null,
     platformPostId: row.ExternalPostId || row.PlatformPostId || null,
     platformConversationId: row.PlatformConversationId || null,
+    inReplyToInteractionId: row.InReplyToInteractionId
+      ? `interaction:${row.InReplyToInteractionId}`
+      : null,
     interactionType: row.InteractionType,
     message: row.MessageText || "",
     occurredAt: iso(row.OccurredAt),
-    direction: row.Direction,
+    direction,
     intent: row.Intent,
     intentConfidence: row.IntentConfidence === null || row.IntentConfidence === undefined
       ? null
@@ -123,10 +129,40 @@ function mapLeadInteraction(row) {
     advertisementId: row.AdvertisementId || null,
     leadFormId: row.LeadFormId || null,
     sourceType: row.SourceType,
-    responseStatus: row.ResponseStatus,
+    responseMode: row.ResponseMode || (direction === "OUTBOUND" ? "AI_AUTOMATIC" : null),
+    sentByUserId: row.SentByUserId === null || row.SentByUserId === undefined
+      ? null
+      : Number(row.SentByUserId),
+    sentByUsername: row.SentByUsername || null,
+    responseStatus,
+    sentAt: iso(row.SentAt) || (direction === "OUTBOUND" && responseStatus === "SENT" ? iso(row.OccurredAt) : null),
+    deliveryError: row.DeliveryError || null,
     qualification,
     aiClassification: qualification.aiClassification || {},
     processedAt: iso(row.ProcessedAt),
+    duplicate: Boolean(row.Duplicate),
+    duplicateCompletion: Boolean(row.DuplicateCompletion),
+    queueStatus: row.QueueStatus || null,
+  };
+}
+
+function mapLeadReplyClaim(row) {
+  return {
+    integrationEventId: Number(row.IntegrationEventId),
+    lockToken: row.LockToken ? String(row.LockToken) : null,
+    attemptCount: Number(row.AttemptCount || 0),
+    maxAttempts: Number(row.MaxAttempts || 0),
+    replyId: Number(row.ReplyId),
+    leadId: Number(row.LeadId),
+    platform: row.Platform,
+    interactionType: row.InteractionType,
+    messageText: row.MessageText || "",
+    responseMode: row.ResponseMode,
+    inReplyToInteractionId: Number(row.InReplyToInteractionId),
+    inReplyToExternalInteractionId: row.InReplyToExternalInteractionId || null,
+    externalPostId: row.ExternalPostId || null,
+    conversationId: row.ConversationId || null,
+    externalUserId: row.ExternalUserId || null,
   };
 }
 
@@ -1121,6 +1157,47 @@ export class SqlServerRepository {
     request.input("DetailsJson", this.sql.NVarChar(this.sql.MAX), JSON.stringify(input.details || {}));
     const response = await request.execute("dbo.CRMAuditLog_Insert");
     return response.recordset?.[0] || null;
+  }
+
+  async createLeadReply(input) {
+    const request = this.request();
+    request.input("LeadId", this.sql.BigInt, numericId(input.leadId));
+    request.input("InReplyToInteractionId", this.sql.BigInt, numericId(input.inReplyToInteractionId));
+    request.input("MessageText", this.sql.NVarChar(this.sql.MAX), input.messageText);
+    request.input("ResponseMode", this.sql.NVarChar(32), input.responseMode);
+    request.input("SentByUserId", this.sql.BigInt, numericId(input.sentByUserId));
+    request.input("IdempotencyKey", this.sql.NVarChar(255), input.idempotencyKey);
+    request.input("MaxAttempts", this.sql.Int, Math.max(1, Math.min(10, Number(input.maxAttempts) || 4)));
+    const response = await request.execute("dbo.LeadReply_Create");
+    return response.recordset?.[0] ? mapLeadInteraction(response.recordset[0]) : null;
+  }
+
+  async claimLeadReplies({ now, limit, lockToken, replyId = null }) {
+    const request = this.request();
+    request.input("Now", this.sql.DateTime2, new Date(now));
+    request.input("Limit", this.sql.Int, Math.max(1, Math.min(50, Number(limit) || 10)));
+    request.input("LockToken", this.sql.UniqueIdentifier, lockToken);
+    request.input("ReplyId", this.sql.BigInt, numericId(replyId));
+    const response = await request.execute("dbo.LeadReply_Claim");
+    return (response.recordset || []).map(mapLeadReplyClaim);
+  }
+
+  async completeLeadReply(replyId, result) {
+    const request = this.request();
+    request.input("ReplyId", this.sql.BigInt, numericId(replyId));
+    request.input("LockToken", this.sql.UniqueIdentifier, result.lockToken);
+    request.input("Succeeded", this.sql.Bit, result.succeeded ? 1 : 0);
+    request.input("ExternalReplyId", this.sql.NVarChar(255), result.externalReplyId || null);
+    request.input("ExternalStatus", this.sql.NVarChar(100), result.externalStatus || null);
+    request.input("ProviderResponseJson", this.sql.NVarChar(this.sql.MAX), result.providerResponse
+      ? JSON.stringify(result.providerResponse)
+      : null);
+    request.input("LastError", this.sql.NVarChar(1000), result.error || null);
+    request.input("Retryable", this.sql.Bit, result.retryable ? 1 : 0);
+    request.input("NextAttemptAt", this.sql.DateTime2, result.nextAttemptAt ? new Date(result.nextAttemptAt) : null);
+    request.input("SentAt", this.sql.DateTime2, result.sentAt ? new Date(result.sentAt) : null);
+    const response = await request.execute("dbo.LeadReply_Complete");
+    return response.recordset?.[0] ? mapLeadInteraction(response.recordset[0]) : null;
   }
 
   async getUnifiedLead(leadId) {

@@ -117,3 +117,95 @@ export async function generateAiDraft({ entity, brief }, {
     throw error;
   }
 }
+
+export async function generateLeadReplySuggestion({ target, interactions = [] }, {
+  env = process.env,
+  fetchImpl = globalThis.fetch,
+} = {}) {
+  if (!target || target.platform !== "instagram" || String(target.direction).toUpperCase() !== "INBOUND") {
+    const error = new Error("An inbound Instagram interaction is required for an AI suggestion.");
+    error.statusCode = 400;
+    throw error;
+  }
+  if (!env.OPENAI_API_KEY) {
+    const error = new Error("OPENAI_API_KEY is not configured on the listener service.");
+    error.statusCode = 503;
+    throw error;
+  }
+
+  const model = env.OPENAI_MODEL || "gpt-5.6";
+  const conversation = interactions
+    .filter((item) => item.platform === "instagram" && ["COMMENT", "DM", "DIRECT_MESSAGE", "STORY_REPLY"].includes(item.interactionType))
+    .slice(0, 12)
+    .reverse()
+    .map((item) => ({
+      direction: String(item.direction || "INBOUND").toUpperCase(),
+      type: ["DIRECT_MESSAGE", "STORY_REPLY"].includes(item.interactionType) ? "DM" : item.interactionType,
+      message: String(item.message || "").slice(0, 2_000),
+      occurredAt: item.occurredAt || null,
+    }));
+  const response = await fetchImpl("https://api.openai.com/v1/responses", {
+    method: "POST",
+    headers: {
+      authorization: `Bearer ${env.OPENAI_API_KEY}`,
+      "content-type": "application/json",
+    },
+    body: JSON.stringify({
+      model,
+      store: false,
+      input: [
+        {
+          role: "system",
+          content: "Draft one concise, helpful Instagram reply for a CRM user to review. Do not claim an action, price, availability, or commitment that is not present in the conversation. Do not mention AI. Return only the schema field. The draft must not be sent automatically.",
+        },
+        {
+          role: "user",
+          content: JSON.stringify({
+            replyTarget: {
+              type: ["DIRECT_MESSAGE", "STORY_REPLY"].includes(target.interactionType) ? "DM" : target.interactionType,
+              message: String(target.message || "").slice(0, 4_000),
+            },
+            recentConversation: conversation,
+          }),
+        },
+      ],
+      text: {
+        format: {
+          type: "json_schema",
+          name: "crm360_instagram_reply_suggestion",
+          strict: true,
+          schema: {
+            type: "object",
+            properties: {
+              suggestion: { type: "string", minLength: 1, maxLength: 2_200 },
+            },
+            required: ["suggestion"],
+            additionalProperties: false,
+          },
+        },
+      },
+    }),
+  });
+  const payload = await response.json().catch(() => ({}));
+  if (!response.ok) {
+    const error = new Error(safeApiError(payload, response.status));
+    error.statusCode = response.status === 400 ? 400 : 502;
+    throw error;
+  }
+  const text = outputText(payload);
+  if (!text) {
+    const error = new Error("OpenAI returned no reply suggestion.");
+    error.statusCode = 502;
+    throw error;
+  }
+  try {
+    const parsed = JSON.parse(text);
+    const suggestion = typeof parsed.suggestion === "string" ? parsed.suggestion.trim() : "";
+    if (!suggestion) throw new Error("empty suggestion");
+    return { suggestion: suggestion.slice(0, 2_200), model, responseId: payload.id || null };
+  } catch {
+    const error = new Error("OpenAI returned an invalid reply suggestion.");
+    error.statusCode = 502;
+    throw error;
+  }
+}

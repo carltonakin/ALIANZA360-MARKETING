@@ -127,6 +127,16 @@ test("n8n routes require service Bearer auth without falling through to CRM sess
   assert.notEqual(intent.status, 401);
   assert.doesNotMatch(await intent.text(), /Authentication is required/i);
 
+  for (const path of [
+    "/api/leads/1/replies/automatic",
+    "/api/replies/outbound/claim",
+    "/api/replies/1/complete",
+  ]) {
+    const replyRequest = await post(path, `Bearer ${testServiceToken}`);
+    assert.notEqual(replyRequest.status, 401, `${path} must use service authentication`);
+    assert.doesNotMatch(await replyRequest.text(), /Authentication is required/i);
+  }
+
   const unrelated = await fetch(`${dashboardUrl}/api/leads/1`, {
     headers: { authorization: `Bearer ${testServiceToken}` },
   });
@@ -167,7 +177,13 @@ test("dashboard exposes social listener configuration and live diagnostics", asy
   assert.match(page, /label="Last Intent" name="lastIntent"/i);
   assert.match(page, /AI Response[\s\S]+?<textarea[\s\S]+?name="crmnotes"/i);
   assert.match(page, /LATEST COMMENT OR DM/i);
-  assert.match(page, /Comment and DM history/i);
+  assert.match(page, /Two-way Instagram history/i);
+  assert.match(page, /Generate AI Suggestion/i);
+  assert.match(page, /Send Reply/i);
+  assert.match(page, /AI-assisted draft · human approval required/i);
+  assert.match(page, /formatUtcTime\(item\.sentAt \|\| item\.occurredAt\)/i);
+  assert.match(page, /item\.sentByUsername/i);
+  assert.match(page, /item\.responseStatus/i);
   assert.match(page, /scoreReason/i);
   assert.match(page, /item\.direction\.toLowerCase\(\)/i);
   assert.match(page, /\{\(l\.intent \|\| "—"\)\.replaceAll\("_", " "\)\}/i);
@@ -217,11 +233,19 @@ test("dashboard exposes social listener configuration and live diagnostics", asy
 });
 
 test("CRM lead interaction routes expose the n8n contract through service-token authentication", async () => {
-  const [interactionRoute, intentRoute, historyRoute, detailRoute, proxy, documentation] = await Promise.all([
+  const [
+    interactionRoute, intentRoute, historyRoute, detailRoute, manualReplyRoute, suggestionRoute,
+    automaticReplyRoute, claimRoute, completionRoute, proxy, documentation,
+  ] = await Promise.all([
     readFile(new URL("../app/api/leads/interactions/route.ts", import.meta.url), "utf8"),
     readFile(new URL("../app/api/leads/[leadId]/intent/route.ts", import.meta.url), "utf8"),
     readFile(new URL("../app/api/leads/[leadId]/interactions/route.ts", import.meta.url), "utf8"),
     readFile(new URL("../app/api/leads/[leadId]/route.ts", import.meta.url), "utf8"),
+    readFile(new URL("../app/api/leads/[leadId]/replies/route.ts", import.meta.url), "utf8"),
+    readFile(new URL("../app/api/leads/[leadId]/replies/ai-suggestion/route.ts", import.meta.url), "utf8"),
+    readFile(new URL("../app/api/leads/[leadId]/replies/automatic/route.ts", import.meta.url), "utf8"),
+    readFile(new URL("../app/api/replies/outbound/claim/route.ts", import.meta.url), "utf8"),
+    readFile(new URL("../app/api/replies/[replyId]/complete/route.ts", import.meta.url), "utf8"),
     readFile(new URL("../proxy.ts", import.meta.url), "utf8"),
     readFile(new URL("../docs/n8n-lead-interactions.md", import.meta.url), "utf8"),
   ]);
@@ -229,17 +253,30 @@ test("CRM lead interaction routes expose the n8n contract through service-token 
   assert.match(intentRoute, /forwardJson\(request, `\/leads\/\$\{leadId\}\/intent`\)/i);
   assert.match(historyRoute, /proxySocialRequest\(`\/leads\/\$\{leadId\}\/interactions`\)/i);
   assert.match(detailRoute, /proxySocialRequest\(`\/leads\/\$\{leadId\}`\)/i);
+  assert.match(manualReplyRoute, /authenticatedAuthRequest\(`\/leads\/\$\{leadId\}\/replies`/i);
+  assert.match(suggestionRoute, /authenticatedAuthRequest\(`\/leads\/\$\{leadId\}\/replies\/ai-suggestion`/i);
+  assert.match(automaticReplyRoute, /forwardJson\(request, `\/leads\/\$\{leadId\}\/replies\/automatic`\)/i);
+  assert.match(claimRoute, /forwardJson\(request, "\/reply-requests\/claim"\)/i);
+  assert.match(completionRoute, /forwardJson\(request, `\/reply-requests\/\$\{replyId\}\/complete`\)/i);
   assert.match(proxy, /isLeadIntegrationApi/i);
   assert.match(proxy, /hasServiceAuthorization/i);
   assert.match(proxy, /process\.env\.SERVICE_AUTH_TOKEN/i);
   assert.match(proxy, /request\.method !== "POST"/i);
   assert.match(proxy, /pathname === "\/api\/leads\/interactions"/i);
   assert.match(proxy, /\\d\+\\\/intent\$/i);
+  assert.match(proxy, /replies\\\/automatic\$/i);
+  assert.match(proxy, /pathname === "\/api\/replies\/outbound\/claim"/i);
+  assert.match(proxy, /api\\\/replies\\\/\\d\+\\\/complete\$/i);
   assert.match(documentation, /duplicateInteraction/i);
   assert.match(documentation, /deliveryConfirmed/i);
   assert.match(documentation, /OpenAI may classify intent and generate a reply/i);
   assert.match(documentation, /Neither n8n nor OpenAI may submit or directly update CRM scoring fields/i);
-  assert.doesNotMatch(`${interactionRoute}\n${intentRoute}\n${historyRoute}\n${detailRoute}\n${proxy}`, /service-token|password|secret-key/i);
+  assert.match(documentation, /reserve\/claim\/complete/i);
+  assert.match(documentation, /Superseded by a human reply/i);
+  assert.doesNotMatch([
+    interactionRoute, intentRoute, historyRoute, detailRoute, manualReplyRoute, suggestionRoute,
+    automaticReplyRoute, claimRoute, completionRoute, proxy,
+  ].join("\n"), /service-token|password|secret-key/i);
 });
 
 test("production dashboard uses the SQL-backed API without demo-record fallback", async () => {

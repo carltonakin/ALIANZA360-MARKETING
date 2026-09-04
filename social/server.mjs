@@ -1,4 +1,5 @@
 import { createRequire } from "node:module";
+import { randomUUID } from "node:crypto";
 import { pathToFileURL } from "node:url";
 import {
   SOCIAL_CHANNELS,
@@ -16,7 +17,7 @@ import {
   normalizeChannelName,
   publicChannelConfiguration,
 } from "./channel-config.mjs";
-import { generateAiDraft } from "./ai.mjs";
+import { generateAiDraft, generateLeadReplySuggestion } from "./ai.mjs";
 import { CampaignAutomationEngine } from "./campaign-automation.mjs";
 import {
   DEFAULT_SCORING_RULES,
@@ -674,6 +675,111 @@ function normalizeLeadIntentInput(body) {
     pricingIntent: body.pricingIntent ?? null,
     purchaseIntent: body.purchaseIntent ?? null,
   };
+}
+
+const REPLY_MODES = new Set(["AI_AUTOMATIC", "AI_ASSISTED", "MANUAL"]);
+
+function normalizeLeadReplyInput(body, { automatic = false, user = null } = {}) {
+  rejectClientScoringFields(body);
+  const inReplyToInteractionId = optionalPositiveId(
+    body.inReplyToInteractionId ?? body.interactionId,
+    "InReplyToInteractionId",
+  );
+  if (!inReplyToInteractionId) {
+    const error = new Error("InReplyToInteractionId is required.");
+    error.statusCode = 400;
+    throw error;
+  }
+  const messageText = cleanLeadValue(body.messageText ?? body.message, 100_000);
+  if (!messageText) {
+    const error = new Error("Reply text is required.");
+    error.statusCode = 400;
+    throw error;
+  }
+  const responseMode = automatic
+    ? "AI_AUTOMATIC"
+    : String(body.responseMode || "MANUAL").trim().toUpperCase();
+  if (!REPLY_MODES.has(responseMode) || (!automatic && responseMode === "AI_AUTOMATIC")) {
+    const error = new Error("CRM users may send MANUAL or AI_ASSISTED replies.");
+    error.statusCode = 400;
+    throw error;
+  }
+  const suppliedIdempotencyKey = cleanLeadValue(body.idempotencyKey, 240);
+  if (!suppliedIdempotencyKey) {
+    const error = new Error("An idempotency key is required.");
+    error.statusCode = 400;
+    throw error;
+  }
+  const idempotencyKey = `crm-reply:${suppliedIdempotencyKey}`;
+  const maxAttempts = body.maxAttempts === undefined ? 4 : Number(body.maxAttempts);
+  if (!Number.isInteger(maxAttempts) || maxAttempts < 1 || maxAttempts > 10) {
+    const error = new Error("MaxAttempts must be an integer between 1 and 10.");
+    error.statusCode = 400;
+    throw error;
+  }
+  return {
+    inReplyToInteractionId,
+    messageText,
+    responseMode,
+    sentByUserId: automatic ? null : user?.id || null,
+    sentByUsername: automatic ? null : user?.username || null,
+    idempotencyKey,
+    maxAttempts,
+  };
+}
+
+function normalizeLeadReplyCompletion(body) {
+  const lockToken = cleanLeadValue(body.lockToken, 64);
+  if (!/^[0-9a-f]{8}-[0-9a-f]{4}-[1-5][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i.test(lockToken || "")) {
+    const error = new Error("A valid reply lock token is required.");
+    error.statusCode = 400;
+    throw error;
+  }
+  if (typeof body.succeeded !== "boolean") {
+    const error = new Error("Succeeded must be true or false.");
+    error.statusCode = 400;
+    throw error;
+  }
+  const sentAt = body.sentAt ? new Date(body.sentAt) : new Date();
+  if (Number.isNaN(sentAt.getTime())) {
+    const error = new Error("SentAt must be a valid date and time.");
+    error.statusCode = 400;
+    throw error;
+  }
+  const nextAttemptAt = body.nextAttemptAt ? new Date(body.nextAttemptAt) : null;
+  if (nextAttemptAt && Number.isNaN(nextAttemptAt.getTime())) {
+    const error = new Error("NextAttemptAt must be a valid date and time.");
+    error.statusCode = 400;
+    throw error;
+  }
+  const externalReplyId = cleanLeadValue(body.externalReplyId, 255);
+  if (body.succeeded && !externalReplyId) {
+    const error = new Error("A successful Instagram delivery requires the external reply ID.");
+    error.statusCode = 400;
+    throw error;
+  }
+  return {
+    lockToken,
+    succeeded: body.succeeded,
+    externalReplyId,
+    externalStatus: cleanLeadValue(body.externalStatus, 100),
+    providerResponse: body.providerResponse && typeof body.providerResponse === "object"
+      ? body.providerResponse
+      : null,
+    error: cleanLeadValue(body.error, 1000),
+    retryable: body.retryable === true,
+    nextAttemptAt: nextAttemptAt?.toISOString() || null,
+    sentAt: sentAt.toISOString(),
+  };
+}
+
+function throwMappedReplyError(error) {
+  if (Number.isInteger(error?.statusCode)) throw error;
+  const number = Number(error?.number || error?.originalError?.info?.number);
+  if (number === 51213 || number === 51205) error.statusCode = 404;
+  else if ([51207, 51208, 51209, 51210, 51214].includes(number)) error.statusCode = 409;
+  else if (number >= 51200 && number <= 51212) error.statusCode = 400;
+  throw error;
 }
 
 /*
@@ -3335,6 +3441,117 @@ export async function createSocialListenerApp({
       | LEADS
       |--------------------------------------------------------------------------
       */
+
+      const leadReplySuggestionPath = url.pathname.match(/^\/leads\/(\d+)\/replies\/ai-suggestion$/);
+      if (request.method === "POST" && leadReplySuggestionPath) {
+        if (!activeAuthService) return json({ error: "Authentication storage is unavailable." }, 503);
+        const user = await activeAuthService.authenticate(sessionToken);
+        const body = await readJson(request);
+        const targetId = optionalPositiveId(body.inReplyToInteractionId ?? body.interactionId, "InReplyToInteractionId");
+        if (!targetId) return json({ error: "InReplyToInteractionId is required." }, 400);
+        const unified = await activeRepository.getUnifiedLead(Number(leadReplySuggestionPath[1]));
+        if (!unified) return json({ error: "Social lead not found." }, 404);
+        const target = (unified.interactions || []).find((item) =>
+          Number(String(item.id).replace(/^[^:]+:/, "")) === targetId);
+        if (!target || target.platform !== "instagram" || String(target.direction).toUpperCase() !== "INBOUND" ||
+            !["COMMENT", "DM", "DIRECT_MESSAGE", "STORY_REPLY"].includes(target.interactionType)) {
+          return json({ error: "The AI reply target must be an inbound Instagram comment or DM for this lead." }, 404);
+        }
+        const generated = await generateLeadReplySuggestion(
+          { target, interactions: unified.interactions || [] },
+          { env, fetchImpl },
+        );
+        return json({
+          ok: true,
+          suggestion: generated.suggestion,
+          responseMode: "AI_ASSISTED",
+          targetInteractionId: targetId,
+          generated: { model: generated.model, responseId: generated.responseId },
+          reviewedBy: user.username,
+        });
+      }
+
+      const automaticLeadReplyPath = url.pathname.match(/^\/leads\/(\d+)\/replies\/automatic$/);
+      if (request.method === "POST" && automaticLeadReplyPath) {
+        if (typeof activeRepository.createLeadReply !== "function") {
+          return json({ error: "Instagram reply delivery is unavailable." }, 503);
+        }
+        try {
+          const input = normalizeLeadReplyInput(await readJson(request), { automatic: true });
+          const reply = await activeRepository.createLeadReply({
+            ...input,
+            leadId: Number(automaticLeadReplyPath[1]),
+          });
+          return json({
+            ok: true,
+            replyId: Number(String(reply?.id || "").replace(/^[^:]+:/, "")),
+            reply,
+          }, reply?.duplicate ? 200 : 202);
+        } catch (error) {
+          throwMappedReplyError(error);
+        }
+      }
+
+      const leadReplyPath = url.pathname.match(/^\/leads\/(\d+)\/replies$/);
+      if (request.method === "POST" && leadReplyPath) {
+        if (!activeAuthService) return json({ error: "Authentication storage is unavailable." }, 503);
+        if (typeof activeRepository.createLeadReply !== "function") {
+          return json({ error: "Instagram reply delivery is unavailable." }, 503);
+        }
+        const user = await activeAuthService.authenticate(sessionToken);
+        try {
+          const input = normalizeLeadReplyInput(await readJson(request), { user });
+          const reply = await activeRepository.createLeadReply({
+            ...input,
+            leadId: Number(leadReplyPath[1]),
+          });
+          return json({
+            ok: true,
+            replyId: Number(String(reply?.id || "").replace(/^[^:]+:/, "")),
+            reply,
+          }, reply?.duplicate ? 200 : 202);
+        } catch (error) {
+          throwMappedReplyError(error);
+        }
+      }
+
+      if (request.method === "POST" && url.pathname === "/reply-requests/claim") {
+        if (typeof activeRepository.claimLeadReplies !== "function") {
+          return json({ error: "Instagram reply delivery is unavailable." }, 503);
+        }
+        const body = await readJson(request);
+        const replyId = optionalPositiveId(body.replyId, "ReplyId");
+        const limit = body.limit === undefined ? 10 : Number(body.limit);
+        if (!Number.isInteger(limit) || limit < 1 || limit > 50) {
+          return json({ error: "Limit must be an integer between 1 and 50." }, 400);
+        }
+        const lockToken = randomUUID();
+        const replies = await activeRepository.claimLeadReplies({
+          now: new Date().toISOString(),
+          limit,
+          lockToken,
+          replyId,
+        });
+        return json({ ok: true, lockToken, replies });
+      }
+
+      const replyCompletionPath = url.pathname.match(/^\/reply-requests\/(\d+)\/complete$/);
+      if (request.method === "POST" && replyCompletionPath) {
+        if (typeof activeRepository.completeLeadReply !== "function") {
+          return json({ error: "Instagram reply delivery is unavailable." }, 503);
+        }
+        try {
+          const reply = await activeRepository.completeLeadReply(
+            Number(replyCompletionPath[1]),
+            normalizeLeadReplyCompletion(await readJson(request)),
+          );
+          return reply
+            ? json({ ok: true, reply })
+            : json({ error: "Reply request not found." }, 404);
+        } catch (error) {
+          throwMappedReplyError(error);
+        }
+      }
 
       if (
         request.method === "POST" &&

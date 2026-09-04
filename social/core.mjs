@@ -803,9 +803,13 @@ export class InMemorySocialRepository {
       leadId: savedLead?.id || null,
       platform: event.channel,
       externalInteractionId: event.externalInteractionId || event.externalEventId,
+      externalReplyId: String(event.direction || "INBOUND").toUpperCase() === "OUTBOUND"
+        ? event.externalReplyId || event.externalInteractionId || event.externalEventId
+        : null,
       platformUserId: event.externalUserId,
       platformPostId: event.postId,
       platformConversationId: event.conversationId,
+      inReplyToInteractionId: event.inReplyToInteractionId || null,
       interactionType: intelligence.interactionType,
       message: event.message,
       occurredAt: event.occurredAt,
@@ -820,7 +824,14 @@ export class InMemorySocialRepository {
       advertisementId: event.adId,
       leadFormId: event.leadFormId,
       sourceType: intelligence.sourceType,
-      responseStatus: "PENDING",
+      responseMode: String(event.direction || "INBOUND").toUpperCase() === "OUTBOUND"
+        ? event.responseMode || "AI_AUTOMATIC"
+        : null,
+      sentByUserId: event.sentByUserId || null,
+      sentByUsername: event.sentByUsername || null,
+      responseStatus: String(event.direction || "INBOUND").toUpperCase() === "OUTBOUND" ? "SENT" : "PENDING",
+      sentAt: String(event.direction || "INBOUND").toUpperCase() === "OUTBOUND" ? event.occurredAt : null,
+      deliveryError: null,
       sourceUrl: event.sourceUrl,
       processedAt: new Date().toISOString(),
     };
@@ -989,6 +1000,245 @@ export class InMemorySocialRepository {
       conversionHistory: [],
       timeline,
     };
+  }
+
+  async createLeadReply(input) {
+    const leadId = `social:${Number(String(input.leadId).replace(/^[^:]+:/, ""))}`;
+    const targetId = `interaction:${Number(String(input.inReplyToInteractionId).replace(/^[^:]+:/, ""))}`;
+    const lead = [...this.leads.values()].find((item) => item.id === leadId);
+    const target = [...this.interactions.values()].find((item) => item.id === targetId && item.leadId === leadId);
+    if (!lead || !target || target.platform !== "instagram" || String(target.direction).toUpperCase() !== "INBOUND" ||
+        !["COMMENT", "DM", "DIRECT_MESSAGE", "STORY_REPLY"].includes(target.interactionType)) {
+      const error = new Error("The reply target must be an inbound Instagram comment or DM for this lead.");
+      error.statusCode = 404;
+      throw error;
+    }
+
+    const interactionKey = `instagram:${input.idempotencyKey}`;
+    if (this.interactions.has(interactionKey)) {
+      return { ...structuredClone(this.interactions.get(interactionKey)), duplicate: true };
+    }
+
+    const responses = [...this.interactions.values()].filter((item) => item.inReplyToInteractionId === targetId);
+    if (responses.some((item) => item.responseStatus === "SENT")) {
+      const error = new Error("A successful reply already exists for this Instagram interaction.");
+      error.statusCode = 409;
+      throw error;
+    }
+    if (input.responseMode === "AI_AUTOMATIC" && responses.some((item) => item.responseStatus === "PENDING")) {
+      const error = new Error("A reply is already pending or sent for this Instagram interaction.");
+      error.statusCode = 409;
+      throw error;
+    }
+
+    if (["AI_ASSISTED", "MANUAL"].includes(input.responseMode)) {
+      const pendingAutomatic = responses.filter((item) =>
+        item.responseMode === "AI_AUTOMATIC" && item.responseStatus === "PENDING");
+      const automaticProcessing = pendingAutomatic.some((item) =>
+        [...this.integrationEvents.values()].some((event) =>
+          event.socialInteractionId === item.id && event.status === "PROCESSING"));
+      if (automaticProcessing) {
+        const error = new Error("An automatic reply is already being delivered. Refresh before replying.");
+        error.statusCode = 409;
+        throw error;
+      }
+      if (responses.some((item) =>
+        ["AI_ASSISTED", "MANUAL"].includes(item.responseMode) && item.responseStatus === "PENDING")) {
+        const error = new Error("A human-reviewed reply is already pending for this Instagram interaction.");
+        error.statusCode = 409;
+        throw error;
+      }
+      for (const reply of pendingAutomatic) {
+        reply.responseStatus = "FAILED";
+        reply.deliveryError = "Superseded by a human reply before delivery.";
+        reply.processedAt = new Date().toISOString();
+        for (const [key, event] of this.integrationEvents.entries()) {
+          if (event.socialInteractionId === reply.id && ["PENDING", "RETRY_SCHEDULED"].includes(event.status)) {
+            this.integrationEvents.set(key, {
+              ...event,
+              status: "FAILED",
+              lastError: reply.deliveryError,
+              processedAt: reply.processedAt,
+              updatedAt: reply.processedAt,
+            });
+          }
+        }
+      }
+    }
+
+    const now = new Date().toISOString();
+    const reply = {
+      id: `interaction:${this.interactions.size + 1}`,
+      leadId,
+      platform: "instagram",
+      externalInteractionId: input.idempotencyKey,
+      externalReplyId: null,
+      platformUserId: target.platformUserId || null,
+      platformPostId: target.platformPostId || null,
+      platformConversationId: target.platformConversationId || null,
+      inReplyToInteractionId: targetId,
+      interactionType: ["DIRECT_MESSAGE", "STORY_REPLY"].includes(target.interactionType) ? "DM" : target.interactionType,
+      message: input.messageText,
+      occurredAt: now,
+      direction: "OUTBOUND",
+      intent: "OTHER",
+      intentConfidence: null,
+      sentiment: "NEUTRAL",
+      sourceType: "ORGANIC",
+      responseMode: input.responseMode,
+      sentByUserId: input.sentByUserId || null,
+      sentByUsername: input.sentByUsername || null,
+      responseStatus: "PENDING",
+      sentAt: null,
+      deliveryError: null,
+      processedAt: now,
+      duplicate: false,
+    };
+    this.interactions.set(interactionKey, reply);
+    await this.createIntegrationAction({
+      provider: "n8n",
+      channel: "instagram",
+      direction: "OUTBOUND",
+      eventType: reply.interactionType === "DM" ? "INSTAGRAM_DM_REPLY" : "INSTAGRAM_COMMENT_REPLY",
+      idempotencyKey: input.idempotencyKey,
+      leadId,
+      socialInteractionId: reply.id,
+      maxAttempts: input.maxAttempts || 4,
+      request: {
+        replyId: reply.id,
+        leadId,
+        platform: "instagram",
+        interactionType: reply.interactionType,
+        inReplyToExternalInteractionId: target.externalInteractionId || null,
+        externalPostId: target.platformPostId || null,
+        conversationId: target.platformConversationId || null,
+        externalUserId: target.platformUserId || null,
+        messageText: reply.message,
+        responseMode: reply.responseMode,
+      },
+    });
+    return structuredClone(reply);
+  }
+
+  async claimLeadReplies({ now, limit, lockToken, replyId = null }) {
+    const dueAt = new Date(now).getTime();
+    const normalizedReplyId = replyId === null
+      ? null
+      : `interaction:${Number(String(replyId).replace(/^[^:]+:/, ""))}`;
+    const due = [...this.integrationEvents.entries()]
+      .filter(([, event]) => event.provider === "n8n" && event.channel === "instagram" && event.direction === "OUTBOUND")
+      .filter(([, event]) => ["INSTAGRAM_COMMENT_REPLY", "INSTAGRAM_DM_REPLY"].includes(event.eventType))
+      .filter(([, event]) => ["PENDING", "RETRY_SCHEDULED"].includes(event.status))
+      .filter(([, event]) => normalizedReplyId === null || event.socialInteractionId === normalizedReplyId)
+      .filter(([, event]) => !event.nextAttemptAt || new Date(event.nextAttemptAt).getTime() <= dueAt)
+      .filter(([, event]) => [...this.interactions.values()].some((reply) =>
+        reply.id === event.socialInteractionId && reply.responseStatus === "PENDING"))
+      .sort(([, left], [, right]) => String(left.createdAt).localeCompare(String(right.createdAt)))
+      .slice(0, Math.max(1, Math.min(50, Number(limit) || 10)));
+
+    return due.map(([key, event]) => {
+      const claimed = {
+        ...event,
+        status: "PROCESSING",
+        attemptCount: Number(event.attemptCount || 0) + 1,
+        lastAttemptAt: now,
+        lockToken,
+        lockedAt: now,
+        updatedAt: now,
+      };
+      this.integrationEvents.set(key, claimed);
+      const reply = [...this.interactions.values()].find((item) => item.id === event.socialInteractionId);
+      const target = [...this.interactions.values()].find((item) => item.id === reply?.inReplyToInteractionId);
+      return {
+        integrationEventId: claimed.id,
+        lockToken,
+        attemptCount: claimed.attemptCount,
+        maxAttempts: claimed.maxAttempts,
+        replyId: Number(String(reply.id).replace(/^[^:]+:/, "")),
+        leadId: Number(String(reply.leadId).replace(/^[^:]+:/, "")),
+        platform: reply.platform,
+        interactionType: reply.interactionType,
+        messageText: reply.message,
+        responseMode: reply.responseMode,
+        inReplyToInteractionId: Number(String(target.id).replace(/^[^:]+:/, "")),
+        inReplyToExternalInteractionId: target.externalInteractionId || null,
+        externalPostId: target.platformPostId || null,
+        conversationId: target.platformConversationId || null,
+        externalUserId: target.platformUserId || null,
+      };
+    });
+  }
+
+  async completeLeadReply(replyId, result) {
+    const normalizedReplyId = `interaction:${Number(String(replyId).replace(/^[^:]+:/, ""))}`;
+    const interactionEntry = [...this.interactions.entries()].find(([, item]) => item.id === normalizedReplyId);
+    const eventEntry = [...this.integrationEvents.entries()].find(([, item]) =>
+      item.provider === "n8n" && item.socialInteractionId === normalizedReplyId);
+    if (!interactionEntry || !eventEntry) return null;
+    const [interactionKey, reply] = interactionEntry;
+    const [eventKey, event] = eventEntry;
+    if (["SUCCEEDED", "FAILED"].includes(event.status)) {
+      return { ...structuredClone(reply), duplicateCompletion: true, queueStatus: event.status };
+    }
+    if (event.status !== "PROCESSING" || event.lockToken !== result.lockToken) {
+      const error = new Error("The reply claim is no longer active.");
+      error.statusCode = 409;
+      throw error;
+    }
+    if (result.succeeded && !result.externalReplyId) {
+      const error = new Error("A successful Instagram delivery requires the external reply ID.");
+      error.statusCode = 400;
+      throw error;
+    }
+
+    let succeeded = Boolean(result.succeeded);
+    let errorMessage = result.error || null;
+    if (succeeded && [...this.interactions.values()].some((item) =>
+      item.id !== normalizedReplyId && item.platform === "instagram" && item.externalReplyId === result.externalReplyId)) {
+      succeeded = false;
+      errorMessage = "The provider reply ID is already recorded.";
+    }
+    const processedAt = result.sentAt || new Date().toISOString();
+    const retryScheduled = !succeeded && result.retryable && event.attemptCount < event.maxAttempts;
+    const completedEvent = {
+      ...event,
+      status: succeeded ? "SUCCEEDED" : retryScheduled ? "RETRY_SCHEDULED" : "FAILED",
+      externalId: succeeded ? result.externalReplyId : event.externalId,
+      externalStatus: result.externalStatus || event.externalStatus,
+      response: result.providerResponse ? structuredClone(result.providerResponse) : event.response,
+      lastError: succeeded ? null : errorMessage || "Instagram delivery failed.",
+      nextAttemptAt: retryScheduled ? result.nextAttemptAt || new Date(Date.now() + 60_000).toISOString() : null,
+      processedAt: succeeded || !retryScheduled ? processedAt : event.processedAt,
+      lockToken: null,
+      lockedAt: null,
+      updatedAt: processedAt,
+    };
+    const completedReply = {
+      ...reply,
+      externalReplyId: succeeded ? result.externalReplyId : reply.externalReplyId,
+      responseStatus: succeeded ? "SENT" : retryScheduled ? "PENDING" : "FAILED",
+      sentAt: succeeded ? processedAt : reply.sentAt,
+      deliveryError: succeeded ? null : completedEvent.lastError,
+      processedAt,
+      queueStatus: completedEvent.status,
+      duplicateCompletion: false,
+    };
+    this.integrationEvents.set(eventKey, completedEvent);
+    this.interactions.set(interactionKey, completedReply);
+
+    if (succeeded) {
+      const leadEntry = [...this.leads.entries()].find(([, item]) => item.id === reply.leadId);
+      if (leadEntry) {
+        const [leadKey, currentLead] = leadEntry;
+        this.leads.set(leadKey, {
+          ...currentLead,
+          lastResponseAt: processedAt,
+          lastResponseType: reply.interactionType,
+          lastResponseText: reply.message,
+        });
+      }
+    }
+    return structuredClone(completedReply);
   }
 
   async rescoreLead(leadId, asOf = new Date()) {
@@ -1495,6 +1745,7 @@ export class InMemorySocialRepository {
       lockedAt: null,
       campaignId: input.campaignId || null,
       leadId: input.leadId || null,
+      socialInteractionId: input.socialInteractionId || null,
       request: structuredClone(input.request || {}),
       response: null,
       lastError: null,
