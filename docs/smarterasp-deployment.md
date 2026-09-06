@@ -79,7 +79,9 @@ migrations 006 through 008, Cloudinary identity persistence by migration 010,
 CRM authentication/user administration by migration 011, and live CRM reporting
 by migration 015. Migration 017 adds landing-page video/CTA/player fields and
 normalized registration handles. Migration 018 includes landing-page registrations
-in the existing interaction-history lead scoring procedure. Create a Cloudinary product environment and copy its cloud
+in the existing interaction-history lead scoring procedure. Migration 019
+idempotently restores recognized legacy video links and repairs historical
+landing registrations that predated the scoring event path. Create a Cloudinary product environment and copy its cloud
 name, API key,
 and API secret from Cloudinary's API Keys settings. Keep the secret server-side
 and never use a `NEXT_PUBLIC_` name. The optional upload preset must permit
@@ -102,7 +104,7 @@ media. Existing campaigns with legacy local media URLs must have their media
 replaced through the campaign editor before they can be rescheduled.
 
 Landing-page MP4/MOV uploads reuse the same authenticated `/api/media` route
-and Cloudinary configuration. Deploy migrations 017 and 018 before publishing the new
+and Cloudinary configuration. Deploy migrations 017 through 019 before publishing the new
 builder. Replacement and removal save the landing-page record first, then ask
 Cloudinary to delete the old asset only after both campaign and landing-page
 references have been checked.
@@ -112,7 +114,8 @@ references have been checked.
 1. Pull the release from `main` in the SmarterASP GitHub deployment.
 2. Run `npm ci`, then `npm run build`.
 3. With the production `DB_*` values loaded, run `npm run db:setup:mssql` so
-   `018_landing_registration_scoring.sql` updates `dbo.LeadScore_Recalculate`.
+   migration 018 updates `dbo.LeadScore_Recalculate` and migration 019 repairs
+   pre-existing registration events and recognized legacy video links.
 4. Restart the Node application with `npm start`; no new environment variables
    and no n8n scoring step are required.
 5. Sign in and confirm the Next2TheTop CRM logo/name on the login and dashboard.
@@ -122,6 +125,9 @@ references have been checked.
    remains; verify `javascript:`, `data:`, and `file:` destinations are rejected.
 8. Confirm the test Lead appears in Lead 360 and reports with `LeadScore`,
    `ScoreBand`, the five component scores, `ScoreReason`, and `LastScoredAt`.
+9. Reload the edited landing page and its public URL. Confirm its configured
+   Cloudinary, YouTube, Vimeo, or Canva player appears above the teaser and
+   attempts muted inline autoplay with controls.
 
 The CRM uses its own MSSQL-backed users and sessions. The listener creates the
 `next2thetop` ADMIN account only when absent and never resets it during later

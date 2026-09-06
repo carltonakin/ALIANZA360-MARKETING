@@ -126,7 +126,9 @@ failures in SQL Server. Use `npm run db:setup:mssql` after pulling this version
 to apply the Buffer/campaign migrations through migration 010, the
 authentication/user-management migration 011, CRM reporting migration 015,
 Instagram reply migration 016, landing-page video/CTA migration 017, and
-landing-registration scoring migration 018.
+landing-registration scoring migration 018. Migration 019 repairs historical
+registration scoring events and migrates recognized legacy landing video links
+without restoring videos that an admin later removes.
 
 Buffer requires `BUFFER_API_KEY` and `BUFFER_ORGANIZATION_ID` in the listener
 environment. Keep both server-only; never prefix them with `NEXT_PUBLIC_` or

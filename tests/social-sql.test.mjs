@@ -18,6 +18,7 @@ const leadInteractionApiMigrationUrl = new URL("../sql/014_crm_lead_interaction_
 const reportsMigrationUrl = new URL("../sql/015_crm_reports.sql", import.meta.url);
 const replyConversationMigrationUrl = new URL("../sql/016_instagram_two_way_conversations.sql", import.meta.url);
 const landingRegistrationScoringMigrationUrl = new URL("../sql/018_landing_registration_scoring.sql", import.meta.url);
+const landingRepairMigrationUrl = new URL("../sql/019_repair_landing_registration_video.sql", import.meta.url);
 
 class FakeRequest {
   constructor(executions, result = { recordset: [] }) {
@@ -345,6 +346,19 @@ test("landing registration scoring migration retains the authoritative 100-point
   assert.equal((sql.match(/LEAD_FORM_SUBMISSION/g) || []).length, 4);
   assert.match(sql, /@IntentScore[\s\S]+@EngagementScore[\s\S]+@FitScore[\s\S]+@RecencyScore[\s\S]+@SourceScore/i);
   assert.match(sql, /WHEN @LeadScore >= 80 THEN N'HOT'[\s\S]+WHEN @LeadScore >= 60 THEN N'QUALIFIED'[\s\S]+WHEN @LeadScore >= 30 THEN N'WARM'/i);
+  assert.doesNotMatch(sql, /DROP TABLE|TRUNCATE TABLE/i);
+});
+
+test("landing repair migration backfills videos and scores registrations idempotently", async () => {
+  const sql = await readFile(landingRepairMigrationUrl, "utf8");
+  assert.match(sql, /LegacyVideoMigratedAt/i);
+  assert.match(sql, /VideoSourceType = N'EXTERNAL_URL'/i);
+  assert.match(sql, /WHERE LegacyVideoMigratedAt IS NULL/i);
+  assert.match(sql, /NOT EXISTS[\s\S]+SocialEvents/i);
+  assert.match(sql, /NOT EXISTS[\s\S]+SocialInteractions/i);
+  assert.match(sql, /N'LEAD_FORM_SUBMISSION'/i);
+  assert.match(sql, /EXEC dbo\.LeadScore_Recalculate/i);
+  assert.doesNotMatch(sql, /CREATE OR ALTER PROCEDURE dbo\.LeadScore_Recalculate/i);
   assert.doesNotMatch(sql, /DROP TABLE|TRUNCATE TABLE/i);
 });
 

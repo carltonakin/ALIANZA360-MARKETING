@@ -1,5 +1,7 @@
 "use client";
 
+import { useState } from "react";
+
 type LandingVideoProvider = "CLOUDINARY" | "YOUTUBE" | "VIMEO" | "CANVA";
 
 type LandingVideoPlayerProps = {
@@ -25,11 +27,29 @@ export function LandingVideoPlayer({
   title,
   onPlaybackError,
 }: LandingVideoPlayerProps) {
-  if (!videoUrl || !provider || sourceType === "NONE") return null;
+  const [failedVideoUrl, setFailedVideoUrl] = useState<string | null>(null);
+  const playbackFailed = failedVideoUrl === videoUrl;
+
+  if (!videoUrl) return null;
+
+  const reportPlaybackFailure = () => {
+    setFailedVideoUrl(videoUrl || null);
+    onPlaybackError?.();
+  };
+
+  if (!provider || playbackFailed) {
+    return (
+      <div className={`${className} landing-video-fallback`} data-source={sourceType?.toLowerCase()} role="status">
+        <strong>Video unavailable</strong>
+        <span>The video could not be loaded. Please try again or open it directly.</span>
+        <a href={videoUrl} target="_blank" rel="noreferrer">Open video</a>
+      </div>
+    );
+  }
 
   if (provider === "CLOUDINARY") {
     return (
-      <div className={className} data-provider="cloudinary">
+      <div className={className} data-provider="cloudinary" data-source={sourceType?.toLowerCase()}>
         <video
           src={videoUrl}
           autoPlay={autoplay}
@@ -37,7 +57,7 @@ export function LandingVideoPlayer({
           playsInline
           controls={showControls}
           preload="metadata"
-          onError={onPlaybackError}
+          onError={reportPlaybackFailure}
         >
           <track kind="captions" srcLang="en" label="English captions" />
         </video>
@@ -46,7 +66,7 @@ export function LandingVideoPlayer({
   }
 
   return (
-    <div className={className} data-provider={provider.toLowerCase()}>
+    <div className={className} data-provider={provider.toLowerCase()} data-source={sourceType?.toLowerCase()}>
       <iframe
         src={videoUrl}
         title={title || `${provider} landing-page video`}
@@ -54,7 +74,7 @@ export function LandingVideoPlayer({
         allowFullScreen
         loading="eager"
         referrerPolicy="strict-origin-when-cross-origin"
-        onError={onPlaybackError}
+        onError={reportPlaybackFailure}
       />
     </div>
   );

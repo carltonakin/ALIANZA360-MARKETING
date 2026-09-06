@@ -1,5 +1,6 @@
 import { decryptChannelSecrets, publicChannelConfiguration } from "./channel-config.mjs";
 import { openSqlConnection } from "./sql-connection.mjs";
+import { resolvePersistedLandingPageVideo } from "../lib/landing-page-video.mjs";
 
 function iso(value) {
   return value?.toISOString?.() || value || null;
@@ -380,6 +381,17 @@ function mapWorkflowRun(row) {
 }
 
 function mapLandingPage(row) {
+  const video = resolvePersistedLandingPageVideo({
+    videoSourceType: row.VideoSourceType,
+    videoUrl: row.VideoUrl,
+    videoProvider: row.VideoProvider,
+    cloudinaryAssetId: row.CloudinaryAssetId,
+    cloudinaryPublicId: row.CloudinaryPublicId,
+    cloudinaryResourceType: row.CloudinaryResourceType,
+    videoAutoplay: row.VideoAutoplay,
+    videoMuted: row.VideoMuted,
+    videoShowControls: row.VideoShowControls,
+  });
   return {
     id: `page:${row.LandingPageId}`,
     campaignId: row.CampaignId ? `campaign:${row.CampaignId}` : null,
@@ -389,15 +401,8 @@ function mapLandingPage(row) {
     teaser: row.Teaser || "",
     webinarUrl: row.WebinarUrl || "",
     paymentUrl: row.PaymentUrl || "",
-    videoSourceType: row.VideoSourceType || "NONE",
-    videoUrl: row.VideoUrl || "",
-    videoProvider: row.VideoProvider || null,
-    cloudinaryAssetId: row.CloudinaryAssetId || null,
-    cloudinaryPublicId: row.CloudinaryPublicId || null,
-    cloudinaryResourceType: row.CloudinaryResourceType || null,
-    videoAutoplay: row.VideoAutoplay == null ? true : Boolean(row.VideoAutoplay),
-    videoMuted: row.VideoMuted == null ? true : Boolean(row.VideoMuted),
-    videoShowControls: row.VideoShowControls == null ? true : Boolean(row.VideoShowControls),
+    ...video,
+    videoUrl: video.videoUrl || "",
     preVideoCtaText: row.PreVideoCtaText || "",
     preVideoCtaUrl: row.PreVideoCtaUrl || "",
     submitButtonText: row.SubmitButtonText || "Register Now for an Interview",

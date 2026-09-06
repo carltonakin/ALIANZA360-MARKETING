@@ -6,6 +6,7 @@ import {
   normalizeExternalVideoUrl,
   normalizeLandingPageVideo,
   normalizeOptionalCta,
+  resolvePersistedLandingPageVideo,
 } from "../lib/landing-page-video.mjs";
 import { normalizePostUrl } from "../lib/post-url.mjs";
 import { BufferCampaignService } from "../social/buffer-campaigns.mjs";
@@ -62,6 +63,32 @@ test("landing video and CTA validation clears unused metadata and requires compl
   assert.throws(() => normalizeOptionalCta("Book now", ""), /both be provided/i);
   assert.throws(() => normalizeOptionalCta("Book now", "javascript:alert(1)"), /HTTP or HTTPS/i);
   assert.equal(LANDING_PAGE_SUBMIT_TEXT, "Register Now for an Interview");
+});
+
+test("persisted legacy and incomplete video records resolve safely for public playback", () => {
+  const legacyYouTube = resolvePersistedLandingPageVideo({
+    videoSourceType: "EXTERNAL_URL",
+    videoProvider: "YOUTUBE",
+    videoUrl: "https://www.youtube.com/watch?v=dQw4w9WgXcQ",
+  });
+  assert.equal(legacyYouTube.videoSourceType, "EXTERNAL_URL");
+  assert.equal(legacyYouTube.videoProvider, "YOUTUBE");
+  assert.match(legacyYouTube.videoUrl, /^https:\/\/www\.youtube\.com\/embed\//);
+
+  const incompleteCloudinary = resolvePersistedLandingPageVideo({
+    videoSourceType: "NONE",
+    videoUrl: "https://res.cloudinary.com/demo/video/upload/v1/landing/video.mp4",
+  });
+  assert.equal(incompleteCloudinary.videoSourceType, "UPLOAD");
+  assert.equal(incompleteCloudinary.videoProvider, "CLOUDINARY");
+  assert.equal(incompleteCloudinary.cloudinaryResourceType, "video");
+
+  const unsafe = resolvePersistedLandingPageVideo({
+    videoSourceType: "EXTERNAL_URL",
+    videoUrl: "javascript:alert(1)",
+  });
+  assert.equal(unsafe.videoSourceType, "NONE");
+  assert.equal(unsafe.videoUrl, null);
 });
 
 test("Post URL Link accepts only HTTP(S) destinations", () => {
@@ -220,7 +247,7 @@ test("Cloudinary cleanup protects both campaign and landing-page references", as
 });
 
 test("builder, public renderer, registration route, and MSSQL migrations expose the complete feature", async () => {
-  const [builder, landing, player, registration, registerRoute, migration, scoringMigration] = await Promise.all([
+  const [builder, landing, player, registration, registerRoute, migration, scoringMigration, repairMigration] = await Promise.all([
     readFile(new URL("../app/page.tsx", import.meta.url), "utf8"),
     readFile(new URL("../app/landing/[slug]/page.tsx", import.meta.url), "utf8"),
     readFile(new URL("../app/components/LandingVideoPlayer.tsx", import.meta.url), "utf8"),
@@ -228,6 +255,7 @@ test("builder, public renderer, registration route, and MSSQL migrations expose 
     readFile(new URL("../app/api/register/route.ts", import.meta.url), "utf8"),
     readFile(new URL("../sql/017_landing_page_video_cta_social_handles.sql", import.meta.url), "utf8"),
     readFile(new URL("../sql/018_landing_registration_scoring.sql", import.meta.url), "utf8"),
+    readFile(new URL("../sql/019_repair_landing_registration_video.sql", import.meta.url), "utf8"),
   ]);
   assert.match(builder, /onDrop=\{onVideoDrop\}/);
   assert.match(builder, /Cloudinary video upload in progress/);
@@ -244,6 +272,7 @@ test("builder, public renderer, registration route, and MSSQL migrations expose 
   assert.match(landing, /muted=\{page\.videoMuted !== false\}/);
   assert.match(player, /autoPlay=\{autoplay\}/);
   assert.match(player, /playsInline/);
+  assert.match(player, /landing-video-fallback/);
   for (const handle of ["instagram", "facebook", "x"]) {
     assert.match(registration, new RegExp(`name="${handle}"`));
     assert.match(registerRoute, new RegExp(`${handle}: clean\\(body\\.${handle}\\)`));
@@ -265,6 +294,11 @@ test("builder, public renderer, registration route, and MSSQL migrations expose 
   assert.match(scoringMigration, /CREATE OR ALTER PROCEDURE dbo\.LeadScore_Recalculate/);
   assert.equal((scoringMigration.match(/LEAD_FORM_SUBMISSION/g) || []).length, 4);
   assert.match(scoringMigration, /@LeadScore = @IntentScore \+ @EngagementScore \+ @FitScore \+ @RecencyScore \+ @SourceScore/);
+  assert.match(repairMigration, /LegacyVideoMigratedAt/);
+  assert.match(repairMigration, /VideoSourceType = N'EXTERNAL_URL'/);
+  assert.match(repairMigration, /INSERT dbo\.SocialInteractions/);
+  assert.match(repairMigration, /N'LEAD_FORM_SUBMISSION'/);
+  assert.match(repairMigration, /EXEC dbo\.LeadScore_Recalculate/);
 });
 
 test("Next2TheTop CRM branding is used on login, dashboard, public pages, and metadata", async () => {
