@@ -78,7 +78,8 @@ the Buffer lifecycle and campaign editing procedures are installed by
 migrations 006 through 008, Cloudinary identity persistence by migration 010,
 CRM authentication/user administration by migration 011, and live CRM reporting
 by migration 015. Migration 017 adds landing-page video/CTA/player fields and
-normalized registration handles. Create a Cloudinary product environment and copy its cloud
+normalized registration handles. Migration 018 includes landing-page registrations
+in the existing interaction-history lead scoring procedure. Create a Cloudinary product environment and copy its cloud
 name, API key,
 and API secret from Cloudinary's API Keys settings. Keep the secret server-side
 and never use a `NEXT_PUBLIC_` name. The optional upload preset must permit
@@ -101,10 +102,26 @@ media. Existing campaigns with legacy local media URLs must have their media
 replaced through the campaign editor before they can be rescheduled.
 
 Landing-page MP4/MOV uploads reuse the same authenticated `/api/media` route
-and Cloudinary configuration. Deploy migration 017 before publishing the new
+and Cloudinary configuration. Deploy migrations 017 and 018 before publishing the new
 builder. Replacement and removal save the landing-page record first, then ask
 Cloudinary to delete the old asset only after both campaign and landing-page
 references have been checked.
+
+## Rebrand and landing-registration release checklist
+
+1. Pull the release from `main` in the SmarterASP GitHub deployment.
+2. Run `npm ci`, then `npm run build`.
+3. With the production `DB_*` values loaded, run `npm run db:setup:mssql` so
+   `018_landing_registration_scoring.sql` updates `dbo.LeadScore_Recalculate`.
+4. Restart the Node application with `npm start`; no new environment variables
+   and no n8n scoring step are required.
+5. Sign in and confirm the Next2TheTop CRM logo/name on the login and dashboard.
+6. Save and reload a landing page with an HTTPS Post URL Link, submit a test
+   registration, and confirm the Lead is persisted/scored before the redirect.
+7. Submit a page with a blank Post URL Link and confirm the existing success card
+   remains; verify `javascript:`, `data:`, and `file:` destinations are rejected.
+8. Confirm the test Lead appears in Lead 360 and reports with `LeadScore`,
+   `ScoreBand`, the five component scores, `ScoreReason`, and `LastScoredAt`.
 
 The CRM uses its own MSSQL-backed users and sessions. The listener creates the
 `next2thetop` ADMIN account only when absent and never resets it during later

@@ -17,6 +17,7 @@ const leadHistoryMigrationUrl = new URL("../sql/013_lead_scoring_interaction_his
 const leadInteractionApiMigrationUrl = new URL("../sql/014_crm_lead_interaction_api.sql", import.meta.url);
 const reportsMigrationUrl = new URL("../sql/015_crm_reports.sql", import.meta.url);
 const replyConversationMigrationUrl = new URL("../sql/016_instagram_two_way_conversations.sql", import.meta.url);
+const landingRegistrationScoringMigrationUrl = new URL("../sql/018_landing_registration_scoring.sql", import.meta.url);
 
 class FakeRequest {
   constructor(executions, result = { recordset: [] }) {
@@ -335,6 +336,15 @@ test("Instagram reply migration adds a transactional, idempotent n8n delivery qu
     sql.indexOf("CREATE OR ALTER PROCEDURE dbo.SocialLead_GetUnified"),
   );
   assert.doesNotMatch(completion, /LeadScore_Recalculate|LeadScore\s*=/i);
+  assert.doesNotMatch(sql, /DROP TABLE|TRUNCATE TABLE/i);
+});
+
+test("landing registration scoring migration retains the authoritative 100-point model", async () => {
+  const sql = await readFile(landingRegistrationScoringMigrationUrl, "utf8");
+  assert.match(sql, /CREATE OR ALTER PROCEDURE dbo\.LeadScore_Recalculate/i);
+  assert.equal((sql.match(/LEAD_FORM_SUBMISSION/g) || []).length, 4);
+  assert.match(sql, /@IntentScore[\s\S]+@EngagementScore[\s\S]+@FitScore[\s\S]+@RecencyScore[\s\S]+@SourceScore/i);
+  assert.match(sql, /WHEN @LeadScore >= 80 THEN N'HOT'[\s\S]+WHEN @LeadScore >= 60 THEN N'QUALIFIED'[\s\S]+WHEN @LeadScore >= 30 THEN N'WARM'/i);
   assert.doesNotMatch(sql, /DROP TABLE|TRUNCATE TABLE/i);
 });
 

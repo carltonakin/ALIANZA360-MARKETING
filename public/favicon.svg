@@ -1,6 +1,13 @@
-<svg width="24" height="24" viewBox="0 0 24 24" fill="none" xmlns="http://www.w3.org/2000/svg">
-<path d="M22 19.2727C22 20.779 20.779 22 19.2727 22H14.7273C13.221 22 12 20.779 12 19.2727V12H19.2727C20.779 12 22 13.221 22 14.7273V19.2727Z" fill="#68C4FF"/>
-<path d="M20 2C21.1046 2 22 2.89543 22 4V7C22 8.10457 21.1046 9 20 9H17C15.8954 9 15 8.10457 15 7V4C15 2.89543 15.8954 2 17 2H20Z" fill="#0C79D8"/>
-<path d="M7 15C8.10457 15 9 15.8954 9 17V20C9 21.1046 8.10457 22 7 22H4C2.89543 22 2 21.1046 2 20V17C2 15.8954 2.89543 15 4 15H7Z" fill="#0C79D8"/>
-<path d="M12 12H4.72727C3.22104 12 2 10.779 2 9.27273V4.72727C2 3.22104 3.22104 2 4.72727 2H9.27273C10.779 2 12 3.22104 12 4.72727V12Z" fill="#2E9EFF"/>
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 52 52">
+  <defs>
+    <linearGradient id="bg" x1="7" y1="45" x2="45" y2="7" gradientUnits="userSpaceOnUse">
+      <stop stop-color="#4F46C8"/><stop offset="1" stop-color="#8B7AF5"/>
+    </linearGradient>
+    <linearGradient id="rise" x1="14" y1="38" x2="40" y2="13" gradientUnits="userSpaceOnUse">
+      <stop stop-color="#FF715B"/><stop offset="1" stop-color="#FFC45E"/>
+    </linearGradient>
+  </defs>
+  <rect x="2" y="2" width="48" height="48" rx="15" fill="url(#bg)"/>
+  <path d="M13 37h7V27h7v-7h7v-6h5v11h-5v-4.6L22.4 32H27v5H13Z" fill="#fff" opacity=".96"/>
+  <path d="m29 13 10 1-1 10-3.2-3.2-11.7 11.7-3.6-3.6 11.7-11.7L29 13Z" fill="url(#rise)"/>
 </svg>

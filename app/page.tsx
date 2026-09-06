@@ -10,6 +10,7 @@ import {
 } from "react";
 import { useRouter } from "next/navigation";
 import { LandingVideoPlayer } from "./components/LandingVideoPlayer";
+import { BrandLogo } from "./components/BrandLogo";
 import { browserVideoValidationErrors, INSTAGRAM_VIDEO_MAX_BYTES } from "../lib/instagram-video-validation.mjs";
 import { LANDING_PAGE_SUBMIT_TEXT, normalizeExternalVideoUrl } from "../lib/landing-page-video.mjs";
 import type { AuthUser } from "./auth/shared";
@@ -1017,13 +1018,8 @@ export default function Home() {
     <main className={`app-shell ${collapsed ? "is-collapsed" : ""}`}>
       <aside className="sidebar">
         <div className="brand-row">
-          <div className="brand-mark">
-            <span>360</span>
-          </div>
-          <div className="brand-copy">
-            <strong>Alianza</strong>
-            <small>CRM • MARKETING</small>
-          </div>
+          <BrandLogo className="brand-logo-full" />
+          <BrandLogo variant="mark" className="brand-logo-mark" />
           <button
             className="collapse"
             onClick={() => setCollapsed(!collapsed)}
@@ -1088,7 +1084,7 @@ export default function Home() {
       <section className="workspace">
         <header className="topbar">
           <div>
-            <p>CRM MARKETING FUNNEL 360</p>
+            <p>NEXT2THETOP CRM</p>
             <h1>{active}</h1>
           </div>
           <div className="top-actions">
@@ -2888,6 +2884,7 @@ function Field({
   value,
   defaultValue,
   onValueChange,
+  helper,
 }: {
   label: string;
   name: string;
@@ -2898,6 +2895,7 @@ function Field({
   value?: string;
   defaultValue?: string;
   onValueChange?: (value: string) => void;
+  helper?: string;
 }) {
   return (
     <label>
@@ -2913,6 +2911,7 @@ function Field({
         defaultValue={value === undefined ? defaultValue : undefined}
         onChange={onValueChange ? (event) => onValueChange(event.target.value) : undefined}
       />
+      {helper && <small className="field-help">{helper}</small>}
     </label>
   );
 }
@@ -3545,11 +3544,12 @@ function PageForm({
       />
       <div className="form-grid">
         <Field
-          label="Post-registration webinar URL"
+          label="Post URL Link"
           name="webinarUrl"
           type="url"
           placeholder="https://..."
           defaultValue={page?.webinarUrl}
+          helper="After a successful registration, send the visitor to this HTTP(S) destination."
         />
         <Field
           label="Payment URL"

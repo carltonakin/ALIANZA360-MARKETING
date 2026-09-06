@@ -1,4 +1,5 @@
 import { LandingVideoPlayer } from "../../components/LandingVideoPlayer";
+import { BrandLogo } from "../../components/BrandLogo";
 import { resolveSocialListenerConfig } from "../../api/social/_config";
 import { RegisterForm } from "./RegisterForm";
 
@@ -55,8 +56,7 @@ export default async function LandingPage({ params }: { params: Promise<{ slug: 
   return (
     <main className="landing-shell">
       <header className="landing-nav">
-        <div className="brand-mark"><span>360</span></div>
-        <strong>Alianza Growth</strong>
+        <BrandLogo className="landing-brand-logo" />
         <small>FREE · ON DEMAND · PRACTICAL</small>
       </header>
       <section className="landing-hero">
@@ -81,7 +81,6 @@ export default async function LandingPage({ params }: { params: Promise<{ slug: 
         </div>
         <RegisterForm
           pageId={page.id}
-          webinarUrl={page.webinarUrl}
           paymentUrl={page.paymentUrl}
           submitButtonText={page.submitButtonText}
         />

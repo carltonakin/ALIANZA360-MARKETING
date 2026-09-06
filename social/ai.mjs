@@ -15,7 +15,7 @@ const BASE_SCHEMAS = Object.freeze({
       slug: { type: "string", minLength: 1, maxLength: 255 },
       headline: { type: "string", minLength: 1, maxLength: 500 },
       teaser: { type: "string" },
-      webinarUrl: { type: "string" },
+      webinarUrl: { type: "string", description: "Optional HTTP(S) destination after successful registration; return an empty string when none is requested." },
       paymentUrl: { type: "string" },
     },
     required: ["title", "slug", "headline", "teaser", "webinarUrl", "paymentUrl"],

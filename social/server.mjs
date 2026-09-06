@@ -22,6 +22,7 @@ import { CampaignAutomationEngine } from "./campaign-automation.mjs";
 import {
   DEFAULT_SCORING_RULES,
   DEFAULT_TEMPERATURE_THRESHOLDS,
+  evaluateSocialEvent,
   INTENT_CATEGORIES,
 } from "./intelligence.mjs";
 import { SqlServerRepository } from "./sql-server.mjs";
@@ -37,6 +38,7 @@ import {
   normalizeLandingPageVideo,
   normalizeOptionalCta,
 } from "../lib/landing-page-video.mjs";
+import { normalizePostUrl } from "../lib/post-url.mjs";
 
 /*
 |--------------------------------------------------------------------------
@@ -1383,9 +1385,8 @@ function normalizeContentInput(
         ),
 
       webinarUrl:
-        optionalUrl(
-          body.webinarUrl,
-          "Webinar URL"
+        normalizePostUrl(
+          body.webinarUrl
         ),
 
       paymentUrl:
@@ -1618,6 +1619,12 @@ function normalizeRoutineLead(
       cleanLeadValue(
         body.sourceDetail,
         1000
+      ),
+
+    message:
+      cleanLeadValue(
+        body.message ?? body.purpose,
+        16_000
       ),
 
     occurredAt:
@@ -3427,11 +3434,74 @@ export async function createSocialListenerApp({
             lead
           );
 
+        let scoringResult = null;
+        if (
+          lead.routine ===
+            "landing_page_registration"
+        ) {
+          const event = {
+            channel: "multi",
+            eventType: "lead_form_submission",
+            externalEventId: lead.externalEventId,
+            externalInteractionId: lead.externalEventId,
+            externalUserId: null,
+            username: null,
+            displayName: lead.name,
+            email: lead.email,
+            phone: lead.phone,
+            message: lead.message || "Landing page registration",
+            postId: null,
+            campaignId: lead.campaignId ? String(lead.campaignId) : null,
+            adId: null,
+            leadFormId: `landing_page:${lead.landingPageId || "unknown"}`,
+            campaignName: null,
+            conversationId: null,
+            direction: "INBOUND",
+            sourceUrl: null,
+            occurredAt: lead.occurredAt,
+            rawPayload: {
+              routine: lead.routine,
+              landingPageId: lead.landingPageId,
+              sourceDetail: lead.sourceDetail,
+            },
+            leadId: result.leadId,
+          };
+          const intelligence = evaluateSocialEvent(event);
+          scoringResult = await activeRepository.processEvent(
+            event,
+            {
+              name: lead.name,
+              email: lead.email,
+              phone: lead.phone,
+              facebook: lead.facebook,
+              instagram: lead.instagram,
+              x: lead.x,
+              source: lead.source,
+              firstTouchAt: lead.occurredAt,
+            },
+            {
+              ...intelligence,
+              sourceType: "ORGANIC",
+            }
+          );
+        }
+
         return json(
           {
             ok: true,
 
             ...result,
+
+            ...(scoringResult
+              ? {
+                  interactionId: scoringResult.interactionId,
+                  interactionInserted: scoringResult.interactionInserted,
+                  score: scoringResult.score,
+                  scoreBand: scoringResult.band,
+                  scoreReason: scoringResult.scoreReason,
+                  qualified: scoringResult.qualified,
+                }
+              : {}),
           },
 
           result?.duplicate

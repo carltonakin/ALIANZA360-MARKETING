@@ -87,8 +87,8 @@ test("server-renders Login and denies unauthenticated CRM/API access", async () 
   assert.match(response.headers.get("content-type") ?? "", /^text\/html\b/i);
 
   const html = await response.text();
-  assert.match(html, /<title>Alianza CRM Marketing 360<\/title>/i);
-  assert.match(html, /CRM • MARKETING/i);
+  assert.match(html, /<title>Next2TheTop CRM<\/title>/i);
+  assert.match(html, /NEXT2THETOP CRM/i);
   assert.match(html, /SECURE ACCESS/i);
   assert.match(html, /Sign in/i);
   assert.doesNotMatch(html, /Alianza#123|PasswordHash/i);
@@ -228,8 +228,8 @@ test("dashboard exposes social listener configuration and live diagnostics", asy
   assert.match(leadsRoute, /export async function PUT/i);
   assert.match(leadsRoute, /proxySocialRequest\(isStatusUpdate \? "\/leads\/status" : "\/leads"/i);
   assert.match(interactionsRoute, /forwardJson\(request, "\/lead-interactions"\)/i);
-  assert.match(layout, /Alianza CRM Marketing 360/i);
-  assert.match(layout, /AI-powered marketing funnel, lead capture and social campaign intelligence/i);
+  assert.match(layout, /Next2TheTop CRM/i);
+  assert.match(layout, /AI-powered marketing funnel, lead capture, and social campaign intelligence/i);
 });
 
 test("CRM lead interaction routes expose the n8n contract through service-token authentication", async () => {

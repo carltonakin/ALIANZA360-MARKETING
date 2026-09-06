@@ -7,6 +7,7 @@ import {
   normalizeLandingPageVideo,
   normalizeOptionalCta,
 } from "../lib/landing-page-video.mjs";
+import { normalizePostUrl } from "../lib/post-url.mjs";
 import { BufferCampaignService } from "../social/buffer-campaigns.mjs";
 import { InMemorySocialRepository } from "../social/core.mjs";
 import { createSocialListenerApp } from "../social/server.mjs";
@@ -63,18 +64,41 @@ test("landing video and CTA validation clears unused metadata and requires compl
   assert.equal(LANDING_PAGE_SUBMIT_TEXT, "Register Now for an Interview");
 });
 
+test("Post URL Link accepts only HTTP(S) destinations", () => {
+  assert.equal(normalizePostUrl("  https://example.com/thank-you?source=crm  "), "https://example.com/thank-you?source=crm");
+  assert.equal(normalizePostUrl(""), null);
+  for (const unsafe of ["javascript:alert(1)", "data:text/html,hello", "file:///tmp/secret"]) {
+    assert.throws(() => normalizePostUrl(unsafe), /Post URL Link must be a valid HTTP or HTTPS URL/i);
+  }
+});
+
 test("content API persists normalized landing-page fields and rejects unsupported Canva links", async () => {
   const { app } = await appWithMemory();
   const response = await app.handle(request("/content", {
     entity: "landing_page", title: "Interview", slug: "interview", headline: "Grow with us",
     videoSourceType: "EXTERNAL_URL", videoUrl: "https://www.youtube.com/watch?v=dQw4w9WgXcQ",
     preVideoCtaText: "Talk to us", preVideoCtaUrl: "https://example.com/talk",
+    webinarUrl: "https://example.com/thank-you",
   }));
   assert.equal(response.status, 201);
   const body = await response.json();
   assert.equal(body.record.videoProvider, "YOUTUBE");
   assert.match(body.record.videoUrl, /^https:\/\/www\.youtube\.com\/embed\//);
   assert.equal(body.record.submitButtonText, LANDING_PAGE_SUBMIT_TEXT);
+  assert.equal(body.record.webinarUrl, "https://example.com/thank-you");
+
+  const reloadedResponse = await app.handle(new Request("http://listener.test/content", {
+    headers: { authorization: "Bearer service-token" },
+  }));
+  const reloaded = await reloadedResponse.json();
+  assert.equal(reloaded.pages.find((page) => page.id === body.record.id).webinarUrl, "https://example.com/thank-you");
+
+  const unsafePostUrl = await app.handle(request("/content", {
+    entity: "landing_page", title: "Unsafe redirect", slug: "unsafe-redirect", headline: "Unsafe",
+    webinarUrl: "javascript:alert(1)",
+  }));
+  assert.equal(unsafePostUrl.status, 400);
+  assert.match((await unsafePostUrl.json()).error, /Post URL Link must be a valid HTTP or HTTPS URL/i);
 
   const invalid = await app.handle(request("/content", {
     entity: "landing_page", title: "Bad Canva", slug: "bad-canva", headline: "Bad link",
@@ -122,20 +146,56 @@ test("partial landing-page updates preserve saved video and CTA configuration un
 
 test("registration handles enrich one Lead and normalized social identities without duplicates", async () => {
   const { app, repository } = await appWithMemory();
+  const scoredPage = await repository.saveLandingPage({
+    campaignId: "campaign:1", title: "Scored page", slug: "scored-page",
+    headline: "Register", status: "published",
+  });
+  assert.equal(scoredPage.id, "page:1");
   const first = await app.handle(request("/routine-leads", {
     routine: "landing_page_registration", externalEventId: "registration-1", name: "Avery",
     email: "avery@example.com", instagram: "@avery.grows", facebook: " avery.fb ", x: "@avery_x",
+    campaignId: "campaign:1", landingPageId: "page:1", sourceDetail: "landing_page:page:1",
   }));
   assert.equal(first.status, 201);
-  const firstLeadId = (await first.json()).leadId;
+  const firstBody = await first.json();
+  const firstLeadId = firstBody.leadId;
+  assert.equal(firstBody.score, 44);
+  assert.equal(firstBody.scoreBand, "WARM");
+  assert.equal(firstBody.interactionInserted, true);
+  assert.equal(repository.interactions.size, 1);
+
+  const retry = await app.handle(request("/routine-leads", {
+    routine: "landing_page_registration", externalEventId: "registration-1", name: "Avery",
+    email: "avery@example.com", instagram: "@avery.grows", facebook: " avery.fb ", x: "@avery_x",
+    campaignId: "campaign:1", landingPageId: "page:1", sourceDetail: "landing_page:page:1",
+  }));
+  assert.equal(retry.status, 200);
+  assert.equal((await retry.json()).interactionInserted, false);
+  assert.equal(repository.interactions.size, 1);
+
   const second = await app.handle(request("/routine-leads", {
     routine: "landing_page_registration", externalEventId: "registration-2", name: "Avery",
     email: "avery+second@example.com", instagram: "avery.grows",
+    campaignId: "campaign:1", landingPageId: "page:1", sourceDetail: "landing_page:page:1",
   }));
   assert.equal(second.status, 201);
   assert.equal((await second.json()).leadId, firstLeadId);
   assert.equal(repository.leads.size, 1);
   assert.equal(repository.socialAccounts.size, 3);
+  assert.equal(repository.interactions.size, 2);
+  assert.equal(repository.routineEvents.size, 2);
+  assert.equal(repository.pages.get("page:1").registrations, 2);
+  assert.ok([...repository.routineEvents.keys()].every((key) => key.startsWith("landing_page_registration:")));
+  assert.ok([...repository.events.values()].every((event) =>
+    event.campaignId === "campaign:1" && event.rawPayload.landingPageId === "page:1"));
+  const savedLead = [...repository.leads.values()][0];
+  assert.equal(savedLead.intentScore, 16);
+  assert.equal(savedLead.engagementScore, 6);
+  assert.equal(savedLead.fitScore, 3);
+  assert.equal(savedLead.recencyScore, 15);
+  assert.equal(savedLead.sourceScore, 15);
+  assert.equal(savedLead.lastInteractionType, "LEAD_FORM_SUBMISSION");
+  assert.ok(savedLead.lastScoredAt);
   assert.ok([...repository.socialAccounts.values()].every((account) => account.leadId === `social:${firstLeadId}`));
 });
 
@@ -159,14 +219,15 @@ test("Cloudinary cleanup protects both campaign and landing-page references", as
   assert.equal(deletions, 1);
 });
 
-test("builder, public renderer, registration route, and MSSQL migration expose the complete feature", async () => {
-  const [builder, landing, player, registration, registerRoute, migration] = await Promise.all([
+test("builder, public renderer, registration route, and MSSQL migrations expose the complete feature", async () => {
+  const [builder, landing, player, registration, registerRoute, migration, scoringMigration] = await Promise.all([
     readFile(new URL("../app/page.tsx", import.meta.url), "utf8"),
     readFile(new URL("../app/landing/[slug]/page.tsx", import.meta.url), "utf8"),
     readFile(new URL("../app/components/LandingVideoPlayer.tsx", import.meta.url), "utf8"),
     readFile(new URL("../app/landing/[slug]/RegisterForm.tsx", import.meta.url), "utf8"),
     readFile(new URL("../app/api/register/route.ts", import.meta.url), "utf8"),
     readFile(new URL("../sql/017_landing_page_video_cta_social_handles.sql", import.meta.url), "utf8"),
+    readFile(new URL("../sql/018_landing_registration_scoring.sql", import.meta.url), "utf8"),
   ]);
   assert.match(builder, /onDrop=\{onVideoDrop\}/);
   assert.match(builder, /Cloudinary video upload in progress/);
@@ -185,11 +246,40 @@ test("builder, public renderer, registration route, and MSSQL migration expose t
   assert.match(player, /playsInline/);
   for (const handle of ["instagram", "facebook", "x"]) {
     assert.match(registration, new RegExp(`name="${handle}"`));
-    assert.match(registerRoute, new RegExp(`${handle}:body\\.${handle}`));
+    assert.match(registerRoute, new RegExp(`${handle}: clean\\(body\\.${handle}\\)`));
   }
+  assert.match(builder, /label="Post URL Link"/);
+  assert.match(builder, /After a successful registration, send the visitor/);
+  assert.match(registerRoute, /proxySocialRequest\("\/content"/);
+  assert.ok(registerRoute.indexOf('proxySocialRequest("/content"') < registerRoute.indexOf('proxySocialRequest("/routine-leads"'));
+  assert.match(registerRoute, /normalizePostUrl\(page\.webinarUrl\)/);
+  assert.match(registerRoute, /redirectUrl/);
+  assert.match(registration, /window\.location\.assign\(result\.redirectUrl\)/);
+  assert.match(registration, /registrationId/);
+  assert.doesNotMatch(registration, /<video/);
   for (const column of ["VideoSourceType", "VideoUrl", "VideoProvider", "CloudinaryPublicId", "VideoAutoplay", "VideoMuted", "VideoShowControls", "PreVideoCtaText", "PreVideoCtaUrl", "SubmitButtonText"]) {
     assert.match(migration, new RegExp(column));
   }
   assert.match(migration, /INSERT dbo\.SocialAccounts/);
   assert.match(migration, /Register Now for an Interview/);
+  assert.match(scoringMigration, /CREATE OR ALTER PROCEDURE dbo\.LeadScore_Recalculate/);
+  assert.equal((scoringMigration.match(/LEAD_FORM_SUBMISSION/g) || []).length, 4);
+  assert.match(scoringMigration, /@LeadScore = @IntentScore \+ @EngagementScore \+ @FitScore \+ @RecencyScore \+ @SourceScore/);
+});
+
+test("Next2TheTop CRM branding is used on login, dashboard, public pages, and metadata", async () => {
+  const [dashboard, login, landing, layout, logo, mark] = await Promise.all([
+    readFile(new URL("../app/page.tsx", import.meta.url), "utf8"),
+    readFile(new URL("../app/login/page.tsx", import.meta.url), "utf8"),
+    readFile(new URL("../app/landing/[slug]/page.tsx", import.meta.url), "utf8"),
+    readFile(new URL("../app/layout.tsx", import.meta.url), "utf8"),
+    readFile(new URL("../public/next2thetop-crm-logo.svg", import.meta.url), "utf8"),
+    readFile(new URL("../public/next2thetop-crm-mark.svg", import.meta.url), "utf8"),
+  ]);
+  for (const source of [dashboard, login, landing]) assert.match(source, /BrandLogo/);
+  assert.match(layout, /title:"Next2TheTop CRM"/);
+  assert.match(layout, /applicationName:"Next2TheTop CRM"/);
+  assert.match(logo, /Next2TheTop/);
+  assert.match(mark, /<title id="title">Next2TheTop CRM<\/title>/);
+  assert.doesNotMatch(`${dashboard}\n${login}\n${landing}\n${layout}`, /Alianza(?:CRM| Growth| CRM)/i);
 });

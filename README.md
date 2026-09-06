@@ -1,6 +1,6 @@
-# Alianza CRM Marketing 360
+# Next2TheTop CRM
 
-Alianza CRM Marketing 360 uses an official Next.js dashboard, an Express
+Next2TheTop CRM uses an official Next.js dashboard, an Express
 Social Listener service, and Microsoft SQL Server.
 
 ```text
@@ -125,7 +125,8 @@ stores Buffer IDs, lifecycle state, publish times, platform URLs, and safe
 failures in SQL Server. Use `npm run db:setup:mssql` after pulling this version
 to apply the Buffer/campaign migrations through migration 010, the
 authentication/user-management migration 011, CRM reporting migration 015,
-Instagram reply migration 016, and landing-page video/CTA migration 017.
+Instagram reply migration 016, landing-page video/CTA migration 017, and
+landing-registration scoring migration 018.
 
 Buffer requires `BUFFER_API_KEY` and `BUFFER_ORGANIZATION_ID` in the listener
 environment. Keep both server-only; never prefix them with `NEXT_PUBLIC_` or

@@ -169,7 +169,7 @@ function historyWeight(ageDays) {
 function canonicalHistoryType(value) {
   const type = String(value || "").trim().toUpperCase();
   if (["DM", "DIRECT_MESSAGE", "STORY_REPLY"].includes(type)) return "DM";
-  if (["COMMENT", "REPLY", "MENTION", "STORY_MENTION"].includes(type)) return "COMMENT";
+  if (["COMMENT", "REPLY", "MENTION", "STORY_MENTION", "LEAD_FORM_SUBMISSION"].includes(type)) return "COMMENT";
   return null;
 }
 

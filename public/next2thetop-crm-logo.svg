@@ -1,0 +1,19 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 248 52" role="img" aria-labelledby="title desc">
+  <title id="title">Next2TheTop CRM</title>
+  <desc id="desc">A rising staircase and arrow beside the Next2TheTop CRM wordmark.</desc>
+  <defs>
+    <linearGradient id="logo-bg" x1="7" y1="45" x2="45" y2="7" gradientUnits="userSpaceOnUse">
+      <stop stop-color="#4F46C8"/>
+      <stop offset="1" stop-color="#8B7AF5"/>
+    </linearGradient>
+    <linearGradient id="logo-rise" x1="14" y1="38" x2="40" y2="13" gradientUnits="userSpaceOnUse">
+      <stop stop-color="#FF715B"/>
+      <stop offset="1" stop-color="#FFC45E"/>
+    </linearGradient>
+  </defs>
+  <rect x="2" y="2" width="48" height="48" rx="15" fill="url(#logo-bg)"/>
+  <path d="M13 37h7V27h7v-7h7v-6h5v11h-5v-4.6L22.4 32H27v5H13Z" fill="#fff" opacity=".96"/>
+  <path d="m29 13 10 1-1 10-3.2-3.2-11.7 11.7-3.6-3.6 11.7-11.7L29 13Z" fill="url(#logo-rise)"/>
+  <text x="62" y="27" fill="#262938" font-family="Arial, Helvetica, sans-serif" font-size="20" font-weight="800" letter-spacing="-.6">Next2TheTop</text>
+  <text x="63" y="41" fill="#7463E2" font-family="Arial, Helvetica, sans-serif" font-size="10" font-weight="800" letter-spacing="3.6">CRM</text>
+</svg>

@@ -3,6 +3,7 @@
 import { type FormEvent, useState } from "react";
 import { useRouter } from "next/navigation";
 import { safeAuthReturnTo } from "../auth/return-to.mjs";
+import { BrandLogo } from "../components/BrandLogo";
 
 export default function LoginPage() {
   const router = useRouter();
@@ -37,8 +38,8 @@ export default function LoginPage() {
   return (
     <main className="login-shell">
       <section className="login-brand">
-        <div className="brand-mark"><span>360</span></div>
-        <p>ALIANZA CRM • MARKETING</p>
+        <BrandLogo className="login-brand-logo" />
+        <p>NEXT2THETOP CRM</p>
         <h1>Welcome back to your growth engine.</h1>
         <p>Sign in to manage leads, campaigns, automation, and customer journeys.</p>
       </section>
