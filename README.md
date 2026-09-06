@@ -38,7 +38,7 @@ npm run db:setup:mssql
 ```
 
 The numbered scripts in `sql/` create the CRM, social-listener, campaign,
-scoring, automation, integration, audit, user, and database-session storage surfaces. The application
+scoring, automation, integration, audit, user, landing-page media, and database-session storage surfaces. The application
 form-to-table mapping is documented in `docs/form-table-mapping.md`.
 
 Migration 011 adds local CRM authentication. On listener startup, the
@@ -123,8 +123,9 @@ saves the campaign and a draft `CampaignPosts` row for every selected channel,
 and only then sends exact `customScheduled` UTC requests to Buffer. The CRM
 stores Buffer IDs, lifecycle state, publish times, platform URLs, and safe
 failures in SQL Server. Use `npm run db:setup:mssql` after pulling this version
-to apply the Buffer/campaign migrations through migration 010 and the
-authentication/user-management migration 011.
+to apply the Buffer/campaign migrations through migration 010, the
+authentication/user-management migration 011, CRM reporting migration 015,
+Instagram reply migration 016, and landing-page video/CTA migration 017.
 
 Buffer requires `BUFFER_API_KEY` and `BUFFER_ORGANIZATION_ID` in the listener
 environment. Keep both server-only; never prefix them with `NEXT_PUBLIC_` or

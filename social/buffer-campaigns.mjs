@@ -465,10 +465,12 @@ export class BufferCampaignService {
 
   async deleteMediaIfUnreferenced(reference) {
     const normalizedId = String(reference?.assetId || reference?.cloudinaryAssetId || "").trim();
-    if (!normalizedId) throw validationError("Cloudinary asset_id is required to remove campaign media.");
-    const campaigns = await this.getCampaigns();
-    const referenced = campaigns.some((campaign) =>
-      String(campaign.cloudinaryAssetId || campaign.mediaId || "") === normalizedId);
+    if (!normalizedId) throw validationError("Cloudinary asset_id is required to remove media.");
+    const content = await this.repository.getContent();
+    const referenced = [
+      ...(content.campaigns || []),
+      ...(content.pages || []),
+    ].some((item) => String(item.cloudinaryAssetId || item.mediaId || "") === normalizedId);
     if (referenced) return { deleted: false, referenced: true };
     return {
       deleted: await this.deleteMedia(reference, { env: this.env }),

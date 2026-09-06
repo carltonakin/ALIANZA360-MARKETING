@@ -32,6 +32,11 @@ import {
   campaignMediaMaximumBytes,
   storeCampaignMediaBuffer,
 } from "../lib/campaign-media.mjs";
+import {
+  LANDING_PAGE_SUBMIT_TEXT,
+  normalizeLandingPageVideo,
+  normalizeOptionalCta,
+} from "../lib/landing-page-video.mjs";
 
 /*
 |--------------------------------------------------------------------------
@@ -202,6 +207,14 @@ export function registerCampaignMediaExpressRoutes(expressApp, {
             error.statusCode = 400;
             throw error;
           }
+          if (
+            String(request.body.purpose || "").toLowerCase() === "landing_page_video" &&
+            !new Set(["video/mp4", "video/quicktime"]).has(String(request.file.mimetype || "").toLowerCase())
+          ) {
+            const error = new Error("Landing-page videos must be MP4 or MOV files.");
+            error.statusCode = 400;
+            throw error;
+          }
           const requestedServices = Array.isArray(request.body.targetServices)
             ? request.body.targetServices
             : [request.body.targetServices];
@@ -367,6 +380,16 @@ function cleanLeadValue(value, maxLength) {
   }
 
   return cleaned;
+}
+
+function socialHandle(value) {
+  const normalized = cleanLeadValue(value, 255)?.replace(/^@+/, "") || null;
+  if (normalized && /\s|\//.test(normalized)) {
+    const error = new Error("Social handles cannot contain spaces or slashes.");
+    error.statusCode = 400;
+    throw error;
+  }
+  return normalized;
 }
 
 function normalizeLeadInput(body) {
@@ -1305,6 +1328,18 @@ function normalizeContentInput(
   if (
     entity === "landing_page"
   ) {
+    const video = normalizeLandingPageVideo({
+      videoSourceType: body.videoSourceType,
+      videoUrl: body.videoUrl,
+      videoProvider: body.videoProvider,
+      cloudinaryAssetId: body.cloudinaryAssetId,
+      cloudinaryPublicId: body.cloudinaryPublicId,
+      cloudinaryResourceType: body.cloudinaryResourceType,
+      videoAutoplay: booleanValue(body.videoAutoplay, true),
+      videoMuted: booleanValue(body.videoMuted, true),
+      videoShowControls: booleanValue(body.videoShowControls, true),
+    });
+    const cta = normalizeOptionalCta(body.preVideoCtaText, body.preVideoCtaUrl);
     return {
       entity,
 
@@ -1358,6 +1393,16 @@ function normalizeContentInput(
           body.paymentUrl,
           "Payment URL"
         ),
+
+      ...video,
+
+      ...cta,
+
+      submitButtonText:
+        cleanLeadValue(
+          body.submitButtonText,
+          255
+        ) || LANDING_PAGE_SUBMIT_TEXT,
 
       status:
         contentStatus(
@@ -1455,6 +1500,30 @@ function normalizeContentInput(
   throw error;
 }
 
+const LANDING_PAGE_CONFIGURATION_FIELDS = Object.freeze([
+  "videoSourceType",
+  "videoUrl",
+  "videoProvider",
+  "cloudinaryAssetId",
+  "cloudinaryPublicId",
+  "cloudinaryResourceType",
+  "videoAutoplay",
+  "videoMuted",
+  "videoShowControls",
+  "preVideoCtaText",
+  "preVideoCtaUrl",
+  "submitButtonText",
+]);
+
+function preserveLandingPageConfiguration(body, persistedPage) {
+  if (!persistedPage) return body;
+  const merged = { ...body };
+  for (const field of LANDING_PAGE_CONFIGURATION_FIELDS) {
+    if (!Object.prototype.hasOwnProperty.call(body, field)) merged[field] = persistedPage[field];
+  }
+  return merged;
+}
+
 /*
 |--------------------------------------------------------------------------
 | ROUTINE LEADS
@@ -1510,21 +1579,18 @@ function normalizeRoutineLead(
       ),
 
     facebook:
-      cleanLeadValue(
-        body.facebook,
-        500
+      socialHandle(
+        body.facebook
       ),
 
     instagram:
-      cleanLeadValue(
-        body.instagram,
-        500
+      socialHandle(
+        body.instagram
       ),
 
     x:
-      cleanLeadValue(
-        body.x,
-        500
+      socialHandle(
+        body.x
       ),
 
     source:
@@ -3064,11 +3130,25 @@ export async function createSocialListenerApp({
         url.pathname ===
           "/content"
       ) {
+        let requestBody =
+          await readJson(
+            request
+          );
+
+        let previousLandingPage = null;
+        if (
+          request.method === "PUT" &&
+          String(requestBody.entity || "").toLowerCase() === "landing_page" &&
+          requestBody.id
+        ) {
+          const content = await activeRepository.getContent();
+          previousLandingPage = (content.pages || []).find((page) => String(page.id) === String(requestBody.id)) || null;
+          requestBody = preserveLandingPageConfiguration(requestBody, previousLandingPage);
+        }
+
         const input =
           normalizeContentInput(
-            await readJson(
-              request
-            )
+            requestBody
           );
 
         if (
@@ -3119,22 +3199,49 @@ export async function createSocialListenerApp({
           );
         }
 
-        let record =
-          input.entity ===
-          "campaign"
-            ? await activeRepository.saveCampaign(
-                input
-              )
-            : input.entity ===
-              "landing_page"
-            ? await activeRepository.saveLandingPage(
-                input
-              )
-            : await activeRepository.saveWebinar(
-                input
-              );
+        let record;
+        try {
+          record =
+            input.entity ===
+            "campaign"
+              ? await activeRepository.saveCampaign(
+                  input
+                )
+              : input.entity ===
+                "landing_page"
+              ? await activeRepository.saveLandingPage(
+                  input
+                )
+              : await activeRepository.saveWebinar(
+                  input
+                );
+        } catch (error) {
+          if (
+            input.entity === "landing_page" &&
+            input.cloudinaryAssetId &&
+            typeof activeBufferCampaignService.cleanupUnreferencedMedia === "function"
+          ) {
+            await activeBufferCampaignService.cleanupUnreferencedMedia({
+              assetId: input.cloudinaryAssetId,
+              publicId: input.cloudinaryPublicId,
+              resourceType: input.cloudinaryResourceType,
+            });
+          }
+          throw error;
+        }
 
         if (!record) {
+          if (
+            input.entity === "landing_page" &&
+            input.cloudinaryAssetId &&
+            typeof activeBufferCampaignService.cleanupUnreferencedMedia === "function"
+          ) {
+            await activeBufferCampaignService.cleanupUnreferencedMedia({
+              assetId: input.cloudinaryAssetId,
+              publicId: input.cloudinaryPublicId,
+              resourceType: input.cloudinaryResourceType,
+            });
+          }
           return json(
             {
               error:
@@ -3143,6 +3250,19 @@ export async function createSocialListenerApp({
 
             404
           );
+        }
+
+        if (
+          input.entity === "landing_page" &&
+          previousLandingPage?.cloudinaryAssetId &&
+          previousLandingPage.cloudinaryAssetId !== input.cloudinaryAssetId &&
+          typeof activeBufferCampaignService.cleanupUnreferencedMedia === "function"
+        ) {
+          await activeBufferCampaignService.cleanupUnreferencedMedia({
+            assetId: previousLandingPage.cloudinaryAssetId,
+            publicId: previousLandingPage.cloudinaryPublicId,
+            resourceType: previousLandingPage.cloudinaryResourceType,
+          });
         }
 
         if (

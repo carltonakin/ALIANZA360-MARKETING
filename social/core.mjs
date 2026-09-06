@@ -1305,8 +1305,16 @@ export class InMemorySocialRepository {
   }
 
   async createLead(input) {
-    const leadKey = input.email?.toLowerCase() || `manual:${this.leads.size + 1}`;
-    const current = this.leads.get(leadKey);
+    const normalizedEmail = input.email?.toLowerCase();
+    const normalizedHandle = (value) => String(value || "").trim().replace(/^@+/, "").toLowerCase();
+    const matchingEntry = [...this.leads.entries()].find(([, lead]) =>
+      (normalizedEmail && lead.email?.toLowerCase() === normalizedEmail) ||
+      (input.phone && lead.phone === input.phone) ||
+      (input.facebook && normalizedHandle(lead.facebook) === normalizedHandle(input.facebook)) ||
+      (input.instagram && normalizedHandle(lead.instagram) === normalizedHandle(input.instagram)) ||
+      (input.x && normalizedHandle(lead.x) === normalizedHandle(input.x)));
+    const leadKey = matchingEntry?.[0] || normalizedEmail || `manual:${this.leads.size + 1}`;
+    const current = matchingEntry?.[1] || this.leads.get(leadKey);
     const changes = structuredClone(input);
     if (!input.lastIntentProvided) delete changes.lastIntent;
     if (!input.crmNotesProvided) delete changes.crmNotes;
@@ -1905,16 +1913,43 @@ export class InMemorySocialRepository {
   async upsertRoutineLead(input) {
     const key = `${input.routine}:${input.externalEventId}`;
     if (this.routineEvents.has(key)) return { ...this.routineEvents.get(key), duplicate: true };
+    const existingAccount = [
+      ["facebook", input.facebook],
+      ["instagram", input.instagram],
+      ["x", input.x],
+    ].map(([platform, username]) => username
+      ? this.socialAccounts.get(`${platform}:username:${String(username).toLowerCase()}`)
+      : null).find(Boolean);
+    const existingLead = existingAccount
+      ? [...this.leads.values()].find((item) => item.id === existingAccount.leadId)
+      : null;
     const lead = await this.createLead({
       name: input.name,
-      email: input.email,
-      phone: input.phone,
-      facebook: input.facebook,
-      instagram: input.instagram,
-      x: input.x,
+      email: input.email || existingLead?.email,
+      phone: input.phone || existingLead?.phone,
+      facebook: input.facebook || existingLead?.facebook,
+      instagram: input.instagram || existingLead?.instagram,
+      x: input.x || existingLead?.x,
       source: input.source,
       value: 0,
     });
+    for (const [platform, username] of [["facebook", input.facebook], ["instagram", input.instagram], ["x", input.x]]) {
+      if (!username) continue;
+      const identity = `username:${String(username).toLowerCase()}`;
+      const accountKey = `${platform}:${identity}`;
+      const current = this.socialAccounts.get(accountKey);
+      this.socialAccounts.set(accountKey, {
+        id: current?.id || `account:${this.socialAccounts.size + 1}`,
+        leadId: current?.leadId || lead.id,
+        platform,
+        platformUserId: identity,
+        username,
+        displayName: null,
+        profileUrl: null,
+        lastVerifiedAt: current?.lastVerifiedAt || null,
+        updatedAt: new Date().toISOString(),
+      });
+    }
     const result = { leadId: Number(String(lead.id).replace("social:", "")), duplicate: false };
     this.routineEvents.set(key, result);
     if (input.routine === "landing_page_registration" && input.landingPageId && this.pages.has(input.landingPageId)) {

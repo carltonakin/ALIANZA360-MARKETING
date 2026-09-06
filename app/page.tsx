@@ -9,7 +9,9 @@ import {
   useState,
 } from "react";
 import { useRouter } from "next/navigation";
+import { LandingVideoPlayer } from "./components/LandingVideoPlayer";
 import { browserVideoValidationErrors, INSTAGRAM_VIDEO_MAX_BYTES } from "../lib/instagram-video-validation.mjs";
+import { LANDING_PAGE_SUBMIT_TEXT, normalizeExternalVideoUrl } from "../lib/landing-page-video.mjs";
 import type { AuthUser } from "./auth/shared";
 import Reports from "./reports";
 
@@ -229,6 +231,18 @@ type Landing = {
   teaser: string;
   webinarUrl: string;
   paymentUrl: string;
+  videoSourceType: "NONE" | "UPLOAD" | "EXTERNAL_URL";
+  videoUrl: string;
+  videoProvider: "CLOUDINARY" | "YOUTUBE" | "VIMEO" | "CANVA" | null;
+  cloudinaryAssetId: string | null;
+  cloudinaryPublicId: string | null;
+  cloudinaryResourceType: "video" | null;
+  videoAutoplay: boolean;
+  videoMuted: boolean;
+  videoShowControls: boolean;
+  preVideoCtaText: string;
+  preVideoCtaUrl: string;
+  submitButtonText: string;
   status: string;
   registrations: number;
   createdByAi?: boolean;
@@ -502,6 +516,23 @@ export default function Home() {
     }
   };
 
+  const openLandingPageEditor = async (page: Landing) => {
+    setBusy(true);
+    try {
+      const response = await fetch("/api/social/content", { cache: "no-store" });
+      const data = await response.json().catch(() => ({})) as { pages?: Landing[]; error?: string; message?: string };
+      if (!response.ok) throw new Error(data.error || data.message || "The saved landing page could not be loaded.");
+      const persistedPage = data.pages?.find((candidate) => String(candidate.id) === String(page.id));
+      if (!persistedPage) throw new Error("The saved landing page no longer exists.");
+      setEditingPage(persistedPage);
+      setModal("page");
+    } catch (error) {
+      notify(error instanceof Error ? error.message : "The saved landing page could not be loaded.");
+    } finally {
+      setBusy(false);
+    }
+  };
+
   const loadBufferChannels = async () => {
     try {
       const response = await fetch("/api/buffer/channels", { cache: "no-store" });
@@ -601,6 +632,116 @@ export default function Home() {
       notify(entity ? `${updating ? "Changes saved" : "Record created"} successfully` : "Saved successfully");
     } catch (err) {
       notify(err instanceof Error ? err.message : "Could not save");
+    } finally {
+      setBusy(false);
+    }
+  };
+
+  const saveLandingPage = async (
+    event: FormEvent<HTMLFormElement>,
+    page: Landing | null,
+    mediaFile: File | null,
+    onUploadState: (state: "idle" | "selected" | "uploading" | "success" | "error", message?: string) => void,
+  ) => {
+    event.preventDefault();
+    setBusy(true);
+    const form = new FormData(event.currentTarget);
+    const sourceType = String(form.get("videoSourceType") || "NONE") as Landing["videoSourceType"];
+    let uploadedMedia: CampaignMediaUpload | null = null;
+    let uploadedMediaPersisted = false;
+    try {
+      let video = sourceType === "UPLOAD" && page?.videoSourceType === "UPLOAD" ? {
+        videoUrl: page.videoUrl,
+        videoProvider: page.videoProvider,
+        cloudinaryAssetId: page.cloudinaryAssetId,
+        cloudinaryPublicId: page.cloudinaryPublicId,
+        cloudinaryResourceType: page.cloudinaryResourceType,
+      } : {
+        videoUrl: null,
+        videoProvider: null,
+        cloudinaryAssetId: null,
+        cloudinaryPublicId: null,
+        cloudinaryResourceType: null,
+      };
+
+      if (sourceType === "UPLOAD") {
+        if (mediaFile) {
+          onUploadState("uploading", "Uploading video securely to Cloudinary…");
+          const uploadForm = new FormData();
+          uploadForm.append("media", mediaFile);
+          uploadForm.append("purpose", "landing_page_video");
+          const uploadResponse = await fetch("/api/media", { method: "POST", body: uploadForm });
+          const uploadData = await uploadResponse.json().catch(() => ({})) as { media?: CampaignMediaUpload; error?: string };
+          if (!uploadResponse.ok || !uploadData.media) {
+            throw new Error(uploadData.error || "The landing-page video could not be uploaded.");
+          }
+          if (uploadData.media.mediaType !== "video") throw new Error("Landing pages accept MP4 or MOV video files only.");
+          uploadedMedia = uploadData.media;
+          video = {
+            videoUrl: uploadedMedia.mediaUrl,
+            videoProvider: "CLOUDINARY",
+            cloudinaryAssetId: uploadedMedia.assetId,
+            cloudinaryPublicId: uploadedMedia.publicId,
+            cloudinaryResourceType: "video",
+          };
+          onUploadState("success", "Video uploaded. Saving the landing page…");
+        } else if (!video.videoUrl) {
+          throw new Error("Choose an MP4 or MOV video to upload.");
+        }
+      } else if (sourceType === "EXTERNAL_URL") {
+        const external = normalizeExternalVideoUrl(form.get("externalVideoUrl"));
+        video = {
+          videoUrl: external.url,
+          videoProvider: external.provider as Landing["videoProvider"],
+          cloudinaryAssetId: null,
+          cloudinaryPublicId: null,
+          cloudinaryResourceType: null,
+        };
+      }
+
+      const payload = {
+        entity: "landing_page",
+        ...(page ? { id: page.id } : {}),
+        campaignId: form.get("campaignId"),
+        title: form.get("title"),
+        slug: form.get("slug"),
+        headline: form.get("headline"),
+        teaser: form.get("teaser"),
+        webinarUrl: form.get("webinarUrl"),
+        paymentUrl: form.get("paymentUrl"),
+        videoSourceType: sourceType,
+        ...video,
+        videoAutoplay: true,
+        videoMuted: true,
+        videoShowControls: true,
+        preVideoCtaText: form.get("preVideoCtaText"),
+        preVideoCtaUrl: form.get("preVideoCtaUrl"),
+        submitButtonText: form.get("submitButtonText"),
+        status: form.get("status") || "draft",
+        createdByAi: page?.createdByAi || false,
+      };
+      const response = await fetch("/api/social/content", {
+        method: page ? "PUT" : "POST",
+        headers: { "content-type": "application/json" },
+        body: JSON.stringify(payload),
+      });
+      const data = await response.json().catch(() => ({})) as { error?: string; message?: string };
+      if (!response.ok) throw new Error(data.error || data.message || "The landing page could not be saved.");
+      uploadedMediaPersisted = Boolean(uploadedMedia);
+      onUploadState("success", uploadedMedia ? "Video uploaded and landing page saved." : "Landing page saved.");
+      await load();
+      setModal("");
+      setEditingPage(null);
+      notify(page ? "Landing page changes saved successfully" : "Landing page created successfully");
+    } catch (error) {
+      if (uploadedMedia && !uploadedMediaPersisted) {
+        await fetch(`/api/media/${encodeURIComponent(uploadedMedia.assetId)}`, {
+          method: "DELETE",
+          headers: { "content-type": "application/json" },
+          body: JSON.stringify({ publicId: uploadedMedia.publicId, resourceType: uploadedMedia.resourceType }),
+        }).catch(() => null);
+      }
+      onUploadState("error", error instanceof Error ? error.message : "The landing page could not be saved.");
     } finally {
       setBusy(false);
     }
@@ -1018,10 +1159,7 @@ export default function Home() {
                 setEditingPage(null);
                 setModal("page");
               }}
-              onEdit={(page) => {
-                setEditingPage(page);
-                setModal("page");
-              }}
+              onEdit={(page) => void openLandingPageEditor(page)}
             />
           )}
           {active === "Reports" && <Reports />}
@@ -1110,7 +1248,7 @@ export default function Home() {
                 busy={busy}
               />
             )}
-            {modal === "page" && <PageForm key={editingPage?.id || "new"} page={editingPage} campaigns={campaigns} submit={submit} busy={busy} />}
+            {modal === "page" && <PageForm key={editingPage?.id || "new"} page={editingPage} campaigns={campaigns} save={saveLandingPage} busy={busy} />}
             {modal === "webinar" && <WebinarForm key={editingWebinar?.id || "new"} webinar={editingWebinar} submit={submit} busy={busy} campaigns={campaigns} pages={pages} />}
             {modal === "ai" && <AiDraftForm busy={busy} setBusy={setBusy} onSaved={async (message) => { await load(); setModal(""); notify(message); }} />}
             {modal === "lead360" && unifiedLead && (
@@ -2746,6 +2884,7 @@ function Field({
   placeholder = "",
   type = "text",
   required = false,
+  maxLength,
   value,
   defaultValue,
   onValueChange,
@@ -2755,6 +2894,7 @@ function Field({
   placeholder?: string;
   type?: string;
   required?: boolean;
+  maxLength?: number;
   value?: string;
   defaultValue?: string;
   onValueChange?: (value: string) => void;
@@ -2768,6 +2908,7 @@ function Field({
         type={type}
         placeholder={placeholder}
         required={required}
+        maxLength={maxLength}
         value={value}
         defaultValue={value === undefined ? defaultValue : undefined}
         onChange={onValueChange ? (event) => onValueChange(event.target.value) : undefined}
@@ -3138,16 +3279,141 @@ function CampaignForm({
 function PageForm({
   page,
   campaigns,
-  submit,
+  save,
   busy,
 }: {
   page: Landing | null;
   campaigns: Campaign[];
-  submit: ContentSubmit;
+  save: (
+    event: FormEvent<HTMLFormElement>,
+    page: Landing | null,
+    mediaFile: File | null,
+    onUploadState: (state: "idle" | "selected" | "uploading" | "success" | "error", message?: string) => void,
+  ) => Promise<void>;
   busy: boolean;
 }) {
+  const [videoSourceType, setVideoSourceType] = useState<Landing["videoSourceType"]>(page?.videoSourceType || "NONE");
+  const [mediaFile, setMediaFile] = useState<File | null>(null);
+  const [mediaPreview, setMediaPreview] = useState(page?.videoSourceType === "UPLOAD" ? page.videoUrl : "");
+  const [uploadState, setUploadState] = useState<"idle" | "selected" | "uploading" | "success" | "error">("idle");
+  const [uploadMessage, setUploadMessage] = useState("");
+  const [externalVideoUrl, setExternalVideoUrl] = useState(page?.videoSourceType === "EXTERNAL_URL" ? page.videoUrl : "");
+  const [externalVideoMessage, setExternalVideoMessage] = useState("");
+  const [externalVideoPreview, setExternalVideoPreview] = useState<{
+    url: string;
+    provider: Exclude<Landing["videoProvider"], "CLOUDINARY" | null>;
+  } | null>(() => page?.videoSourceType === "EXTERNAL_URL" && page.videoUrl && page.videoProvider && page.videoProvider !== "CLOUDINARY"
+    ? { url: page.videoUrl, provider: page.videoProvider }
+    : null);
+  const [previewError, setPreviewError] = useState("");
+  const previewObjectUrl = useRef<string | null>(null);
+
+  useEffect(() => () => {
+    if (previewObjectUrl.current) URL.revokeObjectURL(previewObjectUrl.current);
+  }, []);
+
+  const clearSelectedFile = () => {
+    if (previewObjectUrl.current) URL.revokeObjectURL(previewObjectUrl.current);
+    previewObjectUrl.current = null;
+    setMediaFile(null);
+  };
+
+  const selectVideo = (file: File | null) => {
+    if (!file) return;
+    const extension = file.name.split(".").pop()?.toLowerCase() || "";
+    const allowed = (file.type === "video/mp4" && extension === "mp4") ||
+      (file.type === "video/quicktime" && extension === "mov");
+    if (!allowed) {
+      setUploadState("error");
+      setUploadMessage("Choose an MP4 or MOV video whose extension matches its file type.");
+      return;
+    }
+    if (file.size < 1 || file.size > INSTAGRAM_VIDEO_MAX_BYTES) {
+      setUploadState("error");
+      setUploadMessage("Video must be larger than 0 bytes and no more than 300 MB.");
+      return;
+    }
+    clearSelectedFile();
+    previewObjectUrl.current = URL.createObjectURL(file);
+    setMediaFile(file);
+    setMediaPreview(previewObjectUrl.current);
+    setPreviewError("");
+    setVideoSourceType("UPLOAD");
+    setUploadState("selected");
+    setUploadMessage(`${file.name} · ${formatFileSize(file.size)} · ready to upload`);
+  };
+
+  const changeVideoSource = (source: Landing["videoSourceType"]) => {
+    clearSelectedFile();
+    setVideoSourceType(source);
+    setMediaPreview(source === "UPLOAD" && page?.videoSourceType === "UPLOAD" ? page.videoUrl : "");
+    setUploadState("idle");
+    setUploadMessage("");
+    setExternalVideoMessage("");
+    setPreviewError("");
+  };
+
+  const removeVideo = () => {
+    clearSelectedFile();
+    setMediaPreview("");
+    setExternalVideoPreview(null);
+    setPreviewError("");
+    setVideoSourceType("NONE");
+    setUploadState("idle");
+    setUploadMessage("Video will be removed after you save the page.");
+  };
+
+  const validateExternalVideo = () => {
+    if (!externalVideoUrl.trim()) {
+      setExternalVideoMessage("");
+      return;
+    }
+    try {
+      const normalized = normalizeExternalVideoUrl(externalVideoUrl);
+      setExternalVideoPreview({
+        url: normalized.url,
+        provider: normalized.provider as Exclude<Landing["videoProvider"], "CLOUDINARY" | null>,
+      });
+      setPreviewError("");
+      setExternalVideoMessage(`${normalized.provider === "CANVA" ? "Canva" : normalized.provider === "VIMEO" ? "Vimeo" : "YouTube"} link is ready to embed.`);
+    } catch (error) {
+      setExternalVideoPreview(null);
+      setExternalVideoMessage(error instanceof Error ? error.message : "This external video link is unsupported.");
+    }
+  };
+
+  const updateExternalVideo = (value: string) => {
+    setExternalVideoUrl(value);
+    setPreviewError("");
+    if (!value.trim()) {
+      setExternalVideoPreview(null);
+      setExternalVideoMessage("");
+      return;
+    }
+    try {
+      const normalized = normalizeExternalVideoUrl(value);
+      setExternalVideoPreview({
+        url: normalized.url,
+        provider: normalized.provider as Exclude<Landing["videoProvider"], "CLOUDINARY" | null>,
+      });
+      setExternalVideoMessage(`${normalized.provider === "CANVA" ? "Canva" : normalized.provider === "VIMEO" ? "Vimeo" : "YouTube"} link is ready to embed.`);
+    } catch {
+      setExternalVideoPreview(null);
+      setExternalVideoMessage("");
+    }
+  };
+
+  const onVideoChange = (event: ChangeEvent<HTMLInputElement>) => selectVideo(event.target.files?.[0] || null);
+  const onVideoDrop = (event: DragEvent<HTMLLabelElement>) => {
+    event.preventDefault();
+    selectVideo(event.dataTransfer.files?.[0] || null);
+  };
+
   return (
-    <form onSubmit={(e) => submit(e, page ? "page.update" : "page.create", page?.id, page?.createdByAi)}>
+    <form onSubmit={(event) => void save(event, page, mediaFile, (state, message = "") => {
+      setUploadState(state);
+      setUploadMessage(message);
+    })}>
       <h2>{page ? "Edit webinar page" : "Publish a webinar page"}</h2>
       <p>{page ? "Update the page while preserving its lead capture and webinar flow." : "Create the full teaser, registration, webinar and payment path."}</p>
       <div className="form-grid">
@@ -3185,9 +3451,101 @@ function PageForm({
           defaultValue={page?.teaser}
         />
       </label>
+      <section className="landing-builder-section">
+        <div className="landing-builder-heading">
+          <strong>Video above teaser</strong>
+          <small>Add a Cloudinary upload or a supported external player. Empty video placeholders are never rendered.</small>
+        </div>
+        <label>
+          Video source
+          <select name="videoSourceType" value={videoSourceType} onChange={(event) => changeVideoSource(event.target.value as Landing["videoSourceType"])}>
+            <option value="NONE">No video</option>
+            <option value="UPLOAD">Upload to Cloudinary</option>
+            <option value="EXTERNAL_URL">YouTube, Vimeo, or Canva URL</option>
+          </select>
+        </label>
+        {videoSourceType === "UPLOAD" && (
+          <>
+            <label
+              className={`landing-video-drop${mediaPreview ? " has-video" : ""}`}
+              onDragOver={(event) => event.preventDefault()}
+              onDrop={onVideoDrop}
+            >
+              <input type="file" accept="video/mp4,video/quicktime,.mp4,.mov" onChange={onVideoChange} />
+              {mediaPreview ? (
+                <LandingVideoPlayer
+                  sourceType="UPLOAD"
+                  videoUrl={mediaPreview}
+                  provider="CLOUDINARY"
+                  autoplay={false}
+                  muted
+                  showControls
+                  className="landing-video-preview"
+                  title="Uploaded landing-page video preview"
+                  onPlaybackError={() => setPreviewError("The saved video could not be previewed. You can replace it or save the page without changing it.")}
+                />
+              ) : (
+                <span><b>Drop video here</b><small>or click to browse · MP4 or MOV · up to 300 MB</small></span>
+              )}
+            </label>
+            {mediaPreview && <button className="landing-video-remove" type="button" onClick={removeVideo}>Remove video</button>}
+          </>
+        )}
+        {videoSourceType === "EXTERNAL_URL" && (
+          <>
+            <label>
+              External video URL
+              <input
+                name="externalVideoUrl"
+                type="url"
+                placeholder="YouTube, Vimeo, or public Canva view/watch URL"
+                value={externalVideoUrl}
+                onChange={(event) => updateExternalVideo(event.target.value)}
+                onBlur={validateExternalVideo}
+                required
+              />
+              <small>Paste the share URL—not iframe or script code. Canva editor links are not supported.</small>
+            </label>
+            {externalVideoPreview && (
+              <LandingVideoPlayer
+                sourceType="EXTERNAL_URL"
+                videoUrl={externalVideoPreview.url}
+                provider={externalVideoPreview.provider}
+                autoplay
+                muted
+                showControls
+                className="landing-video-preview"
+                title="External landing-page video preview"
+                onPlaybackError={() => setPreviewError("This provider did not load the preview. Check that the video is public, or replace the URL.")}
+              />
+            )}
+          </>
+        )}
+        {externalVideoMessage && <small className={/ready to embed/i.test(externalVideoMessage) ? "landing-upload-success" : "form-error"}>{externalVideoMessage}</small>}
+        {previewError && <small className="form-error" role="alert">{previewError}</small>}
+        {uploadState === "uploading" && <progress className="landing-upload-progress" aria-label="Cloudinary video upload in progress" />}
+        {uploadMessage && <small className={uploadState === "error" ? "form-error" : uploadState === "success" ? "landing-upload-success" : "landing-upload-state"} role={uploadState === "error" ? "alert" : "status"}>{uploadMessage}</small>}
+      </section>
+      <section className="landing-builder-section">
+        <div className="landing-builder-heading">
+          <strong>Optional CTA above video</strong>
+          <small>Both fields must be completed for the button to appear.</small>
+        </div>
+        <div className="form-grid">
+          <Field label="CTA button title" name="preVideoCtaText" placeholder="Book your strategy call" maxLength={255} defaultValue={page?.preVideoCtaText} />
+          <Field label="CTA button URL" name="preVideoCtaUrl" type="url" placeholder="https://..." defaultValue={page?.preVideoCtaUrl} />
+        </div>
+      </section>
+      <Field
+        label="Submit Button Text"
+        name="submitButtonText"
+        placeholder={LANDING_PAGE_SUBMIT_TEXT}
+        maxLength={255}
+        defaultValue={page?.submitButtonText || LANDING_PAGE_SUBMIT_TEXT}
+      />
       <div className="form-grid">
         <Field
-          label="Webinar video URL"
+          label="Post-registration webinar URL"
           name="webinarUrl"
           type="url"
           placeholder="https://..."
@@ -3201,8 +3559,8 @@ function PageForm({
           defaultValue={page?.paymentUrl}
         />
       </div>
-      <button className="primary submit" disabled={busy}>
-        {busy ? "Saving..." : page ? "Save page changes" : "Publish page"}
+      <button className="primary submit" disabled={busy || uploadState === "uploading" || uploadState === "error" || Boolean(externalVideoMessage && !/ready to embed/i.test(externalVideoMessage))}>
+        {busy ? (uploadState === "uploading" ? "Uploading video..." : "Saving...") : page ? "Save page changes" : "Publish page"}
       </button>
     </form>
   );

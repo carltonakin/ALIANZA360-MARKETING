@@ -80,7 +80,7 @@ function cloudinaryMedia(overrides = {}) {
   };
 }
 
-test("the project has one upload route and no local campaign-media hosting path", async () => {
+test("campaign and landing media reuse one upload route with no local hosting path", async () => {
   const [pageSource, nextUploadSource, serverSource, mediaSource] = await Promise.all([
     readFile(new URL("../app/page.tsx", import.meta.url), "utf8"),
     readFile(new URL("../app/api/media/route.ts", import.meta.url), "utf8"),
@@ -88,7 +88,7 @@ test("the project has one upload route and no local campaign-media hosting path"
     readFile(new URL("../lib/campaign-media.mjs", import.meta.url), "utf8"),
   ]);
   assert.match(pageSource, /fetch\("\/api\/media", \{ method: "POST", body: uploadForm \}\)/);
-  assert.equal((pageSource.match(/fetch\("\/api\/media", \{ method: "POST", body: uploadForm \}\)/g) || []).length, 1);
+  assert.equal((pageSource.match(/fetch\("\/api\/media", \{ method: "POST", body: uploadForm \}\)/g) || []).length, 2);
   assert.match(nextUploadSource, /proxySocialRequest\("\/api\/media", uploadRequest\)/);
   assert.match(serverSource, /expressApp\.post\(\s*"\/api\/media"/);
   assert.doesNotMatch(serverSource, /expressApp\.post\(\s*"\/uploads\/campaigns"/);

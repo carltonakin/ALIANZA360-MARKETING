@@ -77,7 +77,8 @@ SQL migrations with `npm run db:setup:mssql` before using the campaign studio;
 the Buffer lifecycle and campaign editing procedures are installed by
 migrations 006 through 008, Cloudinary identity persistence by migration 010,
 CRM authentication/user administration by migration 011, and live CRM reporting
-by migration 015. Create a Cloudinary product environment and copy its cloud
+by migration 015. Migration 017 adds landing-page video/CTA/player fields and
+normalized registration handles. Create a Cloudinary product environment and copy its cloud
 name, API key,
 and API secret from Cloudinary's API Keys settings. Keep the secret server-side
 and never use a `NEXT_PUBLIC_` name. The optional upload preset must permit
@@ -98,6 +99,12 @@ It returns success only after Cloudinary supplies a valid HTTPS `secure_url`.
 No application-root or `App_Data` write permission is required for campaign
 media. Existing campaigns with legacy local media URLs must have their media
 replaced through the campaign editor before they can be rescheduled.
+
+Landing-page MP4/MOV uploads reuse the same authenticated `/api/media` route
+and Cloudinary configuration. Deploy migration 017 before publishing the new
+builder. Replacement and removal save the landing-page record first, then ask
+Cloudinary to delete the old asset only after both campaign and landing-page
+references have been checked.
 
 The CRM uses its own MSSQL-backed users and sessions. The listener creates the
 `next2thetop` ADMIN account only when absent and never resets it during later

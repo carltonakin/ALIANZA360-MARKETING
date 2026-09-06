@@ -389,6 +389,18 @@ function mapLandingPage(row) {
     teaser: row.Teaser || "",
     webinarUrl: row.WebinarUrl || "",
     paymentUrl: row.PaymentUrl || "",
+    videoSourceType: row.VideoSourceType || "NONE",
+    videoUrl: row.VideoUrl || "",
+    videoProvider: row.VideoProvider || null,
+    cloudinaryAssetId: row.CloudinaryAssetId || null,
+    cloudinaryPublicId: row.CloudinaryPublicId || null,
+    cloudinaryResourceType: row.CloudinaryResourceType || null,
+    videoAutoplay: row.VideoAutoplay == null ? true : Boolean(row.VideoAutoplay),
+    videoMuted: row.VideoMuted == null ? true : Boolean(row.VideoMuted),
+    videoShowControls: row.VideoShowControls == null ? true : Boolean(row.VideoShowControls),
+    preVideoCtaText: row.PreVideoCtaText || "",
+    preVideoCtaUrl: row.PreVideoCtaUrl || "",
+    submitButtonText: row.SubmitButtonText || "Register Now for an Interview",
     status: row.Status,
     registrations: Number(row.Registrations || 0),
     createdByAi: Boolean(row.CreatedByAi),
@@ -871,6 +883,18 @@ export class SqlServerRepository {
     request.input("Teaser", this.sql.NVarChar(this.sql.MAX), input.teaser);
     request.input("WebinarUrl", this.sql.NVarChar(2048), input.webinarUrl);
     request.input("PaymentUrl", this.sql.NVarChar(2048), input.paymentUrl);
+    request.input("VideoSourceType", this.sql.NVarChar(20), input.videoSourceType || "NONE");
+    request.input("VideoUrl", this.sql.NVarChar(2048), input.videoUrl);
+    request.input("VideoProvider", this.sql.NVarChar(32), input.videoProvider);
+    request.input("CloudinaryAssetId", this.sql.NVarChar(255), input.cloudinaryAssetId);
+    request.input("CloudinaryPublicId", this.sql.NVarChar(500), input.cloudinaryPublicId);
+    request.input("CloudinaryResourceType", this.sql.NVarChar(32), input.cloudinaryResourceType);
+    request.input("VideoAutoplay", this.sql.Bit, input.videoAutoplay === false ? 0 : 1);
+    request.input("VideoMuted", this.sql.Bit, input.videoMuted === false ? 0 : 1);
+    request.input("VideoShowControls", this.sql.Bit, input.videoShowControls === false ? 0 : 1);
+    request.input("PreVideoCtaText", this.sql.NVarChar(255), input.preVideoCtaText);
+    request.input("PreVideoCtaUrl", this.sql.NVarChar(2048), input.preVideoCtaUrl);
+    request.input("SubmitButtonText", this.sql.NVarChar(255), input.submitButtonText || "Register Now for an Interview");
     request.input("Status", this.sql.NVarChar(32), input.status || "draft");
     request.input("CreatedByAi", this.sql.Bit, input.createdByAi ? 1 : 0);
     const response = await request.execute("dbo.LandingPage_Save");
