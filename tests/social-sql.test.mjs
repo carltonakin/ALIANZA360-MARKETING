@@ -19,6 +19,7 @@ const reportsMigrationUrl = new URL("../sql/015_crm_reports.sql", import.meta.ur
 const replyConversationMigrationUrl = new URL("../sql/016_instagram_two_way_conversations.sql", import.meta.url);
 const landingRegistrationScoringMigrationUrl = new URL("../sql/018_landing_registration_scoring.sql", import.meta.url);
 const landingRepairMigrationUrl = new URL("../sql/019_repair_landing_registration_video.sql", import.meta.url);
+const landingMediaMigrationUrl = new URL("../sql/020_landing_page_picture_media_order_cta.sql", import.meta.url);
 
 class FakeRequest {
   constructor(executions, result = { recordset: [] }) {
@@ -360,6 +361,19 @@ test("landing repair migration backfills videos and scores registrations idempot
   assert.match(sql, /EXEC dbo\.LeadScore_Recalculate/i);
   assert.doesNotMatch(sql, /CREATE OR ALTER PROCEDURE dbo\.LeadScore_Recalculate/i);
   assert.doesNotMatch(sql, /DROP TABLE|TRUNCATE TABLE/i);
+});
+
+test("landing media migration adds picture, ordering, and explicit CTA state without changing lead scoring", async () => {
+  const sql = await readFile(landingMediaMigrationUrl, "utf8");
+  for (const column of [
+    "MediaMode", "MediaOrder", "PictureUrl", "PictureCloudinaryAssetId",
+    "PictureCloudinaryPublicId", "PictureCloudinaryResourceType", "PreVideoCtaEnabled",
+  ]) assert.match(sql, new RegExp(`COL_LENGTH\\(N'dbo\\.LandingPages', N'${column}'\\)`, "i"));
+  assert.match(sql, /CREATE OR ALTER PROCEDURE dbo\.LandingPage_Save/i);
+  assert.match(sql, /CREATE OR ALTER PROCEDURE dbo\.CRMContent_GetAll/i);
+  assert.match(sql, /VIDEO_ONLY[\s\S]*PICTURE_ONLY[\s\S]*VIDEO_AND_PICTURE/i);
+  assert.match(sql, /PreVideoCtaEnabled[\s\S]*PreVideoCtaText[\s\S]*PreVideoCtaUrl/i);
+  assert.doesNotMatch(sql, /LeadScoringRules|LeadTemperatureThresholds|LeadScore_Recalculate/i);
 });
 
 test("SQL integer normalization rounds finite media metadata and nulls invalid values", () => {
@@ -832,6 +846,9 @@ test("SQL Server repository parameterizes campaign, page, webinar, mode, and rou
   assert.equal(executions[0].parameters.get("CampaignId").value, 7);
   assert.equal(executions[1].parameters.get("LandingPageId").value, 8);
   assert.equal(executions[1].parameters.get("CampaignId").value, 7);
+  assert.equal(executions[1].parameters.get("MediaMode").value, "NONE");
+  assert.equal(executions[1].parameters.get("MediaOrder").value, "VIDEO_FIRST");
+  assert.equal(executions[1].parameters.get("PreVideoCtaEnabled").value, 0);
   assert.equal(executions[2].parameters.get("WebinarId").value, 9);
   assert.equal(executions[2].parameters.get("LandingPageId").value, 8);
   assert.equal(executions[3].parameters.get("CampaignId").value, 1);

@@ -128,7 +128,9 @@ authentication/user-management migration 011, CRM reporting migration 015,
 Instagram reply migration 016, landing-page video/CTA migration 017, and
 landing-registration scoring migration 018. Migration 019 repairs historical
 registration scoring events and migrates recognized legacy landing video links
-without restoring videos that an admin later removes.
+without restoring videos that an admin later removes. Migration 020 adds the
+landing-page picture asset, explicit teaser media mode/order, and saved CTA
+enabled state without changing the lead-scoring formula or temperature bands.
 
 Buffer requires `BUFFER_API_KEY` and `BUFFER_ORGANIZATION_ID` in the listener
 environment. Keep both server-only; never prefix them with `NEXT_PUBLIC_` or
@@ -145,6 +147,9 @@ returns the expected image/video content instead of HTML.
 `POST /api/media` is the sole multipart upload endpoint and uses the `media`
 form field. Campaign media is not written to or served from the application
 filesystem, and there is no campaign-only local static delivery route.
+Landing-page teaser pictures use this same endpoint and Cloudinary identity
+model; the editor accepts JPEG, PNG, WebP, and GIF pictures and can render a
+video, a picture, or both in the selected order.
 
 Instagram video is inspected from the received MP4/MOV bytes before Cloudinary
 upload and SQL persistence. Reel and Story video must use

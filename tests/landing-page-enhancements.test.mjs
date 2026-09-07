@@ -4,8 +4,12 @@ import test from "node:test";
 import {
   LANDING_PAGE_SUBMIT_TEXT,
   normalizeExternalVideoUrl,
+  normalizeLandingPageCta,
+  normalizeLandingPageMedia,
+  normalizeLandingPagePicture,
   normalizeLandingPageVideo,
   normalizeOptionalCta,
+  resolvePersistedLandingPageMedia,
   resolvePersistedLandingPageVideo,
 } from "../lib/landing-page-video.mjs";
 import { normalizePostUrl } from "../lib/post-url.mjs";
@@ -60,9 +64,51 @@ test("landing video and CTA validation clears unused metadata and requires compl
     videoShowControls: true,
   });
   assert.equal(normalizeOptionalCta("Book now", "https://example.com/book").preVideoCtaText, "Book now");
+  assert.deepEqual(normalizeLandingPageCta(false, "Book later", "https://example.com/later"), {
+    preVideoCtaEnabled: false,
+    preVideoCtaText: "Book later",
+    preVideoCtaUrl: "https://example.com/later",
+  });
+  assert.throws(() => normalizeLandingPageCta(true, "Book now", ""), /only after providing both/i);
   assert.throws(() => normalizeOptionalCta("Book now", ""), /both be provided/i);
   assert.throws(() => normalizeOptionalCta("Book now", "javascript:alert(1)"), /HTTP or HTTPS/i);
   assert.equal(LANDING_PAGE_SUBMIT_TEXT, "Register Now for an Interview");
+});
+
+test("picture-only and ordered mixed media normalize with Cloudinary identity", () => {
+  const picture = {
+    pictureUrl: "https://res.cloudinary.com/crm-cloud/image/upload/v1/landing/teaser.webp",
+    pictureCloudinaryAssetId: "picture-asset",
+    pictureCloudinaryPublicId: "landing/teaser",
+    pictureCloudinaryResourceType: "image",
+  };
+  assert.deepEqual(normalizeLandingPagePicture(picture), picture);
+  assert.throws(() => normalizeLandingPagePicture({
+    ...picture,
+    pictureUrl: "https://example.com/teaser.webp",
+  }), /Cloudinary URL/i);
+
+  const pictureOnly = normalizeLandingPageMedia({ mediaMode: "PICTURE_ONLY", mediaOrder: "PICTURE_FIRST", ...picture });
+  assert.equal(pictureOnly.mediaMode, "PICTURE_ONLY");
+  assert.equal(pictureOnly.mediaOrder, "PICTURE_FIRST");
+  assert.equal(pictureOnly.videoSourceType, "NONE");
+  assert.equal(pictureOnly.pictureCloudinaryAssetId, "picture-asset");
+
+  const both = normalizeLandingPageMedia({
+    mediaMode: "VIDEO_AND_PICTURE",
+    mediaOrder: "PICTURE_FIRST",
+    videoSourceType: "EXTERNAL_URL",
+    videoUrl: "https://vimeo.com/123456789",
+    ...picture,
+  });
+  assert.equal(both.mediaMode, "VIDEO_AND_PICTURE");
+  assert.equal(both.mediaOrder, "PICTURE_FIRST");
+  assert.equal(both.videoProvider, "VIMEO");
+  assert.equal(normalizeLandingPageMedia({
+    ...both,
+    mediaOrder: "VIDEO_FIRST",
+  }).mediaOrder, "VIDEO_FIRST");
+  assert.throws(() => normalizeLandingPageMedia({ mediaMode: "PICTURE_ONLY" }), /Teaser picture must include/i);
 });
 
 test("persisted legacy and incomplete video records resolve safely for public playback", () => {
@@ -89,6 +135,13 @@ test("persisted legacy and incomplete video records resolve safely for public pl
   });
   assert.equal(unsafe.videoSourceType, "NONE");
   assert.equal(unsafe.videoUrl, null);
+
+  const legacyMedia = resolvePersistedLandingPageMedia({
+    videoSourceType: "EXTERNAL_URL",
+    videoUrl: "https://www.youtube.com/watch?v=dQw4w9WgXcQ",
+  });
+  assert.equal(legacyMedia.mediaMode, "VIDEO_ONLY");
+  assert.equal(legacyMedia.mediaOrder, "VIDEO_FIRST");
 });
 
 test("Post URL Link accepts only HTTP(S) destinations", () => {
@@ -110,9 +163,11 @@ test("content API persists normalized landing-page fields and rejects unsupporte
   assert.equal(response.status, 201);
   const body = await response.json();
   assert.equal(body.record.videoProvider, "YOUTUBE");
+  assert.equal(body.record.mediaMode, "VIDEO_ONLY");
   assert.match(body.record.videoUrl, /^https:\/\/www\.youtube\.com\/embed\//);
   assert.equal(body.record.submitButtonText, LANDING_PAGE_SUBMIT_TEXT);
   assert.equal(body.record.webinarUrl, "https://example.com/thank-you");
+  assert.equal(body.record.preVideoCtaEnabled, true);
 
   const reloadedResponse = await app.handle(new Request("http://listener.test/content", {
     headers: { authorization: "Bearer service-token" },
@@ -154,6 +209,7 @@ test("partial landing-page updates preserve saved video and CTA configuration un
   assert.equal(updated.videoSourceType, "EXTERNAL_URL");
   assert.equal(updated.videoProvider, "VIMEO");
   assert.equal(updated.videoUrl, created.videoUrl);
+  assert.equal(updated.mediaMode, "VIDEO_ONLY");
   assert.equal(updated.preVideoCtaText, "Book a call");
   assert.equal(updated.preVideoCtaUrl, "https://example.com/book");
   assert.equal(updated.submitButtonText, "Save my seat");
@@ -166,9 +222,73 @@ test("partial landing-page updates preserve saved video and CTA configuration un
   assert.equal(removedResponse.status, 200);
   const removed = (await removedResponse.json()).record;
   assert.equal(removed.videoSourceType, "NONE");
+  assert.equal(removed.mediaMode, "NONE");
   assert.equal(removed.videoUrl, null);
+  assert.equal(removed.preVideoCtaEnabled, false);
   assert.equal(removed.preVideoCtaText, null);
   assert.equal(removed.preVideoCtaUrl, null);
+});
+
+test("content API persists picture media, mixed ordering, and explicit CTA visibility", async () => {
+  const { app } = await appWithMemory();
+  const picture = {
+    pictureUrl: "https://res.cloudinary.com/crm-cloud/image/upload/v1/landing/picture.png",
+    pictureCloudinaryAssetId: "picture-asset",
+    pictureCloudinaryPublicId: "landing/picture",
+    pictureCloudinaryResourceType: "image",
+  };
+  const createdResponse = await app.handle(request("/content", {
+    entity: "landing_page",
+    title: "Picture page",
+    slug: "picture-page",
+    headline: "Picture first",
+    mediaMode: "PICTURE_ONLY",
+    mediaOrder: "PICTURE_FIRST",
+    ...picture,
+    preVideoCtaEnabled: false,
+    preVideoCtaText: "Saved but hidden",
+    preVideoCtaUrl: "https://example.com/hidden",
+  }));
+  assert.equal(createdResponse.status, 201);
+  const created = (await createdResponse.json()).record;
+  assert.equal(created.mediaMode, "PICTURE_ONLY");
+  assert.equal(created.pictureCloudinaryAssetId, "picture-asset");
+  assert.equal(created.preVideoCtaEnabled, false);
+  assert.equal(created.preVideoCtaText, "Saved but hidden");
+
+  const mixedResponse = await app.handle(request("/content", {
+    entity: "landing_page",
+    id: created.id,
+    title: created.title,
+    slug: created.slug,
+    headline: created.headline,
+    mediaMode: "VIDEO_AND_PICTURE",
+    mediaOrder: "PICTURE_FIRST",
+    videoSourceType: "EXTERNAL_URL",
+    videoUrl: "https://youtu.be/dQw4w9WgXcQ",
+    preVideoCtaEnabled: true,
+  }, "PUT"));
+  assert.equal(mixedResponse.status, 200);
+  const mixed = (await mixedResponse.json()).record;
+  assert.equal(mixed.mediaMode, "VIDEO_AND_PICTURE");
+  assert.equal(mixed.mediaOrder, "PICTURE_FIRST");
+  assert.equal(mixed.pictureUrl, picture.pictureUrl);
+  assert.equal(mixed.videoProvider, "YOUTUBE");
+  assert.equal(mixed.preVideoCtaEnabled, true);
+
+  const partialResponse = await app.handle(request("/content", {
+    entity: "landing_page",
+    id: created.id,
+    title: created.title,
+    slug: created.slug,
+    headline: "Updated but preserved",
+  }, "PUT"));
+  assert.equal(partialResponse.status, 200);
+  const partial = (await partialResponse.json()).record;
+  assert.equal(partial.mediaMode, "VIDEO_AND_PICTURE");
+  assert.equal(partial.mediaOrder, "PICTURE_FIRST");
+  assert.equal(partial.pictureCloudinaryAssetId, "picture-asset");
+  assert.equal(partial.preVideoCtaEnabled, true);
 });
 
 test("registration handles enrich one Lead and normalized social identities without duplicates", async () => {
@@ -232,6 +352,9 @@ test("Cloudinary cleanup protects both campaign and landing-page references", as
     title: "Video page", slug: "video-page", headline: "Video", status: "published",
     videoSourceType: "UPLOAD", videoUrl: "https://res.cloudinary.com/demo/video/upload/video.mp4",
     cloudinaryAssetId: "asset-landing", cloudinaryPublicId: "landing/video", cloudinaryResourceType: "video",
+    pictureUrl: "https://res.cloudinary.com/demo/image/upload/picture.png",
+    pictureCloudinaryAssetId: "asset-picture", pictureCloudinaryPublicId: "landing/picture",
+    pictureCloudinaryResourceType: "image",
   });
   let deletions = 0;
   const service = new BufferCampaignService({
@@ -241,13 +364,14 @@ test("Cloudinary cleanup protects both campaign and landing-page references", as
     deleteMedia: async () => { deletions += 1; return true; },
   });
   assert.deepEqual(await service.deleteMediaIfUnreferenced({ assetId: "asset-landing" }), { deleted: false, referenced: true });
+  assert.deepEqual(await service.deleteMediaIfUnreferenced({ assetId: "asset-picture" }), { deleted: false, referenced: true });
   assert.equal(deletions, 0);
   assert.deepEqual(await service.deleteMediaIfUnreferenced({ assetId: "orphan" }), { deleted: true, referenced: false });
   assert.equal(deletions, 1);
 });
 
 test("builder, public renderer, registration route, and MSSQL migrations expose the complete feature", async () => {
-  const [builder, landing, player, registration, registerRoute, migration, scoringMigration, repairMigration] = await Promise.all([
+  const [builder, landing, player, registration, registerRoute, migration, scoringMigration, repairMigration, mediaMigration] = await Promise.all([
     readFile(new URL("../app/page.tsx", import.meta.url), "utf8"),
     readFile(new URL("../app/landing/[slug]/page.tsx", import.meta.url), "utf8"),
     readFile(new URL("../app/components/LandingVideoPlayer.tsx", import.meta.url), "utf8"),
@@ -256,18 +380,26 @@ test("builder, public renderer, registration route, and MSSQL migrations expose 
     readFile(new URL("../sql/017_landing_page_video_cta_social_handles.sql", import.meta.url), "utf8"),
     readFile(new URL("../sql/018_landing_registration_scoring.sql", import.meta.url), "utf8"),
     readFile(new URL("../sql/019_repair_landing_registration_video.sql", import.meta.url), "utf8"),
+    readFile(new URL("../sql/020_landing_page_picture_media_order_cta.sql", import.meta.url), "utf8"),
   ]);
   assert.match(builder, /onDrop=\{onVideoDrop\}/);
-  assert.match(builder, /Cloudinary video upload in progress/);
+  assert.match(builder, /Cloudinary landing-page media upload in progress/);
   assert.match(builder, /purpose", "landing_page_video/);
+  assert.match(builder, /purpose", "landing_page_picture/);
+  assert.match(builder, /VIDEO_AND_PICTURE/);
+  assert.match(builder, /PICTURE_FIRST/);
   assert.match(builder, /Remove video/);
+  assert.match(builder, /Remove picture/);
   assert.match(builder, /fetch\("\/api\/social\/content", \{ cache: "no-store" \}\)/);
   assert.match(builder, /externalVideoPreview/);
   assert.match(builder, /onPlaybackError/);
   const publicLayout = landing.slice(landing.indexOf("<section className=\"landing-hero\">"));
-  assert.ok(publicLayout.indexOf("landing-video-cta") < publicLayout.indexOf("<LandingVideoPlayer"));
-  assert.ok(publicLayout.indexOf("<LandingVideoPlayer") < publicLayout.indexOf("page.teaser"));
+  assert.ok(publicLayout.indexOf("landing-video-cta") < publicLayout.indexOf("landing-media-stack"));
+  assert.ok(publicLayout.indexOf("landing-media-stack") < publicLayout.indexOf("page.teaser"));
   assert.ok(publicLayout.indexOf("page.teaser") < publicLayout.indexOf("<RegisterForm"));
+  assert.match(landing, /page\.mediaOrder === "PICTURE_FIRST"/);
+  assert.match(landing, /<Image/);
+  assert.match(landing, /page\.preVideoCtaEnabled \?\?/);
   assert.match(landing, /autoplay=\{page\.videoAutoplay !== false\}/);
   assert.match(landing, /muted=\{page\.videoMuted !== false\}/);
   assert.match(player, /autoPlay=\{autoplay\}/);
@@ -299,6 +431,12 @@ test("builder, public renderer, registration route, and MSSQL migrations expose 
   assert.match(repairMigration, /INSERT dbo\.SocialInteractions/);
   assert.match(repairMigration, /N'LEAD_FORM_SUBMISSION'/);
   assert.match(repairMigration, /EXEC dbo\.LeadScore_Recalculate/);
+  for (const column of ["MediaMode", "MediaOrder", "PictureUrl", "PictureCloudinaryAssetId", "PictureCloudinaryPublicId", "PictureCloudinaryResourceType", "PreVideoCtaEnabled"]) {
+    assert.match(mediaMigration, new RegExp(column));
+  }
+  assert.match(mediaMigration, /VIDEO_AND_PICTURE/);
+  assert.match(mediaMigration, /PICTURE_FIRST/);
+  assert.doesNotMatch(mediaMigration, /LeadScoringRules|LeadTemperatureThresholds|LeadScore_Recalculate/);
 });
 
 test("Next2TheTop CRM branding is used on login, dashboard, public pages, and metadata", async () => {

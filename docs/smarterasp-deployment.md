@@ -81,8 +81,11 @@ by migration 015. Migration 017 adds landing-page video/CTA/player fields and
 normalized registration handles. Migration 018 includes landing-page registrations
 in the existing interaction-history lead scoring procedure. Migration 019
 idempotently restores recognized legacy video links and repairs historical
-landing registrations that predated the scoring event path. Create a Cloudinary product environment and copy its cloud
-name, API key,
+landing registrations that predated the scoring event path. Migration 020 adds
+Cloudinary-backed landing-page pictures, explicit video/picture selection and
+ordering, and an independently persisted CTA enabled state; it does not modify
+the scoring procedure, scoring rules, or temperature thresholds. Create a
+Cloudinary product environment and copy its cloud name, API key,
 and API secret from Cloudinary's API Keys settings. Keep the secret server-side
 and never use a `NEXT_PUBLIC_` name. The optional upload preset must permit
 authenticated server uploads if configured. The included `web.config` allows the
@@ -103,9 +106,10 @@ No application-root or `App_Data` write permission is required for campaign
 media. Existing campaigns with legacy local media URLs must have their media
 replaced through the campaign editor before they can be rescheduled.
 
-Landing-page MP4/MOV uploads reuse the same authenticated `/api/media` route
-and Cloudinary configuration. Deploy migrations 017 through 019 before publishing the new
-builder. Replacement and removal save the landing-page record first, then ask
+Landing-page MP4/MOV videos and JPEG/PNG/WebP/GIF pictures reuse the same
+authenticated `/api/media` route and Cloudinary configuration. Deploy migrations
+017 through 020 before publishing the new builder. Replacement and removal save
+the landing-page record first, then ask
 Cloudinary to delete the old asset only after both campaign and landing-page
 references have been checked.
 
@@ -114,8 +118,9 @@ references have been checked.
 1. Pull the release from `main` in the SmarterASP GitHub deployment.
 2. Run `npm ci`, then `npm run build`.
 3. With the production `DB_*` values loaded, run `npm run db:setup:mssql` so
-   migration 018 updates `dbo.LeadScore_Recalculate` and migration 019 repairs
-   pre-existing registration events and recognized legacy video links.
+   migration 018 updates `dbo.LeadScore_Recalculate`, migration 019 repairs
+   pre-existing registration events and recognized legacy video links, and
+   migration 020 installs picture/media-order/CTA-state persistence.
 4. Restart the Node application with `npm start`; no new environment variables
    and no n8n scoring step are required.
 5. Sign in and confirm the Next2TheTop CRM logo/name on the login and dashboard.
@@ -126,8 +131,9 @@ references have been checked.
 8. Confirm the test Lead appears in Lead 360 and reports with `LeadScore`,
    `ScoreBand`, the five component scores, `ScoreReason`, and `LastScoredAt`.
 9. Reload the edited landing page and its public URL. Confirm its configured
-   Cloudinary, YouTube, Vimeo, or Canva player appears above the teaser and
-   attempts muted inline autoplay with controls.
+   Cloudinary, YouTube, Vimeo, or Canva player and optional Cloudinary picture
+   appear above the teaser in the saved order. Video should attempt muted inline
+   autoplay with controls, and the CTA should appear only when explicitly enabled.
 
 The CRM uses its own MSSQL-backed users and sessions. The listener creates the
 `next2thetop` ADMIN account only when absent and never resets it during later

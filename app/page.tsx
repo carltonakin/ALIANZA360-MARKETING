@@ -241,6 +241,13 @@ type Landing = {
   videoAutoplay: boolean;
   videoMuted: boolean;
   videoShowControls: boolean;
+  mediaMode: "NONE" | "VIDEO_ONLY" | "PICTURE_ONLY" | "VIDEO_AND_PICTURE";
+  mediaOrder: "VIDEO_FIRST" | "PICTURE_FIRST";
+  pictureUrl: string;
+  pictureCloudinaryAssetId: string | null;
+  pictureCloudinaryPublicId: string | null;
+  pictureCloudinaryResourceType: "image" | null;
+  preVideoCtaEnabled: boolean;
   preVideoCtaText: string;
   preVideoCtaUrl: string;
   submitButtonText: string;
@@ -641,14 +648,21 @@ export default function Home() {
   const saveLandingPage = async (
     event: FormEvent<HTMLFormElement>,
     page: Landing | null,
-    mediaFile: File | null,
+    videoFile: File | null,
+    pictureFile: File | null,
     onUploadState: (state: "idle" | "selected" | "uploading" | "success" | "error", message?: string) => void,
   ) => {
     event.preventDefault();
     setBusy(true);
     const form = new FormData(event.currentTarget);
-    const sourceType = String(form.get("videoSourceType") || "NONE") as Landing["videoSourceType"];
-    let uploadedMedia: CampaignMediaUpload | null = null;
+    const mediaMode = String(form.get("mediaMode") || "NONE") as Landing["mediaMode"];
+    const mediaOrder = String(form.get("mediaOrder") || "VIDEO_FIRST") as Landing["mediaOrder"];
+    const includesVideo = mediaMode === "VIDEO_ONLY" || mediaMode === "VIDEO_AND_PICTURE";
+    const includesPicture = mediaMode === "PICTURE_ONLY" || mediaMode === "VIDEO_AND_PICTURE";
+    const sourceType = (includesVideo
+      ? String(form.get("videoSourceType") || "NONE")
+      : "NONE") as Landing["videoSourceType"];
+    const uploadedMedia: CampaignMediaUpload[] = [];
     let uploadedMediaPersisted = false;
     try {
       let video = sourceType === "UPLOAD" && page?.videoSourceType === "UPLOAD" ? {
@@ -666,10 +680,10 @@ export default function Home() {
       };
 
       if (sourceType === "UPLOAD") {
-        if (mediaFile) {
+        if (videoFile) {
           onUploadState("uploading", "Uploading video securely to Cloudinary…");
           const uploadForm = new FormData();
-          uploadForm.append("media", mediaFile);
+          uploadForm.append("media", videoFile);
           uploadForm.append("purpose", "landing_page_video");
           const uploadResponse = await fetch("/api/media", { method: "POST", body: uploadForm });
           const uploadData = await uploadResponse.json().catch(() => ({})) as { media?: CampaignMediaUpload; error?: string };
@@ -677,12 +691,13 @@ export default function Home() {
             throw new Error(uploadData.error || "The landing-page video could not be uploaded.");
           }
           if (uploadData.media.mediaType !== "video") throw new Error("Landing pages accept MP4 or MOV video files only.");
-          uploadedMedia = uploadData.media;
+          const uploadedVideo = uploadData.media;
+          uploadedMedia.push(uploadedVideo);
           video = {
-            videoUrl: uploadedMedia.mediaUrl,
+            videoUrl: uploadedVideo.mediaUrl,
             videoProvider: "CLOUDINARY",
-            cloudinaryAssetId: uploadedMedia.assetId,
-            cloudinaryPublicId: uploadedMedia.publicId,
+            cloudinaryAssetId: uploadedVideo.assetId,
+            cloudinaryPublicId: uploadedVideo.publicId,
             cloudinaryResourceType: "video",
           };
           onUploadState("success", "Video uploaded. Saving the landing page…");
@@ -700,6 +715,44 @@ export default function Home() {
         };
       }
 
+      const removeSavedPicture = form.get("removeSavedPicture") === "true";
+      let picture = includesPicture && !removeSavedPicture && page?.pictureUrl ? {
+        pictureUrl: page.pictureUrl,
+        pictureCloudinaryAssetId: page.pictureCloudinaryAssetId,
+        pictureCloudinaryPublicId: page.pictureCloudinaryPublicId,
+        pictureCloudinaryResourceType: page.pictureCloudinaryResourceType,
+      } : {
+        pictureUrl: null,
+        pictureCloudinaryAssetId: null,
+        pictureCloudinaryPublicId: null,
+        pictureCloudinaryResourceType: null,
+      };
+      if (includesPicture && pictureFile) {
+        onUploadState("uploading", "Uploading teaser picture securely to Cloudinary...");
+        const uploadForm = new FormData();
+        uploadForm.append("media", pictureFile);
+        uploadForm.append("purpose", "landing_page_picture");
+        const uploadResponse = await fetch("/api/media", { method: "POST", body: uploadForm });
+        const uploadData = await uploadResponse.json().catch(() => ({})) as { media?: CampaignMediaUpload; error?: string };
+        if (!uploadResponse.ok || !uploadData.media) {
+          throw new Error(uploadData.error || "The landing-page teaser picture could not be uploaded.");
+        }
+        if (uploadData.media.mediaType !== "image") {
+          throw new Error("Landing-page pictures must be JPEG, PNG, WebP, or GIF files.");
+        }
+        const uploadedPicture = uploadData.media;
+        uploadedMedia.push(uploadedPicture);
+        picture = {
+          pictureUrl: uploadedPicture.mediaUrl,
+          pictureCloudinaryAssetId: uploadedPicture.assetId,
+          pictureCloudinaryPublicId: uploadedPicture.publicId,
+          pictureCloudinaryResourceType: "image",
+        };
+        onUploadState("success", "Teaser picture uploaded. Saving the landing page...");
+      } else if (includesPicture && !picture.pictureUrl) {
+        throw new Error("Choose a JPEG, PNG, WebP, or GIF teaser picture.");
+      }
+
       const payload = {
         entity: "landing_page",
         ...(page ? { id: page.id } : {}),
@@ -710,11 +763,15 @@ export default function Home() {
         teaser: form.get("teaser"),
         webinarUrl: form.get("webinarUrl"),
         paymentUrl: form.get("paymentUrl"),
+        mediaMode,
+        mediaOrder,
         videoSourceType: sourceType,
         ...video,
         videoAutoplay: true,
         videoMuted: true,
         videoShowControls: true,
+        ...picture,
+        preVideoCtaEnabled: form.get("preVideoCtaEnabled") === "on",
         preVideoCtaText: form.get("preVideoCtaText"),
         preVideoCtaUrl: form.get("preVideoCtaUrl"),
         submitButtonText: form.get("submitButtonText"),
@@ -728,19 +785,21 @@ export default function Home() {
       });
       const data = await response.json().catch(() => ({})) as { error?: string; message?: string };
       if (!response.ok) throw new Error(data.error || data.message || "The landing page could not be saved.");
-      uploadedMediaPersisted = Boolean(uploadedMedia);
-      onUploadState("success", uploadedMedia ? "Video uploaded and landing page saved." : "Landing page saved.");
+      uploadedMediaPersisted = uploadedMedia.length > 0;
+      onUploadState("success", uploadedMedia.length ? "Media uploaded and landing page saved." : "Landing page saved.");
       await load();
       setModal("");
       setEditingPage(null);
       notify(page ? "Landing page changes saved successfully" : "Landing page created successfully");
     } catch (error) {
-      if (uploadedMedia && !uploadedMediaPersisted) {
-        await fetch(`/api/media/${encodeURIComponent(uploadedMedia.assetId)}`, {
-          method: "DELETE",
-          headers: { "content-type": "application/json" },
-          body: JSON.stringify({ publicId: uploadedMedia.publicId, resourceType: uploadedMedia.resourceType }),
-        }).catch(() => null);
+      if (!uploadedMediaPersisted) {
+        for (const uploaded of uploadedMedia) {
+          await fetch(`/api/media/${encodeURIComponent(uploaded.assetId)}`, {
+            method: "DELETE",
+            headers: { "content-type": "application/json" },
+            body: JSON.stringify({ publicId: uploaded.publicId, resourceType: uploaded.resourceType }),
+          }).catch(() => null);
+        }
       }
       onUploadState("error", error instanceof Error ? error.message : "The landing page could not be saved.");
     } finally {
@@ -3286,11 +3345,22 @@ function PageForm({
   save: (
     event: FormEvent<HTMLFormElement>,
     page: Landing | null,
-    mediaFile: File | null,
+    videoFile: File | null,
+    pictureFile: File | null,
     onUploadState: (state: "idle" | "selected" | "uploading" | "success" | "error", message?: string) => void,
   ) => Promise<void>;
   busy: boolean;
 }) {
+  const initialMediaMode: Landing["mediaMode"] = page?.mediaMode ||
+    (page?.videoUrl && page?.pictureUrl
+      ? "VIDEO_AND_PICTURE"
+      : page?.pictureUrl
+        ? "PICTURE_ONLY"
+        : page?.videoUrl
+          ? "VIDEO_ONLY"
+          : "NONE");
+  const [mediaMode, setMediaMode] = useState<Landing["mediaMode"]>(initialMediaMode);
+  const [mediaOrder, setMediaOrder] = useState<Landing["mediaOrder"]>(page?.mediaOrder || "VIDEO_FIRST");
   const [videoSourceType, setVideoSourceType] = useState<Landing["videoSourceType"]>(page?.videoSourceType || "NONE");
   const [mediaFile, setMediaFile] = useState<File | null>(null);
   const [mediaPreview, setMediaPreview] = useState(page?.videoSourceType === "UPLOAD" ? page.videoUrl : "");
@@ -3304,12 +3374,28 @@ function PageForm({
   } | null>(() => page?.videoSourceType === "EXTERNAL_URL" && page.videoUrl && page.videoProvider && page.videoProvider !== "CLOUDINARY"
     ? { url: page.videoUrl, provider: page.videoProvider }
     : null);
+  const [pictureFile, setPictureFile] = useState<File | null>(null);
+  const [picturePreview, setPicturePreview] = useState(page?.pictureUrl || "");
+  const [pictureRemoved, setPictureRemoved] = useState(false);
+  const [ctaEnabled, setCtaEnabled] = useState(page?.preVideoCtaEnabled ?? Boolean(page?.preVideoCtaText && page?.preVideoCtaUrl));
   const [previewError, setPreviewError] = useState("");
   const previewObjectUrl = useRef<string | null>(null);
+  const pictureObjectUrl = useRef<string | null>(null);
 
   useEffect(() => () => {
     if (previewObjectUrl.current) URL.revokeObjectURL(previewObjectUrl.current);
+    if (pictureObjectUrl.current) URL.revokeObjectURL(pictureObjectUrl.current);
   }, []);
+
+  const includesVideo = mediaMode === "VIDEO_ONLY" || mediaMode === "VIDEO_AND_PICTURE";
+  const includesPicture = mediaMode === "PICTURE_ONLY" || mediaMode === "VIDEO_AND_PICTURE";
+
+  const changeMediaMode = (mode: Landing["mediaMode"]) => {
+    setMediaMode(mode);
+    setUploadState("idle");
+    setUploadMessage("");
+    setPreviewError("");
+  };
 
   const clearSelectedFile = () => {
     if (previewObjectUrl.current) URL.revokeObjectURL(previewObjectUrl.current);
@@ -3358,8 +3444,9 @@ function PageForm({
     setExternalVideoPreview(null);
     setPreviewError("");
     setVideoSourceType("NONE");
+    setMediaMode(mediaMode === "VIDEO_AND_PICTURE" ? "PICTURE_ONLY" : "NONE");
     setUploadState("idle");
-    setUploadMessage("Video will be removed after you save the page.");
+    setUploadMessage("Video will be removed when you save the page.");
   };
 
   const validateExternalVideo = () => {
@@ -3408,12 +3495,62 @@ function PageForm({
     selectVideo(event.dataTransfer.files?.[0] || null);
   };
 
+  const clearSelectedPicture = () => {
+    if (pictureObjectUrl.current) URL.revokeObjectURL(pictureObjectUrl.current);
+    pictureObjectUrl.current = null;
+    setPictureFile(null);
+  };
+
+  const selectPicture = (file: File | null) => {
+    if (!file) return;
+    const extension = file.name.split(".").pop()?.toLowerCase() || "";
+    const allowedTypes = new Map([
+      ["image/jpeg", new Set(["jpg", "jpeg"])],
+      ["image/png", new Set(["png"])],
+      ["image/webp", new Set(["webp"])],
+      ["image/gif", new Set(["gif"])],
+    ]);
+    if (!allowedTypes.get(file.type)?.has(extension)) {
+      setUploadState("error");
+      setUploadMessage("Choose a JPEG, PNG, WebP, or GIF picture whose extension matches its file type.");
+      return;
+    }
+    if (file.size < 1 || file.size > INSTAGRAM_VIDEO_MAX_BYTES) {
+      setUploadState("error");
+      setUploadMessage("Picture must be larger than 0 bytes and no more than 300 MB.");
+      return;
+    }
+    clearSelectedPicture();
+    pictureObjectUrl.current = URL.createObjectURL(file);
+    setPictureFile(file);
+    setPicturePreview(pictureObjectUrl.current);
+    setPictureRemoved(false);
+    setUploadState("selected");
+    setUploadMessage(`${file.name} · ${formatFileSize(file.size)} · ready to upload`);
+  };
+
+  const removePicture = () => {
+    clearSelectedPicture();
+    setPicturePreview("");
+    setPictureRemoved(true);
+    setMediaMode(mediaMode === "VIDEO_AND_PICTURE" ? "VIDEO_ONLY" : "NONE");
+    setUploadState("idle");
+    setUploadMessage("Picture will be removed when you save the page.");
+  };
+
+  const onPictureChange = (event: ChangeEvent<HTMLInputElement>) => selectPicture(event.target.files?.[0] || null);
+  const onPictureDrop = (event: DragEvent<HTMLLabelElement>) => {
+    event.preventDefault();
+    selectPicture(event.dataTransfer.files?.[0] || null);
+  };
+
   return (
-    <form onSubmit={(event) => void save(event, page, mediaFile, (state, message = "") => {
+    <form onSubmit={(event) => void save(event, page, mediaFile, pictureFile, (state, message = "") => {
       setUploadState(state);
       setUploadMessage(message);
     })}>
       <h2>{page ? "Edit webinar page" : "Publish a webinar page"}</h2>
+      <input type="hidden" name="removeSavedPicture" value={pictureRemoved ? "true" : "false"} />
       <p>{page ? "Update the page while preserving its lead capture and webinar flow." : "Create the full teaser, registration, webinar and payment path."}</p>
       <div className="form-grid">
         <Field label="Internal title" name="title" placeholder="Founder Growth Webinar" required defaultValue={page?.title} />
@@ -3451,6 +3588,33 @@ function PageForm({
         />
       </label>
       <section className="landing-builder-section">
+        <div className="landing-builder-heading">
+          <strong>Teaser media</strong>
+          <small>Choose whether the public page shows a video, a picture, both, or no teaser media.</small>
+        </div>
+        <div className="form-grid">
+          <label>
+            Media selection
+            <select name="mediaMode" value={mediaMode} onChange={(event) => changeMediaMode(event.target.value as Landing["mediaMode"])}>
+              <option value="NONE">No teaser media</option>
+              <option value="VIDEO_ONLY">Video only</option>
+              <option value="PICTURE_ONLY">Picture only</option>
+              <option value="VIDEO_AND_PICTURE">Video and picture</option>
+            </select>
+          </label>
+          {mediaMode === "VIDEO_AND_PICTURE" && (
+            <label>
+              Display order
+              <select name="mediaOrder" value={mediaOrder} onChange={(event) => setMediaOrder(event.target.value as Landing["mediaOrder"])}>
+                <option value="VIDEO_FIRST">Video first</option>
+                <option value="PICTURE_FIRST">Picture first</option>
+              </select>
+            </label>
+          )}
+          {mediaMode !== "VIDEO_AND_PICTURE" && <input type="hidden" name="mediaOrder" value={mediaOrder} />}
+        </div>
+      </section>
+      {includesVideo && <section className="landing-builder-section">
         <div className="landing-builder-heading">
           <strong>Video above teaser</strong>
           <small>Add a Cloudinary upload or a supported external player. Empty video placeholders are never rendered.</small>
@@ -3522,17 +3686,50 @@ function PageForm({
         )}
         {externalVideoMessage && <small className={/ready to embed/i.test(externalVideoMessage) ? "landing-upload-success" : "form-error"}>{externalVideoMessage}</small>}
         {previewError && <small className="form-error" role="alert">{previewError}</small>}
-        {uploadState === "uploading" && <progress className="landing-upload-progress" aria-label="Cloudinary video upload in progress" />}
-        {uploadMessage && <small className={uploadState === "error" ? "form-error" : uploadState === "success" ? "landing-upload-success" : "landing-upload-state"} role={uploadState === "error" ? "alert" : "status"}>{uploadMessage}</small>}
-      </section>
+      </section>}
+      {includesPicture && <section className="landing-builder-section">
+        <div className="landing-builder-heading">
+          <strong>Picture above teaser</strong>
+          <small>Upload a JPEG, PNG, WebP, or GIF through the existing Cloudinary media service.</small>
+        </div>
+        <label
+          className={`landing-picture-drop${picturePreview ? " has-picture" : ""}`}
+          onDragOver={(event) => event.preventDefault()}
+          onDrop={onPictureDrop}
+        >
+          <input type="file" accept="image/jpeg,image/png,image/webp,image/gif,.jpg,.jpeg,.png,.webp,.gif" onChange={onPictureChange} />
+          {picturePreview ? (
+            <span
+              className="landing-picture-preview"
+              role="img"
+              aria-label="Landing-page teaser picture preview"
+              style={{ backgroundImage: `url(${picturePreview})` }}
+            />
+          ) : (
+            <span><b>Drop picture here</b><small>or click to browse · JPEG, PNG, WebP, or GIF</small></span>
+          )}
+        </label>
+        {picturePreview && <button className="landing-video-remove" type="button" onClick={removePicture}>Remove picture</button>}
+      </section>}
+      {uploadState === "uploading" && <progress className="landing-upload-progress" aria-label="Cloudinary landing-page media upload in progress" />}
+      {uploadMessage && <small className={uploadState === "error" ? "form-error" : uploadState === "success" ? "landing-upload-success" : "landing-upload-state"} role={uploadState === "error" ? "alert" : "status"}>{uploadMessage}</small>}
       <section className="landing-builder-section">
         <div className="landing-builder-heading">
-          <strong>Optional CTA above video</strong>
-          <small>Both fields must be completed for the button to appear.</small>
+          <strong>Optional CTA above teaser media</strong>
+          <small>The saved button appears only when enabled and both fields are completed.</small>
         </div>
+        <label className="landing-cta-toggle">
+          <input
+            type="checkbox"
+            name="preVideoCtaEnabled"
+            checked={ctaEnabled}
+            onChange={(event) => setCtaEnabled(event.target.checked)}
+          />
+          Show CTA button on the public landing page
+        </label>
         <div className="form-grid">
-          <Field label="CTA button title" name="preVideoCtaText" placeholder="Book your strategy call" maxLength={255} defaultValue={page?.preVideoCtaText} />
-          <Field label="CTA button URL" name="preVideoCtaUrl" type="url" placeholder="https://..." defaultValue={page?.preVideoCtaUrl} />
+          <Field label="CTA button title" name="preVideoCtaText" placeholder="Book your strategy call" maxLength={255} required={ctaEnabled} defaultValue={page?.preVideoCtaText} />
+          <Field label="CTA button URL" name="preVideoCtaUrl" type="url" placeholder="https://..." required={ctaEnabled} defaultValue={page?.preVideoCtaUrl} />
         </div>
       </section>
       <Field
@@ -3559,8 +3756,8 @@ function PageForm({
           defaultValue={page?.paymentUrl}
         />
       </div>
-      <button className="primary submit" disabled={busy || uploadState === "uploading" || uploadState === "error" || Boolean(externalVideoMessage && !/ready to embed/i.test(externalVideoMessage))}>
-        {busy ? (uploadState === "uploading" ? "Uploading video..." : "Saving...") : page ? "Save page changes" : "Publish page"}
+      <button className="primary submit" disabled={busy || uploadState === "uploading" || uploadState === "error" || Boolean(includesVideo && externalVideoMessage && !/ready to embed/i.test(externalVideoMessage))}>
+        {busy ? (uploadState === "uploading" ? "Uploading media..." : "Saving...") : page ? "Save page changes" : "Publish page"}
       </button>
     </form>
   );

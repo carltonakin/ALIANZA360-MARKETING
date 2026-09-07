@@ -470,7 +470,11 @@ export class BufferCampaignService {
     const referenced = [
       ...(content.campaigns || []),
       ...(content.pages || []),
-    ].some((item) => String(item.cloudinaryAssetId || item.mediaId || "") === normalizedId);
+    ].some((item) => [
+      item.cloudinaryAssetId,
+      item.mediaId,
+      item.pictureCloudinaryAssetId,
+    ].some((assetId) => String(assetId || "") === normalizedId));
     if (referenced) return { deleted: false, referenced: true };
     return {
       deleted: await this.deleteMedia(reference, { env: this.env }),

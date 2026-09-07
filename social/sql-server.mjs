@@ -1,6 +1,6 @@
 import { decryptChannelSecrets, publicChannelConfiguration } from "./channel-config.mjs";
 import { openSqlConnection } from "./sql-connection.mjs";
-import { resolvePersistedLandingPageVideo } from "../lib/landing-page-video.mjs";
+import { resolvePersistedLandingPageMedia } from "../lib/landing-page-video.mjs";
 
 function iso(value) {
   return value?.toISOString?.() || value || null;
@@ -381,7 +381,9 @@ function mapWorkflowRun(row) {
 }
 
 function mapLandingPage(row) {
-  const video = resolvePersistedLandingPageVideo({
+  const media = resolvePersistedLandingPageMedia({
+    mediaMode: row.MediaMode,
+    mediaOrder: row.MediaOrder,
     videoSourceType: row.VideoSourceType,
     videoUrl: row.VideoUrl,
     videoProvider: row.VideoProvider,
@@ -391,6 +393,10 @@ function mapLandingPage(row) {
     videoAutoplay: row.VideoAutoplay,
     videoMuted: row.VideoMuted,
     videoShowControls: row.VideoShowControls,
+    pictureUrl: row.PictureUrl,
+    pictureCloudinaryAssetId: row.PictureCloudinaryAssetId,
+    pictureCloudinaryPublicId: row.PictureCloudinaryPublicId,
+    pictureCloudinaryResourceType: row.PictureCloudinaryResourceType,
   });
   return {
     id: `page:${row.LandingPageId}`,
@@ -401,8 +407,12 @@ function mapLandingPage(row) {
     teaser: row.Teaser || "",
     webinarUrl: row.WebinarUrl || "",
     paymentUrl: row.PaymentUrl || "",
-    ...video,
-    videoUrl: video.videoUrl || "",
+    ...media,
+    videoUrl: media.videoUrl || "",
+    pictureUrl: media.pictureUrl || "",
+    preVideoCtaEnabled: row.PreVideoCtaEnabled == null
+      ? Boolean(row.PreVideoCtaText && row.PreVideoCtaUrl)
+      : Boolean(row.PreVideoCtaEnabled),
     preVideoCtaText: row.PreVideoCtaText || "",
     preVideoCtaUrl: row.PreVideoCtaUrl || "",
     submitButtonText: row.SubmitButtonText || "Register Now for an Interview",
@@ -897,6 +907,13 @@ export class SqlServerRepository {
     request.input("VideoAutoplay", this.sql.Bit, input.videoAutoplay === false ? 0 : 1);
     request.input("VideoMuted", this.sql.Bit, input.videoMuted === false ? 0 : 1);
     request.input("VideoShowControls", this.sql.Bit, input.videoShowControls === false ? 0 : 1);
+    request.input("MediaMode", this.sql.NVarChar(32), input.mediaMode || "NONE");
+    request.input("MediaOrder", this.sql.NVarChar(32), input.mediaOrder || "VIDEO_FIRST");
+    request.input("PictureUrl", this.sql.NVarChar(2048), input.pictureUrl);
+    request.input("PictureCloudinaryAssetId", this.sql.NVarChar(255), input.pictureCloudinaryAssetId);
+    request.input("PictureCloudinaryPublicId", this.sql.NVarChar(500), input.pictureCloudinaryPublicId);
+    request.input("PictureCloudinaryResourceType", this.sql.NVarChar(32), input.pictureCloudinaryResourceType);
+    request.input("PreVideoCtaEnabled", this.sql.Bit, input.preVideoCtaEnabled ? 1 : 0);
     request.input("PreVideoCtaText", this.sql.NVarChar(255), input.preVideoCtaText);
     request.input("PreVideoCtaUrl", this.sql.NVarChar(2048), input.preVideoCtaUrl);
     request.input("SubmitButtonText", this.sql.NVarChar(255), input.submitButtonText || "Register Now for an Interview");

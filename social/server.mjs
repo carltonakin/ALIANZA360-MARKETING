@@ -35,8 +35,8 @@ import {
 } from "../lib/campaign-media.mjs";
 import {
   LANDING_PAGE_SUBMIT_TEXT,
-  normalizeLandingPageVideo,
-  normalizeOptionalCta,
+  normalizeLandingPageCta,
+  normalizeLandingPageMedia,
 } from "../lib/landing-page-video.mjs";
 import { normalizePostUrl } from "../lib/post-url.mjs";
 
@@ -209,11 +209,20 @@ export function registerCampaignMediaExpressRoutes(expressApp, {
             error.statusCode = 400;
             throw error;
           }
+          const purpose = String(request.body.purpose || "").toLowerCase();
           if (
-            String(request.body.purpose || "").toLowerCase() === "landing_page_video" &&
+            purpose === "landing_page_video" &&
             !new Set(["video/mp4", "video/quicktime"]).has(String(request.file.mimetype || "").toLowerCase())
           ) {
             const error = new Error("Landing-page videos must be MP4 or MOV files.");
+            error.statusCode = 400;
+            throw error;
+          }
+          if (
+            purpose === "landing_page_picture" &&
+            !new Set(["image/jpeg", "image/png", "image/webp", "image/gif"]).has(String(request.file.mimetype || "").toLowerCase())
+          ) {
+            const error = new Error("Landing-page pictures must be JPEG, PNG, WebP, or GIF files.");
             error.statusCode = 400;
             throw error;
           }
@@ -1330,7 +1339,9 @@ function normalizeContentInput(
   if (
     entity === "landing_page"
   ) {
-    const video = normalizeLandingPageVideo({
+    const media = normalizeLandingPageMedia({
+      mediaMode: body.mediaMode,
+      mediaOrder: body.mediaOrder,
       videoSourceType: body.videoSourceType,
       videoUrl: body.videoUrl,
       videoProvider: body.videoProvider,
@@ -1340,8 +1351,17 @@ function normalizeContentInput(
       videoAutoplay: booleanValue(body.videoAutoplay, true),
       videoMuted: booleanValue(body.videoMuted, true),
       videoShowControls: booleanValue(body.videoShowControls, true),
+      pictureUrl: body.pictureUrl,
+      pictureCloudinaryAssetId: body.pictureCloudinaryAssetId,
+      pictureCloudinaryPublicId: body.pictureCloudinaryPublicId,
+      pictureCloudinaryResourceType: body.pictureCloudinaryResourceType,
     });
-    const cta = normalizeOptionalCta(body.preVideoCtaText, body.preVideoCtaUrl);
+    const defaultCtaEnabled = Boolean(cleanLeadValue(body.preVideoCtaText, 255) && cleanLeadValue(body.preVideoCtaUrl, 2048));
+    const cta = normalizeLandingPageCta(
+      booleanValue(body.preVideoCtaEnabled, defaultCtaEnabled),
+      body.preVideoCtaText,
+      body.preVideoCtaUrl,
+    );
     return {
       entity,
 
@@ -1395,7 +1415,7 @@ function normalizeContentInput(
           "Payment URL"
         ),
 
-      ...video,
+      ...media,
 
       ...cta,
 
@@ -1511,6 +1531,13 @@ const LANDING_PAGE_CONFIGURATION_FIELDS = Object.freeze([
   "videoAutoplay",
   "videoMuted",
   "videoShowControls",
+  "mediaMode",
+  "mediaOrder",
+  "pictureUrl",
+  "pictureCloudinaryAssetId",
+  "pictureCloudinaryPublicId",
+  "pictureCloudinaryResourceType",
+  "preVideoCtaEnabled",
   "preVideoCtaText",
   "preVideoCtaUrl",
   "submitButtonText",
@@ -1521,6 +1548,45 @@ function preserveLandingPageConfiguration(body, persistedPage) {
   const merged = { ...body };
   for (const field of LANDING_PAGE_CONFIGURATION_FIELDS) {
     if (!Object.prototype.hasOwnProperty.call(body, field)) merged[field] = persistedPage[field];
+  }
+
+  const hasOwn = (field) => Object.prototype.hasOwnProperty.call(body, field);
+  const touchesVideo = [
+    "videoSourceType",
+    "videoUrl",
+    "videoProvider",
+    "cloudinaryAssetId",
+    "cloudinaryPublicId",
+    "cloudinaryResourceType",
+  ].some(hasOwn);
+  const touchesPicture = [
+    "pictureUrl",
+    "pictureCloudinaryAssetId",
+    "pictureCloudinaryPublicId",
+    "pictureCloudinaryResourceType",
+  ].some(hasOwn);
+
+  // Older clients predate the explicit media mode. When they change one of the
+  // media values, derive the mode from the merged record instead of restoring
+  // the saved mode and accidentally rejecting a valid removal.
+  if (!hasOwn("mediaMode") && (touchesVideo || touchesPicture)) {
+    const hasVideo = String(merged.videoSourceType || "NONE").toUpperCase() !== "NONE" &&
+      Boolean(String(merged.videoUrl || "").trim());
+    const hasPicture = Boolean(String(merged.pictureUrl || "").trim());
+    merged.mediaMode = hasVideo && hasPicture
+      ? "VIDEO_AND_PICTURE"
+      : hasVideo
+        ? "VIDEO_ONLY"
+        : hasPicture
+          ? "PICTURE_ONLY"
+          : "NONE";
+  }
+
+  // The same compatibility rule applies to the formerly implicit CTA state.
+  if (!hasOwn("preVideoCtaEnabled") && (hasOwn("preVideoCtaText") || hasOwn("preVideoCtaUrl"))) {
+    merged.preVideoCtaEnabled = Boolean(
+      String(merged.preVideoCtaText || "").trim() && String(merged.preVideoCtaUrl || "").trim()
+    );
   }
   return merged;
 }
@@ -3158,6 +3224,25 @@ export async function createSocialListenerApp({
             requestBody
           );
 
+        const cleanupLandingPageMedia = async (landingPage) => {
+          if (!landingPage || typeof activeBufferCampaignService.cleanupUnreferencedMedia !== "function") return;
+          const references = [
+            {
+              assetId: landingPage.cloudinaryAssetId,
+              publicId: landingPage.cloudinaryPublicId,
+              resourceType: landingPage.cloudinaryResourceType,
+            },
+            {
+              assetId: landingPage.pictureCloudinaryAssetId,
+              publicId: landingPage.pictureCloudinaryPublicId,
+              resourceType: landingPage.pictureCloudinaryResourceType,
+            },
+          ];
+          for (const reference of references) {
+            if (reference.assetId) await activeBufferCampaignService.cleanupUnreferencedMedia(reference);
+          }
+        };
+
         if (
           request.method ===
             "PUT" &&
@@ -3223,32 +3308,12 @@ export async function createSocialListenerApp({
                   input
                 );
         } catch (error) {
-          if (
-            input.entity === "landing_page" &&
-            input.cloudinaryAssetId &&
-            typeof activeBufferCampaignService.cleanupUnreferencedMedia === "function"
-          ) {
-            await activeBufferCampaignService.cleanupUnreferencedMedia({
-              assetId: input.cloudinaryAssetId,
-              publicId: input.cloudinaryPublicId,
-              resourceType: input.cloudinaryResourceType,
-            });
-          }
+          if (input.entity === "landing_page") await cleanupLandingPageMedia(input);
           throw error;
         }
 
         if (!record) {
-          if (
-            input.entity === "landing_page" &&
-            input.cloudinaryAssetId &&
-            typeof activeBufferCampaignService.cleanupUnreferencedMedia === "function"
-          ) {
-            await activeBufferCampaignService.cleanupUnreferencedMedia({
-              assetId: input.cloudinaryAssetId,
-              publicId: input.cloudinaryPublicId,
-              resourceType: input.cloudinaryResourceType,
-            });
-          }
+          if (input.entity === "landing_page") await cleanupLandingPageMedia(input);
           return json(
             {
               error:
@@ -3269,6 +3334,19 @@ export async function createSocialListenerApp({
             assetId: previousLandingPage.cloudinaryAssetId,
             publicId: previousLandingPage.cloudinaryPublicId,
             resourceType: previousLandingPage.cloudinaryResourceType,
+          });
+        }
+
+        if (
+          input.entity === "landing_page" &&
+          previousLandingPage?.pictureCloudinaryAssetId &&
+          previousLandingPage.pictureCloudinaryAssetId !== input.pictureCloudinaryAssetId &&
+          typeof activeBufferCampaignService.cleanupUnreferencedMedia === "function"
+        ) {
+          await activeBufferCampaignService.cleanupUnreferencedMedia({
+            assetId: previousLandingPage.pictureCloudinaryAssetId,
+            publicId: previousLandingPage.pictureCloudinaryPublicId,
+            resourceType: previousLandingPage.pictureCloudinaryResourceType,
           });
         }
 

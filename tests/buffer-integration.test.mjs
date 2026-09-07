@@ -88,9 +88,11 @@ test("campaign and landing media reuse one upload route with no local hosting pa
     readFile(new URL("../lib/campaign-media.mjs", import.meta.url), "utf8"),
   ]);
   assert.match(pageSource, /fetch\("\/api\/media", \{ method: "POST", body: uploadForm \}\)/);
-  assert.equal((pageSource.match(/fetch\("\/api\/media", \{ method: "POST", body: uploadForm \}\)/g) || []).length, 2);
+  assert.equal((pageSource.match(/fetch\("\/api\/media", \{ method: "POST", body: uploadForm \}\)/g) || []).length, 3);
   assert.match(nextUploadSource, /proxySocialRequest\("\/api\/media", uploadRequest\)/);
   assert.match(serverSource, /expressApp\.post\(\s*"\/api\/media"/);
+  assert.match(serverSource, /purpose === "landing_page_picture"/);
+  assert.match(serverSource, /image\/jpeg[\s\S]*image\/png[\s\S]*image\/webp[\s\S]*image\/gif/);
   assert.doesNotMatch(serverSource, /expressApp\.post\(\s*"\/uploads\/campaigns"/);
   assert.match(mediaSource, /uploadCampaignMediaToCloudinary/);
   assert.doesNotMatch(serverSource, /express\.static\(mediaDirectory/);
@@ -478,11 +480,12 @@ test("Express accepts authenticated multipart image/video uploads and returns Cl
     Buffer.from("ftypisom"),
     Buffer.from("campaign-video"),
   ]);
-  const upload = async (file, postType) => {
+  const upload = async (file, postType, purpose = "") => {
     const form = new FormData();
     form.append("media", file);
     form.append("postType", postType);
     form.append("targetServices", "instagram");
+    if (purpose) form.append("purpose", purpose);
     const response = await fetch(`${origin}/api/media`, {
       method: "POST",
       headers: { authorization: "Bearer upload-service-token" },
@@ -520,6 +523,24 @@ test("Express accepts authenticated multipart image/video uploads and returns Cl
     assert.equal(image.size, png.length);
     assert.match(image.mediaUrl, /^https:\/\/res\.cloudinary\.com\/crm-cloud\/image\/upload\/.+\.png$/);
     assert.equal((await fetch(`${origin}/uploads/campaigns/${image.mediaId}`)).status, 404);
+
+    const landingPicture = await upload(
+      new File([png], "teaser.png", { type: "image/png" }),
+      "POST",
+      "landing_page_picture",
+    );
+    assert.equal(landingPicture.resourceType, "image");
+
+    const invalidPictureForm = new FormData();
+    invalidPictureForm.append("media", new File([mp4], "teaser.mp4", { type: "video/mp4" }));
+    invalidPictureForm.append("purpose", "landing_page_picture");
+    const invalidPictureResponse = await fetch(`${origin}/api/media`, {
+      method: "POST",
+      headers: { authorization: "Bearer upload-service-token" },
+      body: invalidPictureForm,
+    });
+    assert.equal(invalidPictureResponse.status, 400);
+    assert.match((await invalidPictureResponse.json()).error, /JPEG, PNG, WebP, or GIF/i);
 
     const video = await upload(new File([mp4], "campaign.mp4", { type: "video/mp4" }), "REEL");
     assert.equal(video.resourceType, "video");
