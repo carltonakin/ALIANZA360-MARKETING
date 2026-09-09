@@ -11,6 +11,8 @@ import {
 import { useRouter } from "next/navigation";
 import { LandingVideoPlayer } from "./components/LandingVideoPlayer";
 import { BrandLogo } from "./components/BrandLogo";
+import { LandingPageStudio } from "./components/LandingPageStudio";
+import type { LandingPageBlock } from "./components/LandingPageBlocks";
 import { browserVideoValidationErrors, INSTAGRAM_VIDEO_MAX_BYTES } from "../lib/instagram-video-validation.mjs";
 import { LANDING_PAGE_SUBMIT_TEXT, normalizeExternalVideoUrl } from "../lib/landing-page-video.mjs";
 import type { AuthUser } from "./auth/shared";
@@ -254,6 +256,21 @@ type Landing = {
   status: string;
   registrations: number;
   createdByAi?: boolean;
+  blocks?: LandingPageBlock[];
+};
+
+type LandingPageAnalytics = {
+  pageId: string;
+  visitors: number;
+  registrations: number;
+  conversionRate: number;
+  averageScore: number;
+  cold: number;
+  warm: number;
+  qualified: number;
+  hot: number;
+  sources: Array<{ name: string; count: number }>;
+  campaigns: Array<{ name: string; count: number }>;
 };
 
 type SocialChannelConfig = {
@@ -310,7 +327,7 @@ const nav = [
   ["◎", "Campaigns"],
   ["♙", "Leads"],
   ["▷", "Webinar"],
-  ["▱", "Landing Pages"],
+  ["▱", "Landing Page Studio"],
   ["▤", "Reports"],
   ["◉", "Social Listener"],
   ["⚙", "Settings"],
@@ -334,6 +351,7 @@ export default function Home() {
   const [leads, setLeads] = useState<Lead[]>([]);
   const [campaigns, setCampaigns] = useState<Campaign[]>([]);
   const [pages, setPages] = useState<Landing[]>([]);
+  const [landingPageAnalytics, setLandingPageAnalytics] = useState<LandingPageAnalytics[]>([]);
   const [webinars, setWebinars] = useState<WebinarRecord[]>([]);
   const [dataError, setDataError] = useState("");
   const [connected, setConnected] = useState(false);
@@ -501,6 +519,7 @@ export default function Home() {
         campaigns?: Campaign[];
         pages?: Landing[];
         webinars?: WebinarRecord[];
+        landingPageAnalytics?: LandingPageAnalytics[];
       };
       const normalizeLead = (lead: Lead): Lead => ({
         ...lead,
@@ -512,12 +531,14 @@ export default function Home() {
       setCampaigns(d.campaigns ?? []);
       setPages(d.pages ?? []);
       setWebinars(d.webinars ?? []);
+      setLandingPageAnalytics(d.landingPageAnalytics ?? []);
       setDataError("");
     } catch (error) {
       setLeads([]);
       setCampaigns([]);
       setPages([]);
       setWebinars([]);
+      setLandingPageAnalytics([]);
       const message = error instanceof Error ? error.message : "Production data could not be loaded from SQL Server.";
       setDataError(message);
       notify(message);
@@ -536,6 +557,46 @@ export default function Home() {
       setModal("page");
     } catch (error) {
       notify(error instanceof Error ? error.message : "The saved landing page could not be loaded.");
+    } finally {
+      setBusy(false);
+    }
+  };
+
+  const duplicateLandingPage = async (page: Landing) => {
+    setBusy(true);
+    try {
+      const response = await fetch("/api/landing-pages/duplicate", {
+        method: "POST",
+        headers: { "content-type": "application/json" },
+        body: JSON.stringify({ pageId: page.id }),
+      });
+      const data = await response.json().catch(() => ({})) as { error?: string; record?: Landing };
+      if (!response.ok || !data.record) throw new Error(data.error || "The landing page could not be duplicated.");
+      await load();
+      setEditingPage(data.record);
+      setModal("page");
+      notify("Design duplicated as a new draft");
+    } catch (error) {
+      notify(error instanceof Error ? error.message : "The landing page could not be duplicated.");
+    } finally {
+      setBusy(false);
+    }
+  };
+
+  const publishLandingPage = async (page: Landing) => {
+    setBusy(true);
+    try {
+      const response = await fetch("/api/social/content", {
+        method: "PUT",
+        headers: { "content-type": "application/json" },
+        body: JSON.stringify({ ...page, entity: "landing_page", status: "published" }),
+      });
+      const data = await response.json().catch(() => ({})) as { error?: string };
+      if (!response.ok) throw new Error(data.error || "The landing page could not be published.");
+      await load();
+      notify("Landing page published");
+    } catch (error) {
+      notify(error instanceof Error ? error.message : "The landing page could not be published.");
     } finally {
       setBusy(false);
     }
@@ -645,6 +706,8 @@ export default function Home() {
     }
   };
 
+  // Retained as a compatibility fallback for the pre-studio editor payload.
+  // eslint-disable-next-line @typescript-eslint/no-unused-vars
   const saveLandingPage = async (
     event: FormEvent<HTMLFormElement>,
     page: Landing | null,
@@ -1207,14 +1270,18 @@ export default function Home() {
             />
           )}
           {active === "Funnel" && <Funnel leads={leads} />}
-          {active === "Landing Pages" && (
+          {active === "Landing Page Studio" && (
             <LandingPages
               rows={pages}
+              analytics={landingPageAnalytics}
+              busy={busy}
               onCreate={() => {
                 setEditingPage(null);
                 setModal("page");
               }}
               onEdit={(page) => void openLandingPageEditor(page)}
+              onDuplicate={(page) => void duplicateLandingPage(page)}
+              onPublish={(page) => void publishLandingPage(page)}
             />
           )}
           {active === "Reports" && <Reports />}
@@ -1272,7 +1339,7 @@ export default function Home() {
             }
           }}
         >
-          <div className="modal">
+          <div className={`modal${modal === "page" ? " studio-modal" : ""}`}>
             <button
               className="modal-close"
               onClick={() => {
@@ -1303,7 +1370,7 @@ export default function Home() {
                 busy={busy}
               />
             )}
-            {modal === "page" && <PageForm key={editingPage?.id || "new"} page={editingPage} campaigns={campaigns} save={saveLandingPage} busy={busy} />}
+            {modal === "page" && <LandingPageStudio key={editingPage?.id || "new"} page={editingPage} campaigns={campaigns} busy={busy} onSaved={async (message) => { await load(); setModal(""); setEditingPage(null); notify(message); }} />}
             {modal === "webinar" && <WebinarForm key={editingWebinar?.id || "new"} webinar={editingWebinar} submit={submit} busy={busy} campaigns={campaigns} pages={pages} />}
             {modal === "ai" && <AiDraftForm busy={busy} setBusy={setBusy} onSaved={async (message) => { await load(); setModal(""); notify(message); }} />}
             {modal === "lead360" && unifiedLead && (
@@ -1969,18 +2036,27 @@ function Funnel({ leads }: { leads: Lead[] }) {
 
 function LandingPages({
   rows,
+  analytics,
+  busy,
   onCreate,
   onEdit,
+  onDuplicate,
+  onPublish,
 }: {
   rows: Landing[];
+  analytics: LandingPageAnalytics[];
+  busy: boolean;
   onCreate: () => void;
   onEdit: (page: Landing) => void;
+  onDuplicate: (page: Landing) => void;
+  onPublish: (page: Landing) => void;
 }) {
+  const [analyticsPageId, setAnalyticsPageId] = useState("");
   return (
     <>
       <ModuleHead
-        title="Landing Pages"
-        sub="Capture contact details and start your webinar immediately after registration"
+        title="Landing Page Studio"
+        sub="Build, preview, publish and measure modular conversion pages"
         action="+ Build page"
         click={onCreate}
       />
@@ -1993,27 +2069,39 @@ function LandingPages({
           click={onCreate}
         />
       ) : (
-        <div className="card-grid">
-          {rows.map((p) => (
-            <article className="panel page-card" key={p.id}>
+        <div className="card-grid landing-page-grid">
+          {rows.map((p) => {
+            const metrics = analytics.find((item) => String(item.pageId) === String(p.id)) || {
+              pageId: String(p.id), visitors: 0, registrations: p.registrations, conversionRate: 0,
+              averageScore: 0, cold: 0, warm: 0, qualified: 0, hot: 0, sources: [], campaigns: [],
+            };
+            const showingAnalytics = analyticsPageId === String(p.id);
+            return <article className="panel page-card landing-page-card" key={p.id}>
               <span className="status registered">{p.status}</span>
               <h3>{p.title}</h3>
               <p>{p.headline}</p>
               <small>/{p.slug}</small>
-              <div>
-                <b>{p.registrations}</b> registrations
+              <div className="landing-metric-grid">
+                <span><b>{metrics.visitors}</b> visitors</span>
+                <span><b>{metrics.registrations}</b> registrations</span>
+                <span><b>{metrics.conversionRate}%</b> conversion</span>
+                <span><b>{metrics.averageScore}</b> avg. score</span>
               </div>
               <div className="card-actions">
-                <button type="button" onClick={() => onEdit(p)}>Edit page</button>
-                <button
-                  type="button"
-                  onClick={() => window.open(`/landing/${p.slug}`, "_blank")}
-                >
-                  Open page ↗
-                </button>
+                <button type="button" onClick={() => onEdit(p)}>Edit design</button>
+                <button type="button" onClick={() => onEdit(p)}>Preview</button>
+                <button type="button" onClick={() => setAnalyticsPageId(showingAnalytics ? "" : String(p.id))}>Analytics</button>
+                <button type="button" disabled={busy} onClick={() => onDuplicate(p)}>Duplicate</button>
+                {p.status !== "published" && <button type="button" disabled={busy} onClick={() => onPublish(p)}>Publish</button>}
+                {p.status === "published" && <button type="button" onClick={() => window.open(`/landing/${p.slug}`, "_blank")}>Open ↗</button>}
               </div>
-            </article>
-          ))}
+              {showingAnalytics && <div className="landing-analytics-detail">
+                <div className="landing-score-bands"><span><b>{metrics.cold}</b> Cold</span><span><b>{metrics.warm}</b> Warm</span><span><b>{metrics.qualified}</b> Qualified</span><span><b>{metrics.hot}</b> Hot</span></div>
+                <div><strong>Top sources</strong><p>{metrics.sources.length ? metrics.sources.slice(0, 4).map((item) => `${item.name} (${item.count})`).join(" · ") : "No attributed visits yet"}</p></div>
+                <div><strong>Top campaigns</strong><p>{metrics.campaigns.length ? metrics.campaigns.slice(0, 4).map((item) => `${item.name} (${item.count})`).join(" · ") : "No attributed campaigns yet"}</p></div>
+              </div>}
+            </article>;
+          })}
         </div>
       )}
     </>
@@ -2076,7 +2164,7 @@ function Webinar({
           </ul>
           <button
             className="primary"
-            onClick={() => setActive("Landing Pages")}
+            onClick={() => setActive("Landing Page Studio")}
           >
             {pages.length
               ? "Manage webinar pages"
@@ -3334,6 +3422,8 @@ function CampaignForm({
   );
 }
 
+// Retained for rollback compatibility while the block studio is deployed.
+// eslint-disable-next-line @typescript-eslint/no-unused-vars
 function PageForm({
   page,
   campaigns,

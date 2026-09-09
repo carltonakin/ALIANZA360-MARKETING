@@ -1,30 +1,20 @@
-import { LandingVideoPlayer } from "../../components/LandingVideoPlayer";
 import { BrandLogo } from "../../components/BrandLogo";
+import { LandingPageBlocks, type LandingPageBlock } from "../../components/LandingPageBlocks";
+import { LandingPageViewTracker } from "../../components/LandingPageViewTracker";
 import { resolveSocialListenerConfig } from "../../api/social/_config";
-import { RegisterForm } from "./RegisterForm";
-import Image from "next/image";
+import { resolveLandingPageBlocks } from "../../../lib/landing-page-studio.mjs";
 
 type Landing = {
   id: string;
   slug: string;
+  title: string;
   headline: string;
   teaser: string;
   webinarUrl: string;
   paymentUrl: string;
   status: string;
-  videoSourceType?: "NONE" | "UPLOAD" | "EXTERNAL_URL";
-  videoUrl?: string;
-  videoProvider?: "CLOUDINARY" | "YOUTUBE" | "VIMEO" | "CANVA" | null;
-  videoAutoplay?: boolean;
-  videoMuted?: boolean;
-  videoShowControls?: boolean;
-  mediaMode?: "NONE" | "VIDEO_ONLY" | "PICTURE_ONLY" | "VIDEO_AND_PICTURE";
-  mediaOrder?: "VIDEO_FIRST" | "PICTURE_FIRST";
-  pictureUrl?: string;
-  preVideoCtaEnabled?: boolean;
-  preVideoCtaText?: string;
-  preVideoCtaUrl?: string;
-  submitButtonText?: string;
+  blocks?: LandingPageBlock[];
+  [key: string]: unknown;
 };
 
 async function loadPage(slug: string): Promise<Landing | null> {
@@ -37,7 +27,7 @@ async function loadPage(slug: string): Promise<Landing | null> {
     });
     if (!response.ok) return null;
     const body = await response.json() as { pages?: Landing[] };
-    return body.pages?.find((page) => page.slug === slug && page.status !== "archived") || null;
+    return body.pages?.find((page) => page.slug === slug && page.status === "published") || null;
   } catch {
     return null;
   }
@@ -51,78 +41,20 @@ export default async function LandingPage({ params }: { params: Promise<{ slug: 
       <main className="landing-shell">
         <div className="landing-missing">
           <h1>Page not found</h1>
-          <p>This webinar page may be unpublished, the link may be incorrect, or the SQL Server backend is unavailable.</p>
+          <p>This page may be unpublished, the link may be incorrect, or the service may be temporarily unavailable.</p>
         </div>
       </main>
     );
   }
-
-  const hasVideo = Boolean(page.videoUrl);
-  const hasPicture = Boolean(page.pictureUrl);
-  const mediaMode = page.mediaMode || (hasVideo && hasPicture
-    ? "VIDEO_AND_PICTURE"
-    : hasPicture
-      ? "PICTURE_ONLY"
-      : hasVideo
-        ? "VIDEO_ONLY"
-        : "NONE");
-  const mediaKinds: Array<"video" | "picture"> = mediaMode === "VIDEO_AND_PICTURE"
-    ? page.mediaOrder === "PICTURE_FIRST" ? ["picture", "video"] : ["video", "picture"]
-    : mediaMode === "VIDEO_ONLY"
-      ? ["video"]
-      : mediaMode === "PICTURE_ONLY"
-        ? ["picture"]
-        : [];
-  const visibleMedia = mediaKinds.filter((kind) => kind === "video" ? hasVideo : hasPicture);
-  const hasCta = (page.preVideoCtaEnabled ?? Boolean(page.preVideoCtaText && page.preVideoCtaUrl)) &&
-    Boolean(page.preVideoCtaText && page.preVideoCtaUrl);
+  const blocks = resolveLandingPageBlocks(page) as LandingPageBlock[];
   return (
     <main className="landing-shell">
+      <LandingPageViewTracker pageId={page.id} />
       <header className="landing-nav">
         <BrandLogo className="landing-brand-logo" />
-        <small>FREE · ON DEMAND · PRACTICAL</small>
+        <small>LANDING PAGE · SECURE REGISTRATION</small>
       </header>
-      <section className="landing-hero">
-        <div className="teaser-side">
-          <span className="lp-eyebrow">BUILD A BETTER GROWTH ENGINE</span>
-          <h1>{page.headline}</h1>
-          {hasCta && <a className="lp-button landing-video-cta" href={page.preVideoCtaUrl}>{page.preVideoCtaText}</a>}
-          {visibleMedia.length > 0 && <div className="landing-media-stack">
-            {visibleMedia.map((kind) => kind === "video" ? (
-              <LandingVideoPlayer
-                key="video"
-                sourceType={page.videoSourceType}
-                videoUrl={page.videoUrl}
-                provider={page.videoProvider}
-                autoplay={page.videoAutoplay !== false}
-                muted={page.videoMuted !== false}
-                showControls={page.videoShowControls !== false}
-              />
-            ) : (
-              <figure className="landing-picture" key="picture">
-                <Image
-                  src={page.pictureUrl || ""}
-                  alt={`${page.headline} teaser`}
-                  width={1600}
-                  height={900}
-                  sizes="(max-width: 760px) 100vw, 900px"
-                />
-              </figure>
-            ))}
-          </div>}
-          <p>{page.teaser || "Discover a practical system to attract the right audience, convert interest into qualified leads and build recurring revenue."}</p>
-          <div className="proof">
-            <span>✓ Actionable framework</span>
-            <span>✓ Watch instantly</span>
-            <span>✓ Free access</span>
-          </div>
-        </div>
-        <RegisterForm
-          pageId={page.id}
-          paymentUrl={page.paymentUrl}
-          submitButtonText={page.submitButtonText}
-        />
-      </section>
+      <LandingPageBlocks blocks={blocks} pageId={page.id} paymentUrl={page.paymentUrl} />
     </main>
   );
 }

@@ -220,7 +220,7 @@ test("dashboard exposes social listener configuration and live diagnostics", asy
   assert.match(page, /\/api\/buffer\/campaigns/i);
   assert.match(page, /BUFFER_API_KEY/i);
   assert.doesNotMatch(page, /name=["']BUFFER_API_KEY["']/i);
-  assert.match(page, /Edit page/i);
+  assert.match(page, /Edit design/i);
   assert.match(page, /Edit webinar/i);
   assert.match(page, /method: entity && updating \? "PUT" : "POST"/i);
   assert.doesNotMatch(page, /public landing-page mirror/i);

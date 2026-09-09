@@ -1,5 +1,5 @@
 import { createRequire } from "node:module";
-import { randomUUID } from "node:crypto";
+import { createHash, randomUUID } from "node:crypto";
 import { pathToFileURL } from "node:url";
 import {
   SOCIAL_CHANNELS,
@@ -39,6 +39,11 @@ import {
   normalizeLandingPageMedia,
 } from "../lib/landing-page-video.mjs";
 import { normalizePostUrl } from "../lib/post-url.mjs";
+import {
+  landingPageMediaReferences,
+  normalizeLandingPageBlocks,
+  projectLegacyLandingPageFields,
+} from "../lib/landing-page-studio.mjs";
 
 /*
 |--------------------------------------------------------------------------
@@ -1339,6 +1344,10 @@ function normalizeContentInput(
   if (
     entity === "landing_page"
   ) {
+    const blocks = Object.prototype.hasOwnProperty.call(body, "blocks")
+      ? normalizeLandingPageBlocks(body.blocks)
+      : null;
+    if (blocks) body = { ...body, ...projectLegacyLandingPageFields(blocks, body) };
     const media = normalizeLandingPageMedia({
       mediaMode: body.mediaMode,
       mediaOrder: body.mediaOrder,
@@ -1434,6 +1443,8 @@ function normalizeContentInput(
         Boolean(
           body.createdByAi
         ),
+
+      ...(blocks ? { blocks } : {}),
     };
   }
 
@@ -1541,13 +1552,14 @@ const LANDING_PAGE_CONFIGURATION_FIELDS = Object.freeze([
   "preVideoCtaText",
   "preVideoCtaUrl",
   "submitButtonText",
+  "blocks",
 ]);
 
 function preserveLandingPageConfiguration(body, persistedPage) {
   if (!persistedPage) return body;
   const merged = { ...body };
   for (const field of LANDING_PAGE_CONFIGURATION_FIELDS) {
-    if (!Object.prototype.hasOwnProperty.call(body, field)) merged[field] = persistedPage[field];
+    if (!Object.prototype.hasOwnProperty.call(body, field) && persistedPage[field] !== undefined) merged[field] = persistedPage[field];
   }
 
   const hasOwn = (field) => Object.prototype.hasOwnProperty.call(body, field);
@@ -3193,6 +3205,45 @@ export async function createSocialListenerApp({
         });
       }
 
+      if (request.method === "GET" && url.pathname === "/landing-pages/analytics") {
+        return json({
+          ok: true,
+          analytics: typeof activeRepository.getLandingPageAnalytics === "function"
+            ? await activeRepository.getLandingPageAnalytics()
+            : [],
+        });
+      }
+
+      if (request.method === "POST" && url.pathname === "/landing-pages/duplicate") {
+        const body = await readJson(request);
+        const pageId = optionalId(body.id || body.pageId);
+        if (!pageId) return json({ error: "A landing-page ID is required." }, 400);
+        const record = typeof activeRepository.duplicateLandingPage === "function"
+          ? await activeRepository.duplicateLandingPage(pageId)
+          : null;
+        return record
+          ? json({ ok: true, record }, 201)
+          : json({ error: "Landing page not found." }, 404);
+      }
+
+      if (request.method === "POST" && url.pathname === "/landing-page-views") {
+        const body = await readJson(request);
+        const pageId = optionalId(body.pageId);
+        const visitorKey = requiredValue(body.visitorKey, "Visitor key", 200);
+        if (!pageId) return json({ error: "A landing-page ID is required." }, 400);
+        const result = await activeRepository.recordLandingPageView({
+          pageId,
+          visitorHash: createHash("sha256").update(visitorKey).digest(),
+          viewedAt: new Date().toISOString(),
+          source: cleanLeadValue(body.source, 255),
+          medium: cleanLeadValue(body.medium, 255),
+          campaign: cleanLeadValue(body.campaign, 255),
+          content: cleanLeadValue(body.content, 255),
+          term: cleanLeadValue(body.term, 255),
+        });
+        return json({ ok: true, ...result }, result.inserted ? 201 : 200);
+      }
+
       if (
         (
           request.method ===
@@ -3237,6 +3288,7 @@ export async function createSocialListenerApp({
               publicId: landingPage.pictureCloudinaryPublicId,
               resourceType: landingPage.pictureCloudinaryResourceType,
             },
+            ...landingPageMediaReferences(landingPage),
           ];
           for (const reference of references) {
             if (reference.assetId) await activeBufferCampaignService.cleanupUnreferencedMedia(reference);
@@ -3324,30 +3376,14 @@ export async function createSocialListenerApp({
           );
         }
 
-        if (
-          input.entity === "landing_page" &&
-          previousLandingPage?.cloudinaryAssetId &&
-          previousLandingPage.cloudinaryAssetId !== input.cloudinaryAssetId &&
-          typeof activeBufferCampaignService.cleanupUnreferencedMedia === "function"
-        ) {
-          await activeBufferCampaignService.cleanupUnreferencedMedia({
-            assetId: previousLandingPage.cloudinaryAssetId,
-            publicId: previousLandingPage.cloudinaryPublicId,
-            resourceType: previousLandingPage.cloudinaryResourceType,
-          });
-        }
-
-        if (
-          input.entity === "landing_page" &&
-          previousLandingPage?.pictureCloudinaryAssetId &&
-          previousLandingPage.pictureCloudinaryAssetId !== input.pictureCloudinaryAssetId &&
-          typeof activeBufferCampaignService.cleanupUnreferencedMedia === "function"
-        ) {
-          await activeBufferCampaignService.cleanupUnreferencedMedia({
-            assetId: previousLandingPage.pictureCloudinaryAssetId,
-            publicId: previousLandingPage.pictureCloudinaryPublicId,
-            resourceType: previousLandingPage.pictureCloudinaryResourceType,
-          });
+        if (input.entity === "landing_page" && previousLandingPage &&
+            typeof activeBufferCampaignService.cleanupUnreferencedMedia === "function") {
+          const currentIds = new Set(landingPageMediaReferences(input).map((item) => item.assetId));
+          for (const reference of landingPageMediaReferences(previousLandingPage)) {
+            if (!currentIds.has(reference.assetId)) {
+              await activeBufferCampaignService.cleanupUnreferencedMedia(reference);
+            }
+          }
         }
 
         if (

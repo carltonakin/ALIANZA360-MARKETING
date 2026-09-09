@@ -424,6 +424,34 @@ function mapLandingPage(row) {
   };
 }
 
+function mapLandingPageBlock(row) {
+  return {
+    id: row.BlockKey || `block:${row.LandingPageBlockId}`,
+    type: row.BlockType,
+    sortOrder: Number(row.SortOrder || 0),
+    enabled: row.IsEnabled == null ? true : Boolean(row.IsEnabled),
+    config: jsonValue(row.ConfigurationJson, {}),
+    createdAt: iso(row.CreatedAt),
+    updatedAt: iso(row.UpdatedAt),
+  };
+}
+
+function mapLandingPageAnalytics(row) {
+  return {
+    pageId: `page:${row.LandingPageId}`,
+    visitors: Number(row.Visitors || 0),
+    registrations: Number(row.Registrations || 0),
+    conversionRate: Number(row.ConversionRate || 0),
+    averageScore: Number(row.AverageScore || 0),
+    cold: Number(row.Cold || 0),
+    warm: Number(row.Warm || 0),
+    qualified: Number(row.Qualified || 0),
+    hot: Number(row.Hot || 0),
+    sources: jsonValue(row.SourcesJson, []),
+    campaigns: jsonValue(row.CampaignsJson, []),
+  };
+}
+
 function mapWebinar(row) {
   return {
     id: `webinar:${row.WebinarId}`,
@@ -771,9 +799,19 @@ export class SqlServerRepository {
   async getContent() {
     const response = await this.request().execute("dbo.CRMContent_GetAll");
     const recordsets = response.recordsets || [];
+    const blocksByPage = new Map();
+    for (const row of recordsets[3] || []) {
+      const key = Number(row.LandingPageId);
+      const current = blocksByPage.get(key) || [];
+      current.push(mapLandingPageBlock(row));
+      blocksByPage.set(key, current);
+    }
     return {
       campaigns: (recordsets[0] || []).map(mapCampaign),
-      pages: (recordsets[1] || []).map(mapLandingPage),
+      pages: (recordsets[1] || []).map((row) => ({
+        ...mapLandingPage(row),
+        blocks: blocksByPage.get(Number(row.LandingPageId)) || [],
+      })),
       webinars: (recordsets[2] || []).map(mapWebinar),
     };
   }
@@ -919,8 +957,38 @@ export class SqlServerRepository {
     request.input("SubmitButtonText", this.sql.NVarChar(255), input.submitButtonText || "Register Now for an Interview");
     request.input("Status", this.sql.NVarChar(32), input.status || "draft");
     request.input("CreatedByAi", this.sql.Bit, input.createdByAi ? 1 : 0);
+    request.input("BlocksJson", this.sql.NVarChar(this.sql.MAX), Array.isArray(input.blocks) ? JSON.stringify(input.blocks) : null);
     const response = await request.execute("dbo.LandingPage_Save");
-    return response.recordset?.[0] ? mapLandingPage(response.recordset[0]) : null;
+    return response.recordset?.[0] ? { ...mapLandingPage(response.recordset[0]), blocks: input.blocks || [] } : null;
+  }
+
+  async duplicateLandingPage(id) {
+    const request = this.request();
+    request.input("LandingPageId", this.sql.BigInt, numericId(id));
+    const response = await request.execute("dbo.LandingPage_Duplicate");
+    if (!response.recordset?.[0]) return null;
+    const record = mapLandingPage(response.recordset[0]);
+    const content = await this.getContent();
+    return content.pages.find((page) => page.id === record.id) || { ...record, blocks: [] };
+  }
+
+  async recordLandingPageView(input) {
+    const request = this.request();
+    request.input("LandingPageId", this.sql.BigInt, numericId(input.pageId));
+    request.input("VisitorHash", this.sql.Binary(32), input.visitorHash);
+    request.input("ViewedAt", this.sql.DateTime2, new Date(input.viewedAt));
+    request.input("Source", this.sql.NVarChar(255), input.source || null);
+    request.input("Medium", this.sql.NVarChar(255), input.medium || null);
+    request.input("Campaign", this.sql.NVarChar(255), input.campaign || null);
+    request.input("Content", this.sql.NVarChar(255), input.content || null);
+    request.input("Term", this.sql.NVarChar(255), input.term || null);
+    const response = await request.execute("dbo.LandingPageView_Record");
+    return { inserted: Boolean(response.recordset?.[0]?.Inserted) };
+  }
+
+  async getLandingPageAnalytics() {
+    const response = await this.request().execute("dbo.LandingPageAnalytics_GetAll");
+    return (response.recordset || []).map(mapLandingPageAnalytics);
   }
 
   async saveWebinar(input) {

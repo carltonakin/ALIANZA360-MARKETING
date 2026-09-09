@@ -13,6 +13,7 @@ const PUBLIC_API_PATHS = new Set([
   "/api/auth/login",
   "/api/auth/logout",
   "/api/register",
+  "/api/landing-views",
   "/api/social/webhook/meta",
 ]);
 

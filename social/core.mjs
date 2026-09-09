@@ -638,6 +638,7 @@ export class InMemorySocialRepository {
     this.campaigns = new Map();
     this.campaignPosts = new Map();
     this.pages = new Map();
+    this.landingPageViews = new Map();
     this.webinars = new Map();
     this.routineEvents = new Map();
     this.socialAccounts = new Map();
@@ -1604,6 +1605,65 @@ export class InMemorySocialRepository {
     return structuredClone(item);
   }
 
+  async duplicateLandingPage(id) {
+    const source = this.pages.get(id);
+    if (!source) return null;
+    const usedSlugs = new Set([...this.pages.values()].map((page) => page.slug));
+    let suffix = 1;
+    let slug = `${source.slug}-copy`;
+    while (usedSlugs.has(slug)) slug = `${source.slug}-copy-${++suffix}`;
+    return this.saveLandingPage({
+      ...structuredClone(source),
+      id: undefined,
+      title: `${source.title} (Copy)`,
+      slug,
+      status: "draft",
+      registrations: 0,
+      createdByAi: false,
+    });
+  }
+
+  async recordLandingPageView(input) {
+    const page = this.pages.get(input.pageId);
+    if (!page || page.status !== "published") {
+      const error = new Error("Published landing page not found.");
+      error.statusCode = 404;
+      throw error;
+    }
+    const hash = Buffer.isBuffer(input.visitorHash) ? input.visitorHash.toString("hex") : String(input.visitorHash);
+    const date = String(input.viewedAt).slice(0, 10);
+    const key = `${input.pageId}:${hash}:${date}`;
+    if (this.landingPageViews.has(key)) return { inserted: false };
+    this.landingPageViews.set(key, structuredClone({ ...input, visitorHash: hash }));
+    return { inserted: true };
+  }
+
+  async getLandingPageAnalytics() {
+    return [...this.pages.values()].map((page) => {
+      const views = [...this.landingPageViews.values()].filter((view) => view.pageId === page.id);
+      const leadIds = new Set([...this.routineEvents.values()]
+        .filter((event) => event.routine === "landing_page_registration" && event.landingPageId === page.id)
+        .map((event) => event.leadId));
+      const leads = [...this.leads.values()].filter((lead) => leadIds.has(Number(String(lead.id).replace("social:", ""))));
+      const bandCount = (band) => leads.filter((lead) => String(lead.scoreBand || lead.temperature || "COLD").toUpperCase() === band).length;
+      const aggregate = (field, fallback) => [...views.reduce((map, view) => {
+        const key = view[field] || fallback;
+        map.set(key, (map.get(key) || 0) + 1);
+        return map;
+      }, new Map())].map(([name, count]) => ({ name, count })).sort((left, right) => right.count - left.count);
+      return {
+        pageId: page.id,
+        visitors: views.length,
+        registrations: Number(page.registrations || 0),
+        conversionRate: views.length ? Number((100 * Number(page.registrations || 0) / views.length).toFixed(2)) : 0,
+        averageScore: leads.length ? Number((leads.reduce((sum, lead) => sum + Number(lead.leadScore || 0), 0) / leads.length).toFixed(2)) : 0,
+        cold: bandCount("COLD"), warm: bandCount("WARM"), qualified: bandCount("QUALIFIED"), hot: bandCount("HOT"),
+        sources: aggregate("source", "Direct"),
+        campaigns: aggregate("campaign", "Unattributed"),
+      };
+    });
+  }
+
   async saveWebinar(input) {
     const id = input.id || `webinar:${this.webinars.size + 1}`;
     if (input.id && !this.webinars.has(id)) return null;
@@ -1950,7 +2010,13 @@ export class InMemorySocialRepository {
         updatedAt: new Date().toISOString(),
       });
     }
-    const result = { leadId: Number(String(lead.id).replace("social:", "")), duplicate: false };
+    const result = {
+      leadId: Number(String(lead.id).replace("social:", "")),
+      duplicate: false,
+      routine: input.routine,
+      landingPageId: input.landingPageId || null,
+      campaignId: input.campaignId || null,
+    };
     this.routineEvents.set(key, result);
     if (input.routine === "landing_page_registration" && input.landingPageId && this.pages.has(input.landingPageId)) {
       const page = this.pages.get(input.landingPageId);

@@ -371,9 +371,10 @@ test("Cloudinary cleanup protects both campaign and landing-page references", as
 });
 
 test("builder, public renderer, registration route, and MSSQL migrations expose the complete feature", async () => {
-  const [builder, landing, player, registration, registerRoute, migration, scoringMigration, repairMigration, mediaMigration] = await Promise.all([
+  const [builder, landing, renderer, player, registration, registerRoute, migration, scoringMigration, repairMigration, mediaMigration, studioMigration] = await Promise.all([
     readFile(new URL("../app/page.tsx", import.meta.url), "utf8"),
     readFile(new URL("../app/landing/[slug]/page.tsx", import.meta.url), "utf8"),
+    readFile(new URL("../app/components/LandingPageBlocks.tsx", import.meta.url), "utf8"),
     readFile(new URL("../app/components/LandingVideoPlayer.tsx", import.meta.url), "utf8"),
     readFile(new URL("../app/landing/[slug]/RegisterForm.tsx", import.meta.url), "utf8"),
     readFile(new URL("../app/api/register/route.ts", import.meta.url), "utf8"),
@@ -381,6 +382,7 @@ test("builder, public renderer, registration route, and MSSQL migrations expose 
     readFile(new URL("../sql/018_landing_registration_scoring.sql", import.meta.url), "utf8"),
     readFile(new URL("../sql/019_repair_landing_registration_video.sql", import.meta.url), "utf8"),
     readFile(new URL("../sql/020_landing_page_picture_media_order_cta.sql", import.meta.url), "utf8"),
+    readFile(new URL("../sql/021_landing_page_studio.sql", import.meta.url), "utf8"),
   ]);
   assert.match(builder, /onDrop=\{onVideoDrop\}/);
   assert.match(builder, /Cloudinary landing-page media upload in progress/);
@@ -393,27 +395,27 @@ test("builder, public renderer, registration route, and MSSQL migrations expose 
   assert.match(builder, /fetch\("\/api\/social\/content", \{ cache: "no-store" \}\)/);
   assert.match(builder, /externalVideoPreview/);
   assert.match(builder, /onPlaybackError/);
-  const publicLayout = landing.slice(landing.indexOf("<section className=\"landing-hero\">"));
-  assert.ok(publicLayout.indexOf("landing-video-cta") < publicLayout.indexOf("landing-media-stack"));
-  assert.ok(publicLayout.indexOf("landing-media-stack") < publicLayout.indexOf("page.teaser"));
-  assert.ok(publicLayout.indexOf("page.teaser") < publicLayout.indexOf("<RegisterForm"));
-  assert.match(landing, /page\.mediaOrder === "PICTURE_FIRST"/);
-  assert.match(landing, /<Image/);
-  assert.match(landing, /page\.preVideoCtaEnabled \?\?/);
-  assert.match(landing, /autoplay=\{page\.videoAutoplay !== false\}/);
-  assert.match(landing, /muted=\{page\.videoMuted !== false\}/);
+  assert.match(landing, /LandingPageBlocks/);
+  assert.match(landing, /resolveLandingPageBlocks/);
+  assert.match(landing, /page\.status === "published"/);
+  assert.match(renderer, /block\.type === "CTA_BUTTON"/);
+  assert.match(renderer, /block\.type === "IMAGE"/);
+  assert.match(renderer, /block\.type === "VIDEO"/);
+  assert.match(renderer, /block\.type === "REGISTRATION_FORM"/);
+  assert.match(renderer, /LandingVideoPlayer/);
+  assert.match(renderer, /<Image/);
   assert.match(player, /autoPlay=\{autoplay\}/);
   assert.match(player, /playsInline/);
   assert.match(player, /landing-video-fallback/);
   for (const handle of ["instagram", "facebook", "x"]) {
     assert.match(registration, new RegExp(`name="${handle}"`));
-    assert.match(registerRoute, new RegExp(`${handle}: clean\\(body\\.${handle}\\)`));
+    assert.match(registerRoute, new RegExp(`clean\\(body\\.${handle}\\)`));
   }
   assert.match(builder, /label="Post URL Link"/);
   assert.match(builder, /After a successful registration, send the visitor/);
   assert.match(registerRoute, /proxySocialRequest\("\/content"/);
   assert.ok(registerRoute.indexOf('proxySocialRequest("/content"') < registerRoute.indexOf('proxySocialRequest("/routine-leads"'));
-  assert.match(registerRoute, /normalizePostUrl\(page\.webinarUrl\)/);
+  assert.match(registerRoute, /registrationBlock\?\.config\?\.postSubmitUrl \|\| page\.webinarUrl/);
   assert.match(registerRoute, /redirectUrl/);
   assert.match(registration, /window\.location\.assign\(result\.redirectUrl\)/);
   assert.match(registration, /registrationId/);
@@ -437,6 +439,10 @@ test("builder, public renderer, registration route, and MSSQL migrations expose 
   assert.match(mediaMigration, /VIDEO_AND_PICTURE/);
   assert.match(mediaMigration, /PICTURE_FIRST/);
   assert.doesNotMatch(mediaMigration, /LeadScoringRules|LeadTemperatureThresholds|LeadScore_Recalculate/);
+  assert.match(studioMigration, /LandingPageBlocks/);
+  assert.match(studioMigration, /LandingPageViews/);
+  assert.match(studioMigration, /LandingPageAnalytics_GetAll/);
+  assert.doesNotMatch(studioMigration, /LeadScoringRules|LeadTemperatureThresholds|LeadScore_Recalculate/);
 });
 
 test("Next2TheTop CRM branding is used on login, dashboard, public pages, and metadata", async () => {

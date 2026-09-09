@@ -2,11 +2,11 @@ import { proxySocialRequest } from "../social/_proxy";
 const clean=(value:unknown)=>typeof value==="string"?value.trim():"";
 async function json(response:Response){return response.json().catch(()=>({})) as Promise<Record<string,unknown>>}
 export async function GET(){
- const [leadResponse,contentResponse]=await Promise.all([proxySocialRequest("/leads?limit=100"),proxySocialRequest("/content")]);
+ const [leadResponse,contentResponse,analyticsResponse]=await Promise.all([proxySocialRequest("/leads?limit=100"),proxySocialRequest("/content"),proxySocialRequest("/landing-pages/analytics")]);
  if(!leadResponse.ok)return new Response(await leadResponse.arrayBuffer(),{status:leadResponse.status,headers:{"content-type":"application/json"}});
  if(!contentResponse.ok)return new Response(await contentResponse.arrayBuffer(),{status:contentResponse.status,headers:{"content-type":"application/json"}});
- const leadData=await json(leadResponse),contentData=await json(contentResponse);
- return Response.json({leads:Array.isArray(leadData.leads)?leadData.leads:[],campaigns:Array.isArray(contentData.campaigns)?contentData.campaigns:[],pages:Array.isArray(contentData.pages)?contentData.pages:[],webinars:Array.isArray(contentData.webinars)?contentData.webinars:[],activities:[]},{headers:{"cache-control":"no-store"}});
+ const leadData=await json(leadResponse),contentData=await json(contentResponse),analyticsData=await json(analyticsResponse);
+ return Response.json({leads:Array.isArray(leadData.leads)?leadData.leads:[],campaigns:Array.isArray(contentData.campaigns)?contentData.campaigns:[],pages:Array.isArray(contentData.pages)?contentData.pages:[],webinars:Array.isArray(contentData.webinars)?contentData.webinars:[],landingPageAnalytics:Array.isArray(analyticsData.analytics)?analyticsData.analytics:[],activities:[]},{headers:{"cache-control":"no-store"}});
 }
 export async function POST(request:Request){
  let body:Record<string,unknown>;try{body=await request.json()}catch{return Response.json({error:"Malformed JSON payload."},{status:400})}

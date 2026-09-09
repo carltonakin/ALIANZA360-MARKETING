@@ -1,4 +1,5 @@
 import { normalizePostUrl } from "../../../lib/post-url.mjs";
+import { resolveLandingPageBlocks } from "../../../lib/landing-page-studio.mjs";
 import { proxySocialRequest } from "../social/_proxy";
 
 type RegistrationBody = Record<string, unknown>;
@@ -7,6 +8,7 @@ type LandingPageRecord = {
   campaignId?: string | number | null;
   status?: string;
   webinarUrl?: string | null;
+  blocks?: Array<{ type?: string; enabled?: boolean; config?: Record<string, unknown> }>;
 };
 
 const clean = (value: unknown) => typeof value === "string" ? value.trim() : "";
@@ -37,11 +39,20 @@ export async function POST(request: Request) {
 
     const pages = Array.isArray(content.pages) ? content.pages as LandingPageRecord[] : [];
     const page = pages.find((candidate) =>
-      String(candidate.id) === pageId && String(candidate.status || "").toLowerCase() !== "archived");
+      String(candidate.id) === pageId && String(candidate.status || "").toLowerCase() === "published");
     if (!page) return Response.json({ error: "Landing page not found." }, { status: 404 });
 
     // This is the authoritative redirect value. It is checked before any CRM write.
-    const redirectUrl = normalizePostUrl(page.webinarUrl);
+    const registrationBlock = resolveLandingPageBlocks(page).find((block) => block.enabled && block.type === "REGISTRATION_FORM");
+    const fields = registrationBlock?.config?.fields && typeof registrationBlock.config.fields === "object"
+      ? registrationBlock.config.fields as Record<string, { enabled?: boolean; required?: boolean }>
+      : {};
+    for (const field of ["phone", "instagram", "facebook", "x", "message"]) {
+      if (fields[field]?.enabled && fields[field]?.required && !clean(body[field])) {
+        return Response.json({ error: `${field[0].toUpperCase()}${field.slice(1)} is required.` }, { status: 400 });
+      }
+    }
+    const redirectUrl = normalizePostUrl(registrationBlock?.config?.postSubmitUrl || page.webinarUrl);
     const suppliedRegistrationId = clean(body.registrationId);
     const registrationId = /^[A-Za-z0-9_-]{8,128}$/.test(suppliedRegistrationId)
       ? suppliedRegistrationId
@@ -56,11 +67,11 @@ export async function POST(request: Request) {
         externalEventId,
         name,
         email,
-        phone: clean(body.phone) || null,
-        instagram: clean(body.instagram) || clean(body.social) || null,
-        facebook: clean(body.facebook) || null,
-        x: clean(body.x) || null,
-        message: clean(body.message) || clean(body.purpose) || null,
+        phone: fields.phone?.enabled === false ? null : clean(body.phone) || null,
+        instagram: fields.instagram?.enabled === false ? null : clean(body.instagram) || clean(body.social) || null,
+        facebook: fields.facebook?.enabled === false ? null : clean(body.facebook) || null,
+        x: fields.x?.enabled === false ? null : clean(body.x) || null,
+        message: fields.message?.enabled === false ? null : clean(body.message) || clean(body.purpose) || null,
         source: "Landing Page",
         campaignId: page.campaignId || null,
         landingPageId: pageId,

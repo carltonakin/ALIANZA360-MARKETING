@@ -8,6 +8,7 @@ import {
   instagramVideoValidationErrors,
   INSTAGRAM_VIDEO_MAX_BYTES,
 } from "../lib/instagram-video-validation.mjs";
+import { landingPageMediaReferences } from "../lib/landing-page-studio.mjs";
 
 const SCHEDULED_STATES = new Set(["SCHEDULED", "QUEUED", "PUBLISHED"]);
 const SUPPORTED_POST_TYPES = new Set(["POST", "REEL", "STORY"]);
@@ -469,12 +470,15 @@ export class BufferCampaignService {
     const content = await this.repository.getContent();
     const referenced = [
       ...(content.campaigns || []),
-      ...(content.pages || []),
     ].some((item) => [
       item.cloudinaryAssetId,
       item.mediaId,
-      item.pictureCloudinaryAssetId,
-    ].some((assetId) => String(assetId || "") === normalizedId));
+    ].some((assetId) => String(assetId || "") === normalizedId)) ||
+      (content.pages || []).some((page) => [
+        page.cloudinaryAssetId,
+        page.pictureCloudinaryAssetId,
+        ...landingPageMediaReferences(page).map((item) => item.assetId),
+      ].some((assetId) => String(assetId || "") === normalizedId));
     if (referenced) return { deleted: false, referenced: true };
     return {
       deleted: await this.deleteMedia(reference, { env: this.env }),
