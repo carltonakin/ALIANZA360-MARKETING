@@ -14,6 +14,7 @@ import {
 } from "../social/core.mjs";
 import {
   compareTimelineNewestFirst,
+  dedupeTimelineProjection,
   enrichTimelineRecord,
   toBogotaIso,
   toUtcIso,
@@ -50,6 +51,29 @@ test("mixed timeline records sort newest-first using UTC and deterministic IDs",
     "interaction:9",
     "interaction:8",
     "interaction:7",
+    "activity:3",
+  ]);
+});
+
+test("unified timeline collapses only unambiguous interaction activity mirrors", () => {
+  const records = [
+    { id: "interaction:1", interactionType: "DM", occurredAt: "2026-09-10T14:00:00Z", message: "Interested", campaignId: "7" },
+    { id: "activity:1", type: "DIRECT_MESSAGE", occurredAt: "2026-09-10T14:00:00Z", summary: "Interested", campaignId: "7" },
+    { id: "activity:2", type: "NOTE", occurredAt: "2026-09-10T13:00:00Z", summary: "Called lead" },
+  ];
+  assert.deepEqual(dedupeTimelineProjection(records).map((item) => item.id), [
+    "interaction:1",
+    "activity:2",
+  ]);
+
+  const ambiguous = [
+    { id: "interaction:2", interactionType: "COMMENT", occurredAt: "2026-09-10T15:00:00Z", message: "Same" },
+    { id: "interaction:3", interactionType: "COMMENT", occurredAt: "2026-09-10T15:00:00Z", message: "Same" },
+    { id: "activity:3", type: "COMMENT", occurredAt: "2026-09-10T15:00:00Z", summary: "Same" },
+  ];
+  assert.deepEqual(dedupeTimelineProjection(ambiguous).map((item) => item.id), [
+    "interaction:2",
+    "interaction:3",
     "activity:3",
   ]);
 });

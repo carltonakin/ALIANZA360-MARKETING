@@ -5,10 +5,10 @@ import {
   evaluateSocialEvent,
 } from "./intelligence.mjs";
 import {
-  BOGOTA_UTC_OFFSET,
   CRM_AUTHORITATIVE_TIME_ZONE,
   CRM_DISPLAY_TIME_ZONE,
   compareTimelineNewestFirst,
+  dedupeTimelineProjection,
   dualTimestamp,
   enrichTimelineRecord,
   toBogotaIso,
@@ -1001,7 +1001,8 @@ export class InMemorySocialRepository {
       .filter((item) => item.leadId === id)
       .map(enrichTimelineRecord)
       .sort(compareTimelineNewestFirst);
-    const timeline = [...interactions, ...activities].sort(compareTimelineNewestFirst);
+    const timeline = dedupeTimelineProjection([...interactions, ...activities])
+      .sort(compareTimelineNewestFirst);
     const createdAt = dualTimestamp(lead.createdAt);
     const lastScoredAt = dualTimestamp(lead.lastScoredAt);
     const lastContactAt = dualTimestamp(lead.lastContactAt);
@@ -1011,7 +1012,6 @@ export class InMemorySocialRepository {
       timeZone: {
         authoritative: CRM_AUTHORITATIVE_TIME_ZONE,
         display: CRM_DISPLAY_TIME_ZONE,
-        offset: BOGOTA_UTC_OFFSET,
       },
       lead: {
         ...lead,

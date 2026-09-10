@@ -181,7 +181,10 @@ test("dashboard exposes social listener configuration and live diagnostics", asy
   assert.match(page, /Generate AI Suggestion/i);
   assert.match(page, /Send Reply/i);
   assert.match(page, /AI-assisted draft · human approval required/i);
-  assert.match(page, /eventTimestampUtc[\s\S]+eventTimestampBogota/i);
+  assert.match(page, /Intl\.DateTimeFormat\(\)\.resolvedOptions\(\)\.timeZone/i);
+  assert.match(page, /formatDeviceTime/i);
+  assert.match(page, /device local time/i);
+  assert.doesNotMatch(page, /America\/Bogota|formatBogotaTime|data-bogota/i);
   assert.match(page, /item\.sentByUsername/i);
   assert.match(page, /item\.responseStatus/i);
   assert.match(page, /scoreReason/i);

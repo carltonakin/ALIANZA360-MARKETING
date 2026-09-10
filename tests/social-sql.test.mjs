@@ -21,6 +21,8 @@ const landingRegistrationScoringMigrationUrl = new URL("../sql/018_landing_regis
 const landingRepairMigrationUrl = new URL("../sql/019_repair_landing_registration_video.sql", import.meta.url);
 const landingMediaMigrationUrl = new URL("../sql/020_landing_page_picture_media_order_cta.sql", import.meta.url);
 const utcBogotaTimelineMigrationUrl = new URL("../sql/022_utc_bogota_timeline_order.sql", import.meta.url);
+const deviceLocalTimelineMigrationUrl = new URL("../sql/023_device_local_time_timeline_dedup.sql", import.meta.url);
+const timelineDuplicateDryRunUrl = new URL("../sql/diagnostics/timeline_duplicate_dry_run.sql", import.meta.url);
 
 class FakeRequest {
   constructor(executions, result = { recordset: [] }) {
@@ -353,6 +355,24 @@ test("UTC and Bogota timeline migration makes registration time authoritative an
   assert.match(sql, /ORDER BY OccurredAt DESC, LeadActivityId DESC/i);
   assert.doesNotMatch(sql, /UPDATE\s+dbo\.[A-Za-z]+\s+SET\s+OccurredAt\s*=/i);
   assert.doesNotMatch(sql, /GETDATE\(\)|DROP TABLE|TRUNCATE TABLE/i);
+});
+
+test("device-local timeline migration suppresses only exact one-to-one projection mirrors", async () => {
+  const sql = await readFile(deviceLocalTimelineMigrationUrl, "utf8");
+  assert.match(sql, /CREATE OR ALTER PROCEDURE dbo\.SocialLead_GetUnified/i);
+  assert.match(sql, /COUNT_BIG\(\*\) OVER \(PARTITION BY a\.LeadActivityId\)/i);
+  assert.match(sql, /COUNT_BIG\(\*\) OVER \(PARTITION BY si\.SocialInteractionId\)/i);
+  assert.match(sql, /MatchesPerActivity = 1 AND MatchesPerInteraction = 1/i);
+  assert.match(sql, /mirror\.LeadActivityId IS NULL/i);
+  assert.match(sql, /ORDER BY COALESCE\(si\.SentAt, si\.OccurredAt\) DESC, si\.SocialInteractionId DESC/i);
+  assert.match(sql, /ORDER BY a\.OccurredAt DESC, a\.LeadActivityId DESC/i);
+  assert.doesNotMatch(sql, /DELETE\s+FROM|TRUNCATE TABLE|DROP TABLE/i);
+
+  const dryRun = await readFile(timelineDuplicateDryRunUrl, "utf8");
+  assert.match(dryRun, /LeadRoutineEvents[\s\S]+SocialEvents[\s\S]+SocialInteractions/i);
+  assert.match(dryRun, /CONFIRMED_PROJECTION_MIRROR/i);
+  assert.match(dryRun, /AMBIGUOUS_KEEP_VISIBLE/i);
+  assert.doesNotMatch(dryRun, /DELETE\s+FROM|UPDATE\s+dbo\.|TRUNCATE TABLE|DROP TABLE/i);
 });
 
 test("landing registration scoring migration retains the authoritative 100-point model", async () => {
@@ -882,13 +902,16 @@ test("SQL Server repository exposes dual timestamps and merges the timeline newe
         { SocialInteractionId: 3, Platform: "instagram", InteractionType: "REPLY", Direction: "OUTBOUND", OccurredAt: new Date("2026-09-10T12:00:00.000Z"), SentAt: new Date("2026-09-10T15:00:00.000Z"), ResponseStatus: "SENT" },
       ],
       [],
-      [{ LeadActivityId: 9, ActivityType: "NOTE", Summary: "Called lead", OccurredAt: new Date("2026-09-10T13:00:00.000Z") }],
+      [
+        { LeadActivityId: 10, ActivityType: "COMMENT", Summary: "", OccurredAt: occurredAt },
+        { LeadActivityId: 9, ActivityType: "NOTE", Summary: "Called lead", OccurredAt: new Date("2026-09-10T13:00:00.000Z") },
+      ],
       [], [], [], [],
     ],
   });
 
   const unified = await repository.getUnifiedLead(7);
-  assert.deepEqual(unified.timeZone, { authoritative: "UTC", display: "America/Bogota", offset: "-05:00" });
+  assert.deepEqual(unified.timeZone, { authoritative: "UTC", display: "DEVICE_LOCAL" });
   assert.equal(unified.lead.createdAtUtc, "2026-09-10T14:00:00.000Z");
   assert.equal(unified.lead.createdAtBogota, "2026-09-10T09:00:00.000-05:00");
   assert.deepEqual(unified.timeline.map((item) => item.id), [

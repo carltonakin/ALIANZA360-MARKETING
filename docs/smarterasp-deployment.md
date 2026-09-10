@@ -87,8 +87,11 @@ ordering, and an independently persisted CTA enabled state; it does not modify
 the scoring procedure, scoring rules, or temperature thresholds. Migration 021
 installs the modular Landing Page Studio blocks and visitor analytics. Migration
 022 makes MSSQL authoritative for new landing-registration UTC timestamps and
-adds deterministic newest-first ordering to the unified lead query; Bogota time
-is derived for API/UI display and no historical timestamps are rewritten. Create a
+adds deterministic newest-first ordering to the unified lead query. Migration 023
+keeps the same UTC storage while the browser formats timestamps in the active
+device timezone. It also suppresses exact one-to-one interaction/activity mirrors
+from the unified projection without deleting either source record. No historical
+timestamps are rewritten. Create a
 Cloudinary product environment and copy its cloud name, API key,
 and API secret from Cloudinary's API Keys settings. Keep the secret server-side
 and never use a `NEXT_PUBLIC_` name. The optional upload preset must permit
@@ -112,7 +115,7 @@ replaced through the campaign editor before they can be rescheduled.
 
 Landing-page MP4/MOV videos and JPEG/PNG/WebP/GIF pictures reuse the same
 authenticated `/api/media` route and Cloudinary configuration. Deploy migrations
-017 through 022 before publishing the new builder and timeline update. Replacement and removal save
+017 through 023 before publishing the new builder and timeline update. Replacement and removal save
 the landing-page record first, then ask
 Cloudinary to delete the old asset only after both campaign and landing-page
 references have been checked.
@@ -138,9 +141,11 @@ references have been checked.
    Cloudinary, YouTube, Vimeo, or Canva player and optional Cloudinary picture
    appear above the teaser in the saved order. Video should attempt muted inline
    autoplay with controls, and the CTA should appear only when explicitly enabled.
-10. Confirm the Unified Lead Timeline shows the newest event first and presents
-    both America/Bogota (UTC-05:00) and UTC time. Migration 022 is idempotent and
-    does not require new environment variables or an n8n workflow change.
+10. Confirm the Unified Lead Timeline shows the newest event first, shows each
+    source event once, and formats its canonical UTC timestamp in the browser's
+    device timezone. Migrations 022 and 023 are idempotent and do not require new
+    environment variables or an n8n workflow change. The read-only duplicate
+    audit is available in `sql/diagnostics/timeline_duplicate_dry_run.sql`.
 
 The CRM uses its own MSSQL-backed users and sessions. The listener creates the
 `next2thetop` ADMIN account only when absent and never resets it during later

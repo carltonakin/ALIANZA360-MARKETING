@@ -1022,7 +1022,7 @@ test("every routine lead path is idempotent and persists attribution", async () 
   assert.equal(repository.leads.size, 1);
 });
 
-test("landing registration timestamps are server-authored UTC with a Bogota equivalent", async () => {
+test("landing registration timestamps are server-authored UTC and project once in device-local timelines", async () => {
   const { app } = await createApp();
   const request = () => app.handle(serviceRequest("/routine-leads", {
     method: "POST",
@@ -1052,6 +1052,12 @@ test("landing registration timestamps are server-authored UTC with a Bogota equi
   assert.equal(duplicate.duplicate, true);
   assert.equal(duplicate.registeredAtUtc, first.registeredAtUtc);
   assert.equal(duplicate.registeredAtBogota, first.registeredAtBogota);
+
+  const unifiedResponse = await app.handle(serviceRequest(`/leads/${first.leadId}/unified`));
+  const unified = await unifiedResponse.json();
+  assert.equal(unifiedResponse.status, 200);
+  assert.deepEqual(unified.timeZone, { authoritative: "UTC", display: "DEVICE_LOCAL" });
+  assert.equal(unified.timeline.filter((item) => item.interactionType === "LEAD_FORM_SUBMISSION").length, 1);
 });
 
 test("AI uses a structured Responses API result and saves a reviewable SQL draft", async () => {

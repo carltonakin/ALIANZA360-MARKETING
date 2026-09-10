@@ -7,6 +7,7 @@ import {
   useEffect,
   useRef,
   useState,
+  useSyncExternalStore,
 } from "react";
 import { useRouter } from "next/navigation";
 import { LandingVideoPlayer } from "./components/LandingVideoPlayer";
@@ -15,7 +16,7 @@ import { LandingPageStudio } from "./components/LandingPageStudio";
 import type { LandingPageBlock } from "./components/LandingPageBlocks";
 import { browserVideoValidationErrors, INSTAGRAM_VIDEO_MAX_BYTES } from "../lib/instagram-video-validation.mjs";
 import { LANDING_PAGE_SUBMIT_TEXT, normalizeExternalVideoUrl } from "../lib/landing-page-video.mjs";
-import { compareTimelineNewestFirst } from "../lib/crm-time.mjs";
+import { compareTimelineNewestFirst, dedupeTimelineProjection } from "../lib/crm-time.mjs";
 import type { AuthUser } from "./auth/shared";
 import Reports from "./reports";
 
@@ -195,7 +196,7 @@ type ClientVideoMetadata = {
 };
 
 type UnifiedLead = {
-  timeZone: { authoritative: "UTC"; display: "America/Bogota"; offset: "-05:00" };
+  timeZone: { authoritative: "UTC"; display: "DEVICE_LOCAL" };
   lead: Lead;
   socialAccounts: Array<{ id: string; platform: string; platformUserId?: string; username: string; displayName: string; profileUrl?: string | null }>;
   interactions: Array<{
@@ -1725,6 +1726,7 @@ function Lead360View({
   data: UnifiedLead;
   onRefresh: () => Promise<UnifiedLead>;
 }) {
+  const deviceTimeZone = useDeviceTimeZone();
   const inboundTargets = data.interactions
     .filter((item) =>
       item.platform === "instagram" &&
@@ -1736,7 +1738,8 @@ function Lead360View({
       item.platform === "instagram" &&
       ["COMMENT", "REPLY", "DM", "DIRECT_MESSAGE", "STORY_REPLY"].includes(item.interactionType))
     .sort(compareTimelineNewestFirst);
-  const unifiedTimeline = [...(data.timeline || data.interactions)].sort(compareTimelineNewestFirst);
+  const unifiedTimeline = dedupeTimelineProjection([...(data.timeline || data.interactions)])
+    .sort(compareTimelineNewestFirst);
   const latestInteraction = interactionHistory[0];
   const [selectedTargetId, setSelectedTargetId] = useState(inboundTargets[0]?.id || "");
   const [replyText, setReplyText] = useState("");
@@ -1892,9 +1895,9 @@ function Lead360View({
         {latestInteraction ? (
           <>
             <p>{latestInteraction.message || latestInteraction.intent.replaceAll("_", " ")}</p>
-            <DualTimestamp
+            <DeviceTimestamp
               utc={latestInteraction.eventTimestampUtc || latestInteraction.sentAtUtc || latestInteraction.occurredAtUtc || latestInteraction.occurredAt}
-              bogota={latestInteraction.eventTimestampBogota || latestInteraction.sentAtBogota || latestInteraction.occurredAtBogota}
+              deviceTimeZone={deviceTimeZone}
             />
           </>
         ) : (
@@ -1912,7 +1915,7 @@ function Lead360View({
             <div><dt>Owner</dt><dd>{data.lead.assignedSalesperson || "Unassigned"}</dd></div>
             <div><dt>Source</dt><dd>{data.lead.source || "Manual"}</dd></div>
             <div><dt>Platform</dt><dd>{latestInteraction?.platform || data.socialAccounts[0]?.platform || "—"}</dd></div>
-            <div><dt>Last interaction</dt><dd><DualTimestamp utc={data.lead.lastInteractionAt || latestInteraction?.occurredAt || null} compact /></dd></div>
+            <div><dt>Last interaction</dt><dd><DeviceTimestamp utc={data.lead.lastInteractionAt || latestInteraction?.occurredAt || null} deviceTimeZone={deviceTimeZone} compact /></dd></div>
           </dl>
         </article>
         <article>
@@ -1958,7 +1961,7 @@ function Lead360View({
               >
                 {inboundTargets.map((item) => (
                   <option key={item.id} value={item.id}>
-                    {displayInteractionType(item.interactionType)} · {formatBogotaTime(item.occurredAt)} Bogota · {formatUtcTime(item.occurredAt)} · {(item.message || item.intent).slice(0, 70)}
+                    {displayInteractionType(item.interactionType)} · {formatDeviceTime(item.occurredAt, deviceTimeZone)} · {(item.message || item.intent).slice(0, 70)}
                   </option>
                 ))}
               </select>
@@ -2036,9 +2039,9 @@ function Lead360View({
                       .filter(Boolean).join(" · ") || "CRM activity"}
               </em>
             </span>
-            <DualTimestamp
+            <DeviceTimestamp
               utc={item.eventTimestampUtc || item.sentAtUtc || item.occurredAtUtc || item.sentAt || item.occurredAt || null}
-              bogota={item.eventTimestampBogota || item.sentAtBogota || item.occurredAtBogota}
+              deviceTimeZone={deviceTimeZone}
             />
           </div>
           );
@@ -2230,48 +2233,56 @@ function formatSocialTime(value: string | null) {
   return Number.isNaN(parsed.getTime()) ? value : parsed.toLocaleString();
 }
 
-function formatUtcTime(value: string | null) {
+function formatDeviceTime(value: string | null, deviceTimeZone: string | null) {
   if (!value) return "Not yet";
   const parsed = new Date(value);
   if (Number.isNaN(parsed.getTime())) return value;
-  return `${parsed.toLocaleString(undefined, {
-    timeZone: "UTC",
+  const options: Intl.DateTimeFormatOptions = {
     year: "numeric",
     month: "short",
     day: "numeric",
     hour: "2-digit",
     minute: "2-digit",
-  })} UTC`;
+    timeZoneName: "short",
+  };
+  if (deviceTimeZone) options.timeZone = deviceTimeZone;
+  else if (deviceTimeZone === null) options.timeZone = "UTC";
+  return parsed.toLocaleString(undefined, options);
 }
 
-function formatBogotaTime(value: string | null) {
-  if (!value) return "Not yet";
-  const parsed = new Date(value);
-  if (Number.isNaN(parsed.getTime())) return value;
-  return parsed.toLocaleString(undefined, {
-    timeZone: "America/Bogota",
-    year: "numeric",
-    month: "short",
-    day: "numeric",
-    hour: "2-digit",
-    minute: "2-digit",
-  });
+const subscribeToDeviceTimeZone = () => () => {};
+const readDeviceTimeZone = (): string | null => {
+  try {
+    return Intl.DateTimeFormat().resolvedOptions().timeZone || "";
+  } catch {
+    return "";
+  }
+};
+const readServerTimeZone = (): string | null => null;
+
+function useDeviceTimeZone() {
+  return useSyncExternalStore(subscribeToDeviceTimeZone, readDeviceTimeZone, readServerTimeZone);
 }
 
-function DualTimestamp({
+function DeviceTimestamp({
   utc,
-  bogota = null,
+  deviceTimeZone,
   compact = false,
 }: {
   utc: string | null;
-  bogota?: string | null;
+  deviceTimeZone: string | null;
   compact?: boolean;
 }) {
-  if (!utc) return <span className="dual-timestamp">Not yet</span>;
+  if (!utc) return <span className="device-timestamp">Not yet</span>;
+  const timeZoneLabel = deviceTimeZone === null
+    ? "UTC · detecting device timezone"
+    : deviceTimeZone
+      ? `${deviceTimeZone} · device local time`
+      : "Device local time";
   return (
-    <time className={`dual-timestamp${compact ? " compact" : ""}`} dateTime={utc} data-bogota={bogota || undefined}>
-      <span>{formatBogotaTime(utc)} (Bogota, UTC-05:00)</span>
-      <small>UTC: {formatUtcTime(utc).replace(/ UTC$/, "")}</small>
+    <time className={`device-timestamp${compact ? " compact" : ""}`} dateTime={utc}>
+      <span>{formatDeviceTime(utc, deviceTimeZone)}</span>
+      <small>{timeZoneLabel}</small>
     </time>
   );
 }

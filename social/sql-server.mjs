@@ -2,10 +2,10 @@ import { decryptChannelSecrets, publicChannelConfiguration } from "./channel-con
 import { openSqlConnection } from "./sql-connection.mjs";
 import { resolvePersistedLandingPageMedia } from "../lib/landing-page-video.mjs";
 import {
-  BOGOTA_UTC_OFFSET,
   CRM_AUTHORITATIVE_TIME_ZONE,
   CRM_DISPLAY_TIME_ZONE,
   compareTimelineNewestFirst,
+  dedupeTimelineProjection,
   dualTimestamp,
   enrichTimelineRecord,
   toBogotaIso,
@@ -1370,7 +1370,6 @@ export class SqlServerRepository {
       timeZone: {
         authoritative: CRM_AUTHORITATIVE_TIME_ZONE,
         display: CRM_DISPLAY_TIME_ZONE,
-        offset: BOGOTA_UTC_OFFSET,
       },
       lead: mapLead(row),
       socialAccounts: (sets[1] || []).map((item) => ({
@@ -1401,7 +1400,8 @@ export class SqlServerRepository {
       quotes: sets[6] || [],
       appointments: sets[7] || [],
       conversionHistory: sets[8] || [],
-      timeline: [...interactions, ...activities].sort(compareTimelineNewestFirst),
+      timeline: dedupeTimelineProjection([...interactions, ...activities])
+        .sort(compareTimelineNewestFirst),
     };
   }
 
