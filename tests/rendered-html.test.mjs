@@ -177,15 +177,15 @@ test("dashboard exposes social listener configuration and live diagnostics", asy
   assert.match(page, /label="Last Intent" name="lastIntent"/i);
   assert.match(page, /AI Response[\s\S]+?<textarea[\s\S]+?name="crmnotes"/i);
   assert.match(page, /LATEST COMMENT OR DM/i);
-  assert.match(page, /Two-way Instagram history/i);
+  assert.match(page, /Unified lead timeline/i);
   assert.match(page, /Generate AI Suggestion/i);
   assert.match(page, /Send Reply/i);
   assert.match(page, /AI-assisted draft · human approval required/i);
-  assert.match(page, /formatUtcTime\(item\.sentAt \|\| item\.occurredAt\)/i);
+  assert.match(page, /eventTimestampUtc[\s\S]+eventTimestampBogota/i);
   assert.match(page, /item\.sentByUsername/i);
   assert.match(page, /item\.responseStatus/i);
   assert.match(page, /scoreReason/i);
-  assert.match(page, /item\.direction\.toLowerCase\(\)/i);
+  assert.match(page, /direction\.toLowerCase\(\)/i);
   assert.match(page, /\{\(l\.intent \|\| "—"\)\.replaceAll\("_", " "\)\}/i);
   assert.match(page, /\{l\.crmNotes \|\| "—"\}/i);
   const leadHeader = page.match(/className="data-table lead-cols table-head">([\s\S]+?)<\/div>/i);

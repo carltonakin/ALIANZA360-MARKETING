@@ -12,9 +12,47 @@ import {
   verifyMetaSignature,
   verifyMetaWebhookChallenge,
 } from "../social/core.mjs";
+import {
+  compareTimelineNewestFirst,
+  enrichTimelineRecord,
+  toBogotaIso,
+  toUtcIso,
+} from "../lib/crm-time.mjs";
 
 const silentLogger = { info() {}, error() {}, log() {} };
 const noSleep = async () => {};
+
+test("CRM timestamps expose UTC and Bogota without shifting valid instants twice", () => {
+  assert.equal(toUtcIso("2026-09-10T14:00:00Z"), "2026-09-10T14:00:00.000Z");
+  assert.equal(toUtcIso("2026-09-10 14:00:00.000"), "2026-09-10T14:00:00.000Z");
+  assert.equal(toUtcIso("Sep 10, 2026 2:00 PM"), null);
+  assert.equal(toBogotaIso("2026-09-10T14:00:00Z"), "2026-09-10T09:00:00.000-05:00");
+  assert.equal(toBogotaIso("2026-09-10T09:00:00-05:00"), "2026-09-10T09:00:00.000-05:00");
+
+  const registration = enrichTimelineRecord({
+    id: "interaction:7",
+    interactionType: "LEAD_FORM_SUBMISSION",
+    occurredAt: "2026-09-10T14:00:00Z",
+  });
+  assert.equal(registration.registeredAtUtc, "2026-09-10T14:00:00.000Z");
+  assert.equal(registration.registeredAtBogota, "2026-09-10T09:00:00.000-05:00");
+});
+
+test("mixed timeline records sort newest-first using UTC and deterministic IDs", () => {
+  const records = [
+    enrichTimelineRecord({ id: "activity:3", type: "NOTE", occurredAt: "2026-09-10T13:00:00Z" }),
+    enrichTimelineRecord({ id: "interaction:8", interactionType: "DM", occurredAt: "2026-09-10T14:00:00Z" }),
+    enrichTimelineRecord({ id: "interaction:9", interactionType: "REPLY", direction: "OUTBOUND", occurredAt: "2026-09-10T12:00:00Z", sentAt: "2026-09-10T15:00:00Z" }),
+    enrichTimelineRecord({ id: "interaction:7", interactionType: "COMMENT", occurredAt: "2026-09-10T14:00:00Z" }),
+  ].sort(compareTimelineNewestFirst);
+
+  assert.deepEqual(records.map((item) => item.id), [
+    "interaction:9",
+    "interaction:8",
+    "interaction:7",
+    "activity:3",
+  ]);
+});
 
 function providerResponse(body, status = 200) {
   return new Response(JSON.stringify(body), {

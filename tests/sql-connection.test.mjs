@@ -23,6 +23,7 @@ test("builds mssql config using instanceName instead of port", () => {
   assert.equal(config.options.instanceName, "SQLEXPRESS");
   assert.equal(config.port, undefined);
   assert.equal(config.options.encrypt, true);
+  assert.equal(config.options.useUTC, true);
   assert.equal(config.options.trustServerCertificate, true);
   assert.equal(describeSqlTarget(config), "localhost\\SQLEXPRESS");
 });

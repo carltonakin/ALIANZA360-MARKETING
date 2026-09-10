@@ -4,6 +4,15 @@ import {
   DEFAULT_TEMPERATURE_THRESHOLDS,
   evaluateSocialEvent,
 } from "./intelligence.mjs";
+import {
+  BOGOTA_UTC_OFFSET,
+  CRM_AUTHORITATIVE_TIME_ZONE,
+  CRM_DISPLAY_TIME_ZONE,
+  compareTimelineNewestFirst,
+  dualTimestamp,
+  enrichTimelineRecord,
+  toBogotaIso,
+} from "../lib/crm-time.mjs";
 
 const CHANNEL_NAMES = Object.freeze({
   instagram: "Instagram",
@@ -857,10 +866,10 @@ export class InMemorySocialRepository {
       const scoring = calculateHistoricalLeadScore({ lead: savedLead, interactions: history });
       const latestInbound = history
         .filter((item) => String(item.direction || "INBOUND").toUpperCase() === "INBOUND")
-        .sort((left, right) => String(right.occurredAt).localeCompare(String(left.occurredAt)))[0];
+        .sort(compareTimelineNewestFirst)[0];
       const latestOutbound = history
         .filter((item) => String(item.direction || "").toUpperCase() === "OUTBOUND")
-        .sort((left, right) => String(right.occurredAt).localeCompare(String(left.occurredAt)))[0];
+        .sort(compareTimelineNewestFirst)[0];
       savedLead = {
         ...savedLead,
         leadScore: scoring.score,
@@ -983,14 +992,40 @@ export class InMemorySocialRepository {
     const lead = (await this.getLeads(500)).find((item) => item.id === id);
     if (!lead) return null;
     const accounts = [...this.socialAccounts.values()].filter((item) => item.leadId === id);
-    const interactions = [...this.interactions.values()].filter((item) => item.leadId === id)
-      .sort((a, b) => String(b.occurredAt).localeCompare(String(a.occurredAt)));
+    const interactions = [...this.interactions.values()]
+      .filter((item) => item.leadId === id)
+      .map(enrichTimelineRecord)
+      .sort(compareTimelineNewestFirst);
     const conversations = [...this.conversations.values()].filter((item) => item.leadId === id);
-    const activities = this.leadActivities.filter((item) => item.leadId === id);
-    const timeline = [...interactions, ...activities].sort((a, b) =>
-      String(b.occurredAt).localeCompare(String(a.occurredAt)));
+    const activities = this.leadActivities
+      .filter((item) => item.leadId === id)
+      .map(enrichTimelineRecord)
+      .sort(compareTimelineNewestFirst);
+    const timeline = [...interactions, ...activities].sort(compareTimelineNewestFirst);
+    const createdAt = dualTimestamp(lead.createdAt);
+    const lastScoredAt = dualTimestamp(lead.lastScoredAt);
+    const lastContactAt = dualTimestamp(lead.lastContactAt);
+    const lastInteractionAt = dualTimestamp(lead.lastInteractionAt);
+    const lastResponseAt = dualTimestamp(lead.lastResponseAt);
     return {
-      lead,
+      timeZone: {
+        authoritative: CRM_AUTHORITATIVE_TIME_ZONE,
+        display: CRM_DISPLAY_TIME_ZONE,
+        offset: BOGOTA_UTC_OFFSET,
+      },
+      lead: {
+        ...lead,
+        createdAtUtc: createdAt.utc,
+        createdAtBogota: createdAt.bogota,
+        lastScoredAtUtc: lastScoredAt.utc,
+        lastScoredAtBogota: lastScoredAt.bogota,
+        lastContactAtUtc: lastContactAt.utc,
+        lastContactAtBogota: lastContactAt.bogota,
+        lastInteractionAtUtc: lastInteractionAt.utc,
+        lastInteractionAtBogota: lastInteractionAt.bogota,
+        lastResponseAtUtc: lastResponseAt.utc,
+        lastResponseAtBogota: lastResponseAt.bogota,
+      },
       socialAccounts: accounts,
       interactions,
       conversations,
@@ -1251,10 +1286,10 @@ export class InMemorySocialRepository {
     const scoring = calculateHistoricalLeadScore({ lead, interactions, asOf });
     const latestInbound = interactions
       .filter((item) => String(item.direction || "INBOUND").toUpperCase() === "INBOUND")
-      .sort((left, right) => String(right.occurredAt).localeCompare(String(left.occurredAt)))[0];
+      .sort(compareTimelineNewestFirst)[0];
     const latestOutbound = interactions
       .filter((item) => String(item.direction || "").toUpperCase() === "OUTBOUND")
-      .sort((left, right) => String(right.occurredAt).localeCompare(String(left.occurredAt)))[0];
+      .sort(compareTimelineNewestFirst)[0];
     this.leads.set(key, {
       ...lead,
       leadScore: scoring.score,
@@ -2010,12 +2045,18 @@ export class InMemorySocialRepository {
         updatedAt: new Date().toISOString(),
       });
     }
+    const occurredAt = input.routine === "landing_page_registration"
+      ? new Date().toISOString()
+      : input.occurredAt || new Date().toISOString();
     const result = {
       leadId: Number(String(lead.id).replace("social:", "")),
       duplicate: false,
       routine: input.routine,
       landingPageId: input.landingPageId || null,
       campaignId: input.campaignId || null,
+      occurredAt,
+      registeredAtUtc: input.routine === "landing_page_registration" ? occurredAt : null,
+      registeredAtBogota: input.routine === "landing_page_registration" ? toBogotaIso(occurredAt) : null,
     };
     this.routineEvents.set(key, result);
     if (input.routine === "landing_page_registration" && input.landingPageId && this.pages.has(input.landingPageId)) {

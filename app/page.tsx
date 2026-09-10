@@ -15,6 +15,7 @@ import { LandingPageStudio } from "./components/LandingPageStudio";
 import type { LandingPageBlock } from "./components/LandingPageBlocks";
 import { browserVideoValidationErrors, INSTAGRAM_VIDEO_MAX_BYTES } from "../lib/instagram-video-validation.mjs";
 import { LANDING_PAGE_SUBMIT_TEXT, normalizeExternalVideoUrl } from "../lib/landing-page-video.mjs";
+import { compareTimelineNewestFirst } from "../lib/crm-time.mjs";
 import type { AuthUser } from "./auth/shared";
 import Reports from "./reports";
 
@@ -194,6 +195,7 @@ type ClientVideoMetadata = {
 };
 
 type UnifiedLead = {
+  timeZone: { authoritative: "UTC"; display: "America/Bogota"; offset: "-05:00" };
   lead: Lead;
   socialAccounts: Array<{ id: string; platform: string; platformUserId?: string; username: string; displayName: string; profileUrl?: string | null }>;
   interactions: Array<{
@@ -206,6 +208,12 @@ type UnifiedLead = {
     direction: "INBOUND" | "OUTBOUND";
     message: string;
     occurredAt: string;
+    occurredAtUtc?: string | null;
+    occurredAtBogota?: string | null;
+    eventTimestampUtc?: string | null;
+    eventTimestampBogota?: string | null;
+    registeredAtUtc?: string | null;
+    registeredAtBogota?: string | null;
     intent: string;
     intentConfidence?: number | null;
     sentiment: string;
@@ -215,6 +223,8 @@ type UnifiedLead = {
     sentByUsername?: string | null;
     responseStatus?: "PENDING" | "SENT" | "FAILED";
     sentAt?: string | null;
+    sentAtUtc?: string | null;
+    sentAtBogota?: string | null;
     deliveryError?: string | null;
   }>;
   conversations: Array<{ id: string; platform: string; importantMessage: string; lastMessageAt: string; status: string }>;
@@ -223,6 +233,32 @@ type UnifiedLead = {
   quotes: unknown[];
   appointments: unknown[];
   conversionHistory: unknown[];
+  timeline: Array<{
+    id: string;
+    type?: string;
+    interactionType?: string;
+    platform?: string | null;
+    direction?: "INBOUND" | "OUTBOUND";
+    message?: string;
+    summary?: string;
+    intent?: string;
+    sentiment?: string;
+    sourceType?: string;
+    responseMode?: string | null;
+    responseStatus?: string | null;
+    sentByUsername?: string | null;
+    deliveryError?: string | null;
+    occurredAt?: string | null;
+    occurredAtUtc?: string | null;
+    occurredAtBogota?: string | null;
+    sentAt?: string | null;
+    sentAtUtc?: string | null;
+    sentAtBogota?: string | null;
+    eventTimestampUtc?: string | null;
+    eventTimestampBogota?: string | null;
+    registeredAtUtc?: string | null;
+    registeredAtBogota?: string | null;
+  }>;
 };
 
 type Landing = {
@@ -1694,13 +1730,14 @@ function Lead360View({
       item.platform === "instagram" &&
       item.direction === "INBOUND" &&
       ["COMMENT", "DM", "DIRECT_MESSAGE", "STORY_REPLY"].includes(item.interactionType))
-    .sort((left, right) => String(right.occurredAt).localeCompare(String(left.occurredAt)));
+    .sort(compareTimelineNewestFirst);
   const interactionHistory = data.interactions
     .filter((item) =>
       item.platform === "instagram" &&
       ["COMMENT", "REPLY", "DM", "DIRECT_MESSAGE", "STORY_REPLY"].includes(item.interactionType))
-    .sort((left, right) => String(left.occurredAt).localeCompare(String(right.occurredAt)));
-  const latestInteraction = interactionHistory.at(-1);
+    .sort(compareTimelineNewestFirst);
+  const unifiedTimeline = [...(data.timeline || data.interactions)].sort(compareTimelineNewestFirst);
+  const latestInteraction = interactionHistory[0];
   const [selectedTargetId, setSelectedTargetId] = useState(inboundTargets[0]?.id || "");
   const [replyText, setReplyText] = useState("");
   const [responseMode, setResponseMode] = useState<"MANUAL" | "AI_ASSISTED">("MANUAL");
@@ -1855,7 +1892,10 @@ function Lead360View({
         {latestInteraction ? (
           <>
             <p>{latestInteraction.message || latestInteraction.intent.replaceAll("_", " ")}</p>
-            <time>{formatSocialTime(latestInteraction.occurredAt)}</time>
+            <DualTimestamp
+              utc={latestInteraction.eventTimestampUtc || latestInteraction.sentAtUtc || latestInteraction.occurredAtUtc || latestInteraction.occurredAt}
+              bogota={latestInteraction.eventTimestampBogota || latestInteraction.sentAtBogota || latestInteraction.occurredAtBogota}
+            />
           </>
         ) : (
           <p>No comment or DM has been recorded for this lead.</p>
@@ -1872,7 +1912,7 @@ function Lead360View({
             <div><dt>Owner</dt><dd>{data.lead.assignedSalesperson || "Unassigned"}</dd></div>
             <div><dt>Source</dt><dd>{data.lead.source || "Manual"}</dd></div>
             <div><dt>Platform</dt><dd>{latestInteraction?.platform || data.socialAccounts[0]?.platform || "—"}</dd></div>
-            <div><dt>Last interaction</dt><dd>{formatSocialTime(data.lead.lastInteractionAt || latestInteraction?.occurredAt || null)}</dd></div>
+            <div><dt>Last interaction</dt><dd><DualTimestamp utc={data.lead.lastInteractionAt || latestInteraction?.occurredAt || null} compact /></dd></div>
           </dl>
         </article>
         <article>
@@ -1918,7 +1958,7 @@ function Lead360View({
               >
                 {inboundTargets.map((item) => (
                   <option key={item.id} value={item.id}>
-                    {displayInteractionType(item.interactionType)} · {formatUtcTime(item.occurredAt)} · {(item.message || item.intent).slice(0, 70)}
+                    {displayInteractionType(item.interactionType)} · {formatBogotaTime(item.occurredAt)} Bogota · {formatUtcTime(item.occurredAt)} · {(item.message || item.intent).slice(0, 70)}
                   </option>
                 ))}
               </select>
@@ -1969,32 +2009,40 @@ function Lead360View({
           <p>No inbound Instagram comment or DM is available to reply to.</p>
         )}
       </section>
-      <h3>Two-way Instagram history</h3>
+      <h3>Unified lead timeline</h3>
       <div className="lead-360-timeline">
-        {interactionHistory.length ? interactionHistory.map((item) => (
+        {unifiedTimeline.length ? unifiedTimeline.map((item) => {
+          const eventType = item.interactionType || item.type || "CRM activity";
+          const direction = item.direction || null;
+          return (
           <div key={item.id}>
             <i />
             <span>
               <strong className="interaction-history-heading">
-                <b>{displayInteractionType(item.interactionType)}</b>
-                <b className={item.direction.toLowerCase()}>{item.direction}</b>
-                <b>{item.platform}</b>
+                <b>{displayInteractionType(eventType)}</b>
+                {direction ? <b className={direction.toLowerCase()}>{direction}</b> : null}
+                {item.platform ? <b>{item.platform}</b> : null}
               </strong>
-              <small>{item.message || item.intent}</small>
+              <small>{item.message || item.summary || item.intent || eventType}</small>
               <em>
-                {item.direction === "OUTBOUND"
+                {direction === "OUTBOUND"
                   ? [
                       item.responseMode || "AI_AUTOMATIC",
                       item.sentByUsername ? `sent by ${item.sentByUsername}` : null,
                       item.responseStatus || "SENT",
                       item.deliveryError || null,
                     ].filter(Boolean).join(" · ")
-                  : `${item.intent.replaceAll("_", " ")} · ${item.sentiment} · ${item.sourceType}`}
+                  : [item.intent?.replaceAll("_", " "), item.sentiment, item.sourceType]
+                      .filter(Boolean).join(" · ") || "CRM activity"}
               </em>
             </span>
-            <time>{formatUtcTime(item.sentAt || item.occurredAt)}</time>
+            <DualTimestamp
+              utc={item.eventTimestampUtc || item.sentAtUtc || item.occurredAtUtc || item.sentAt || item.occurredAt || null}
+              bogota={item.eventTimestampBogota || item.sentAtBogota || item.occurredAtBogota}
+            />
           </div>
-        )) : <p>No comment or DM history has been recorded yet.</p>}
+          );
+        }) : <p>No CRM timeline activity has been recorded yet.</p>}
       </div>
     </section>
   );
@@ -2194,6 +2242,38 @@ function formatUtcTime(value: string | null) {
     hour: "2-digit",
     minute: "2-digit",
   })} UTC`;
+}
+
+function formatBogotaTime(value: string | null) {
+  if (!value) return "Not yet";
+  const parsed = new Date(value);
+  if (Number.isNaN(parsed.getTime())) return value;
+  return parsed.toLocaleString(undefined, {
+    timeZone: "America/Bogota",
+    year: "numeric",
+    month: "short",
+    day: "numeric",
+    hour: "2-digit",
+    minute: "2-digit",
+  });
+}
+
+function DualTimestamp({
+  utc,
+  bogota = null,
+  compact = false,
+}: {
+  utc: string | null;
+  bogota?: string | null;
+  compact?: boolean;
+}) {
+  if (!utc) return <span className="dual-timestamp">Not yet</span>;
+  return (
+    <time className={`dual-timestamp${compact ? " compact" : ""}`} dateTime={utc} data-bogota={bogota || undefined}>
+      <span>{formatBogotaTime(utc)} (Bogota, UTC-05:00)</span>
+      <small>UTC: {formatUtcTime(utc).replace(/ UTC$/, "")}</small>
+    </time>
+  );
 }
 
 function channelRequirement(channel: SocialChannelConfig["channel"]) {

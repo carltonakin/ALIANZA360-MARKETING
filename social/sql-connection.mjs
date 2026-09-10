@@ -51,6 +51,9 @@ export function buildSqlConfig(env = process.env) {
     password,
     options: {
       encrypt: toBoolean(env.DB_ENCRYPT ?? env.SQL_SERVER_ENCRYPT, true),
+      // DATETIME2 values in this CRM represent UTC. Keep the driver from
+      // interpreting them through the SmarterASP host's local timezone.
+      useUTC: true,
       trustServerCertificate: toBoolean(
         env.DB_TRUST_SERVER_CERTIFICATE ?? env.SQL_SERVER_TRUST_SERVER_CERTIFICATE,
         false,

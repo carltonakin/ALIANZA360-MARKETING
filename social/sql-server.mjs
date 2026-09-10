@@ -1,9 +1,27 @@
 import { decryptChannelSecrets, publicChannelConfiguration } from "./channel-config.mjs";
 import { openSqlConnection } from "./sql-connection.mjs";
 import { resolvePersistedLandingPageMedia } from "../lib/landing-page-video.mjs";
+import {
+  BOGOTA_UTC_OFFSET,
+  CRM_AUTHORITATIVE_TIME_ZONE,
+  CRM_DISPLAY_TIME_ZONE,
+  compareTimelineNewestFirst,
+  dualTimestamp,
+  enrichTimelineRecord,
+  toBogotaIso,
+  toUtcIso,
+} from "../lib/crm-time.mjs";
 
 function iso(value) {
-  return value?.toISOString?.() || value || null;
+  return toUtcIso(value) || value || null;
+}
+
+function timestampFields(name, value) {
+  const timestamp = dualTimestamp(value);
+  return {
+    [`${name}Utc`]: timestamp.utc,
+    [`${name}Bogota`]: timestamp.bogota,
+  };
 }
 
 function jsonValue(value, fallback = null) {
@@ -56,8 +74,10 @@ function mapLead(row) {
       : `${String(row.SourceChannel || "Manual")[0].toUpperCase()}${String(row.SourceChannel || "Manual").slice(1)}`,
     status: row.Status || "New",
     value: Number(row.Value || 0),
-    createdAt: row.CreatedAt?.toISOString?.() || row.CreatedAt,
+    createdAt: iso(row.CreatedAt),
+    ...timestampFields("createdAt", row.CreatedAt),
     updatedAt: iso(row.UpdatedAt),
+    ...timestampFields("updatedAt", row.UpdatedAt),
     firstName: row.FirstName || "",
     lastName: row.LastName || "",
     displayName: row.DisplayName || row.Name || "",
@@ -75,6 +95,7 @@ function mapLead(row) {
     sourceScore: Number(row.SourceScore || 0),
     scoreReason: row.ScoreReason || "",
     lastScoredAt: iso(row.LastScoredAt),
+    ...timestampFields("lastScoredAt", row.LastScoredAt),
     intent: row.LastIntent || "OTHER",
     productServiceInterest: row.ProductServiceInterest || "",
     qualification: jsonValue(row.QualificationJson, {}),
@@ -87,11 +108,15 @@ function mapLead(row) {
     convertedCustomer: Boolean(row.ConvertedCustomer),
     lostReason: row.LostReason || "",
     firstContactAt: iso(row.FirstContactAt),
+    ...timestampFields("firstContactAt", row.FirstContactAt),
     lastContactAt: iso(row.LastContactAt),
+    ...timestampFields("lastContactAt", row.LastContactAt),
     lastInteractionAt: iso(row.LastInteractionAt),
+    ...timestampFields("lastInteractionAt", row.LastInteractionAt),
     lastInteractionType: row.LastInteractionType || null,
     lastInteractionText: row.LastInteractionText || "",
     lastResponseAt: iso(row.LastResponseAt),
+    ...timestampFields("lastResponseAt", row.LastResponseAt),
     lastResponseType: row.LastResponseType || null,
     lastResponseText: row.LastResponseText || "",
   };
@@ -101,7 +126,9 @@ function mapLeadInteraction(row) {
   const qualification = jsonValue(row.QualificationJson, {});
   const direction = String(row.Direction || "INBOUND").toUpperCase();
   const responseStatus = row.ResponseStatus || (direction === "OUTBOUND" ? "SENT" : "PENDING");
-  return {
+  const occurredAt = iso(row.OccurredAt);
+  const sentAt = iso(row.SentAt) || (direction === "OUTBOUND" && responseStatus === "SENT" ? occurredAt : null);
+  return enrichTimelineRecord({
     id: `interaction:${row.SocialInteractionId ?? row.InteractionId}`,
     platform: row.Platform || null,
     externalInteractionId: row.ExternalInteractionId || null,
@@ -114,7 +141,7 @@ function mapLeadInteraction(row) {
       : null,
     interactionType: row.InteractionType,
     message: row.MessageText || "",
-    occurredAt: iso(row.OccurredAt),
+    occurredAt,
     direction,
     intent: row.Intent,
     intentConfidence: row.IntentConfidence === null || row.IntentConfidence === undefined
@@ -136,15 +163,16 @@ function mapLeadInteraction(row) {
       : Number(row.SentByUserId),
     sentByUsername: row.SentByUsername || null,
     responseStatus,
-    sentAt: iso(row.SentAt) || (direction === "OUTBOUND" && responseStatus === "SENT" ? iso(row.OccurredAt) : null),
+    sentAt,
     deliveryError: row.DeliveryError || null,
     qualification,
     aiClassification: qualification.aiClassification || {},
     processedAt: iso(row.ProcessedAt),
+    ...timestampFields("processedAt", row.ProcessedAt),
     duplicate: Boolean(row.Duplicate),
     duplicateCompletion: Boolean(row.DuplicateCompletion),
     queueStatus: row.QueueStatus || null,
-  };
+  });
 }
 
 function mapLeadReplyClaim(row) {
@@ -1034,10 +1062,18 @@ export class SqlServerRepository {
     request.input("LandingPageId", this.sql.BigInt, numericId(input.landingPageId));
     request.input("WebinarId", this.sql.BigInt, numericId(input.webinarId));
     request.input("SourceDetail", this.sql.NVarChar(1000), input.sourceDetail);
-    request.input("OccurredAt", this.sql.DateTime2, new Date(input.occurredAt));
+    const occurredAtInput = input.routine === "landing_page_registration" ? null : input.occurredAt;
+    request.input("OccurredAt", this.sql.DateTime2, occurredAtInput ? new Date(occurredAtInput) : null);
     const response = await request.execute("dbo.CRMLead_UpsertFromRoutine");
     const row = response.recordset?.[0];
-    return row ? { leadId: Number(row.LeadId), duplicate: Boolean(row.Duplicate) } : null;
+    const occurredAt = iso(row?.OccurredAt);
+    return row ? {
+      leadId: Number(row.LeadId),
+      duplicate: Boolean(row.Duplicate),
+      occurredAt,
+      registeredAtUtc: input.routine === "landing_page_registration" ? occurredAt : null,
+      registeredAtBogota: input.routine === "landing_page_registration" ? toBogotaIso(occurredAt) : null,
+    } : null;
   }
 
   async getLeads(limit = 100) {
@@ -1321,16 +1357,21 @@ export class SqlServerRepository {
     const sets = response.recordsets || [];
     const row = sets[0]?.[0];
     if (!row) return null;
-    const interactions = (sets[2] || []).map(mapLeadInteraction);
-    const activities = (sets[4] || []).map((item) => ({
+    const interactions = (sets[2] || []).map(mapLeadInteraction).sort(compareTimelineNewestFirst);
+    const activities = (sets[4] || []).map((item) => enrichTimelineRecord({
       id: `activity:${item.LeadActivityId}`,
       type: item.ActivityType,
       summary: item.Summary || "",
       sourceReference: item.SourceReference || null,
       campaignId: item.CampaignExternalId || null,
       occurredAt: iso(item.OccurredAt),
-    }));
+    })).sort(compareTimelineNewestFirst);
     return {
+      timeZone: {
+        authoritative: CRM_AUTHORITATIVE_TIME_ZONE,
+        display: CRM_DISPLAY_TIME_ZONE,
+        offset: BOGOTA_UTC_OFFSET,
+      },
       lead: mapLead(row),
       socialAccounts: (sets[1] || []).map((item) => ({
         id: `account:${item.SocialAccountId}`,
@@ -1340,6 +1381,7 @@ export class SqlServerRepository {
         displayName: item.DisplayName || "",
         profileUrl: item.ProfileUrl || null,
         lastVerifiedAt: iso(item.LastVerifiedAt),
+        ...timestampFields("lastVerifiedAt", item.LastVerifiedAt),
       })),
       interactions,
       conversations: (sets[3] || []).map((item) => ({
@@ -1347,6 +1389,7 @@ export class SqlServerRepository {
         platform: item.Platform,
         platformConversationId: item.PlatformConversationId,
         lastMessageAt: iso(item.LastMessageAt),
+        ...timestampFields("lastMessageAt", item.LastMessageAt),
         direction: item.Direction,
         importantMessage: item.ImportantMessage || "",
         status: item.Status,
@@ -1358,8 +1401,7 @@ export class SqlServerRepository {
       quotes: sets[6] || [],
       appointments: sets[7] || [],
       conversionHistory: sets[8] || [],
-      timeline: [...interactions, ...activities].sort((left, right) =>
-        String(right.occurredAt).localeCompare(String(left.occurredAt))),
+      timeline: [...interactions, ...activities].sort(compareTimelineNewestFirst),
     };
   }
 

@@ -1628,6 +1628,14 @@ function normalizeRoutineLead(
     throw error;
   }
 
+  const suppliedOccurredAt = body.occurredAt;
+  const parsedOccurredAt = suppliedOccurredAt ? new Date(suppliedOccurredAt) : new Date();
+  if (routine !== "landing_page_registration" && Number.isNaN(parsedOccurredAt.getTime())) {
+    const error = new Error("OccurredAt must be a valid date and time.");
+    error.statusCode = 400;
+    throw error;
+  }
+
   return {
     routine,
 
@@ -1705,17 +1713,12 @@ function normalizeRoutineLead(
         16_000
       ),
 
-    occurredAt:
-      body.occurredAt &&
-      !Number.isNaN(
-        new Date(
-          body.occurredAt
-        ).getTime()
-      )
-        ? new Date(
-            body.occurredAt
-          ).toISOString()
-        : new Date().toISOString(),
+    // MSSQL assigns the authoritative UTC timestamp for landing-page
+    // registrations. Other trusted server integrations may preserve their
+    // provider event timestamp after it has been normalized to UTC here.
+    occurredAt: routine === "landing_page_registration"
+      ? null
+      : parsedOccurredAt.toISOString(),
   };
 }
 
@@ -3553,6 +3556,7 @@ export async function createSocialListenerApp({
           lead.routine ===
             "landing_page_registration"
         ) {
+          const occurredAt = result.occurredAt || new Date().toISOString();
           const event = {
             channel: "multi",
             eventType: "lead_form_submission",
@@ -3572,7 +3576,7 @@ export async function createSocialListenerApp({
             conversationId: null,
             direction: "INBOUND",
             sourceUrl: null,
-            occurredAt: lead.occurredAt,
+            occurredAt,
             rawPayload: {
               routine: lead.routine,
               landingPageId: lead.landingPageId,
@@ -3591,7 +3595,7 @@ export async function createSocialListenerApp({
               instagram: lead.instagram,
               x: lead.x,
               source: lead.source,
-              firstTouchAt: lead.occurredAt,
+              firstTouchAt: occurredAt,
             },
             {
               ...intelligence,

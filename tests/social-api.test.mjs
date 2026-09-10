@@ -1022,6 +1022,38 @@ test("every routine lead path is idempotent and persists attribution", async () 
   assert.equal(repository.leads.size, 1);
 });
 
+test("landing registration timestamps are server-authored UTC with a Bogota equivalent", async () => {
+  const { app } = await createApp();
+  const request = () => app.handle(serviceRequest("/routine-leads", {
+    method: "POST",
+    headers: { "content-type": "application/json" },
+    body: JSON.stringify({
+      routine: "landing_page_registration",
+      externalEventId: "registration-time-1",
+      name: "Timestamp Lead",
+      email: "timestamp@example.test",
+      occurredAt: "1900-01-01T00:00:00-05:00",
+    }),
+  }));
+
+  const before = Date.now();
+  const firstResponse = await request();
+  const after = Date.now();
+  const first = await firstResponse.json();
+  assert.equal(firstResponse.status, 201);
+  assert.match(first.registeredAtUtc, /^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}\.\d{3}Z$/);
+  assert.match(first.registeredAtBogota, /^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}\.\d{3}-05:00$/);
+  assert.ok(Date.parse(first.registeredAtUtc) >= before && Date.parse(first.registeredAtUtc) <= after);
+  assert.equal(Date.parse(first.registeredAtUtc), Date.parse(first.registeredAtBogota));
+
+  const duplicateResponse = await request();
+  const duplicate = await duplicateResponse.json();
+  assert.equal(duplicateResponse.status, 200);
+  assert.equal(duplicate.duplicate, true);
+  assert.equal(duplicate.registeredAtUtc, first.registeredAtUtc);
+  assert.equal(duplicate.registeredAtBogota, first.registeredAtBogota);
+});
+
 test("AI uses a structured Responses API result and saves a reviewable SQL draft", async () => {
   const repository = new InMemorySocialRepository();
   const app = await createSocialListenerApp({

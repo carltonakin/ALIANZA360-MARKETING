@@ -20,6 +20,7 @@ const replyConversationMigrationUrl = new URL("../sql/016_instagram_two_way_conv
 const landingRegistrationScoringMigrationUrl = new URL("../sql/018_landing_registration_scoring.sql", import.meta.url);
 const landingRepairMigrationUrl = new URL("../sql/019_repair_landing_registration_video.sql", import.meta.url);
 const landingMediaMigrationUrl = new URL("../sql/020_landing_page_picture_media_order_cta.sql", import.meta.url);
+const utcBogotaTimelineMigrationUrl = new URL("../sql/022_utc_bogota_timeline_order.sql", import.meta.url);
 
 class FakeRequest {
   constructor(executions, result = { recordset: [] }) {
@@ -339,6 +340,19 @@ test("Instagram reply migration adds a transactional, idempotent n8n delivery qu
   );
   assert.doesNotMatch(completion, /LeadScore_Recalculate|LeadScore\s*=/i);
   assert.doesNotMatch(sql, /DROP TABLE|TRUNCATE TABLE/i);
+});
+
+test("UTC and Bogota timeline migration makes registration time authoritative and ordering deterministic", async () => {
+  const sql = await readFile(utcBogotaTimelineMigrationUrl, "utf8");
+  assert.match(sql, /CREATE OR ALTER PROCEDURE dbo\.CRMLead_UpsertFromRoutine/i);
+  assert.match(sql, /@OccurredAt DATETIME2\(3\) = NULL/i);
+  assert.match(sql, /IF @Routine = N'landing_page_registration'[\s\S]*SET @OccurredAt = SYSUTCDATETIME\(\)/i);
+  assert.match(sql, /@PersistedOccurredAt = OccurredAt[\s\S]*SET @OccurredAt = @PersistedOccurredAt/i);
+  assert.match(sql, /@OccurredAt AS OccurredAt/i);
+  assert.match(sql, /ORDER BY COALESCE\(si\.SentAt, si\.OccurredAt\) DESC, si\.SocialInteractionId DESC/i);
+  assert.match(sql, /ORDER BY OccurredAt DESC, LeadActivityId DESC/i);
+  assert.doesNotMatch(sql, /UPDATE\s+dbo\.[A-Za-z]+\s+SET\s+OccurredAt\s*=/i);
+  assert.doesNotMatch(sql, /GETDATE\(\)|DROP TABLE|TRUNCATE TABLE/i);
 });
 
 test("landing registration scoring migration retains the authoritative 100-point model", async () => {
@@ -853,6 +867,56 @@ test("SQL Server repository parameterizes campaign, page, webinar, mode, and rou
   assert.equal(executions[2].parameters.get("LandingPageId").value, 8);
   assert.equal(executions[3].parameters.get("CampaignId").value, 1);
   assert.equal(executions[4].parameters.get("ExternalEventId").value, "registration-1");
+  assert.equal(executions[4].parameters.get("OccurredAt").value, null);
+});
+
+test("SQL Server repository exposes dual timestamps and merges the timeline newest-first", async () => {
+  const occurredAt = new Date("2026-09-10T14:00:00.000Z");
+  const { repository } = fakeRepository({
+    recordsets: [
+      [{ LeadId: 7, Name: "Timeline Lead", CreatedAt: occurredAt, UpdatedAt: occurredAt }],
+      [],
+      [
+        { SocialInteractionId: 1, Platform: "instagram", InteractionType: "COMMENT", Direction: "INBOUND", OccurredAt: occurredAt },
+        { SocialInteractionId: 2, Platform: "instagram", InteractionType: "DM", Direction: "INBOUND", OccurredAt: occurredAt },
+        { SocialInteractionId: 3, Platform: "instagram", InteractionType: "REPLY", Direction: "OUTBOUND", OccurredAt: new Date("2026-09-10T12:00:00.000Z"), SentAt: new Date("2026-09-10T15:00:00.000Z"), ResponseStatus: "SENT" },
+      ],
+      [],
+      [{ LeadActivityId: 9, ActivityType: "NOTE", Summary: "Called lead", OccurredAt: new Date("2026-09-10T13:00:00.000Z") }],
+      [], [], [], [],
+    ],
+  });
+
+  const unified = await repository.getUnifiedLead(7);
+  assert.deepEqual(unified.timeZone, { authoritative: "UTC", display: "America/Bogota", offset: "-05:00" });
+  assert.equal(unified.lead.createdAtUtc, "2026-09-10T14:00:00.000Z");
+  assert.equal(unified.lead.createdAtBogota, "2026-09-10T09:00:00.000-05:00");
+  assert.deepEqual(unified.timeline.map((item) => item.id), [
+    "interaction:3",
+    "interaction:2",
+    "interaction:1",
+    "activity:9",
+  ]);
+  assert.equal(unified.timeline[0].eventTimestampUtc, "2026-09-10T15:00:00.000Z");
+  assert.equal(unified.timeline[0].eventTimestampBogota, "2026-09-10T10:00:00.000-05:00");
+});
+
+test("SQL Server routine registration response returns the persisted dual timestamp", async () => {
+  const { repository, executions } = fakeRepository({
+    recordset: [{ LeadId: 7, Duplicate: false, OccurredAt: new Date("2026-09-10T14:00:00.000Z") }],
+  });
+  const result = await repository.upsertRoutineLead({
+    routine: "landing_page_registration",
+    externalEventId: "registration-utc-1",
+    name: "Registrant",
+    email: "registrant@example.test",
+    occurredAt: "1900-01-01T00:00:00.000Z",
+  });
+
+  assert.equal(executions[0].parameters.get("OccurredAt").value, null);
+  assert.equal(result.occurredAt, "2026-09-10T14:00:00.000Z");
+  assert.equal(result.registeredAtUtc, "2026-09-10T14:00:00.000Z");
+  assert.equal(result.registeredAtBogota, "2026-09-10T09:00:00.000-05:00");
 });
 
 test("SQL Server repository parameterizes Buffer campaign and post lifecycle procedures", async () => {
