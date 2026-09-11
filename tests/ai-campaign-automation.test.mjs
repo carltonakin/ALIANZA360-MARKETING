@@ -4,7 +4,9 @@ import { readFile } from "node:fs/promises";
 import {
   AIProviderService,
   NORMALIZED_AI_OUTPUT_SCHEMA,
+  OpenAIAdapter,
   normalizeAiCampaignOutput,
+  safeAiMessage,
 } from "../social/ai-providers.mjs";
 import {
   AICampaignAutomationEngine,
@@ -91,6 +93,25 @@ test("provider service retries primary and uses only an explicitly configured fa
   await assert.rejects(() => service.generateCampaignContent({ providerId: 1, context: { platform: "instagram" } }), /temporary outage/);
   assert.equal(primaryCalls, 3);
   assert.equal(fallbackCalls, 0);
+});
+
+test("AI provider errors redact credentials even when the upstream message labels a provided key", () => {
+  const message = safeAiMessage(new Error("Incorrect API key provided: example********************************suffix."));
+  assert.equal(message, "Incorrect API key provided=[redacted]");
+  assert.doesNotMatch(message, /example|suffix/);
+});
+
+test("provider authentication failures never return an upstream credential fragment", async () => {
+  const adapter = new OpenAIAdapter({
+    fetchImpl: async () => Response.json({
+      error: { message: "Incorrect API key provided: example********************************suffix." },
+    }, { status: 401 }),
+  });
+
+  await assert.rejects(
+    () => adapter.testConnection({ providerName: "OpenAI", secrets: { apiKey: "example-secret-suffix" } }),
+    (error) => error.statusCode === 401 && error.message === "OpenAI rejected the stored API credential.",
+  );
 });
 
 test("AI campaign validation stores only supported content types and selected Buffer IDs", () => {

@@ -70,7 +70,9 @@ function responseText(body) {
 }
 
 function statusError(providerName, response, body) {
-  const message = clean(body?.error?.message || body?.message || `${providerName} returned HTTP ${response.status}.`, 1000);
+  const message = response.status === 401 || response.status === 403
+    ? `${providerName} rejected the stored API credential.`
+    : clean(body?.error?.message || body?.message || `${providerName} returned HTTP ${response.status}.`, 1000);
   const error = new Error(message || `${providerName} request failed.`);
   error.statusCode = response.status;
   error.retryable = response.status === 408 || response.status === 409 || response.status === 429 || response.status >= 500;
@@ -80,7 +82,7 @@ function statusError(providerName, response, body) {
 export function safeAiMessage(error) {
   return clean(error instanceof Error ? error.message : error || "AI provider request failed.", 1000)
     .replace(/\b(sk-[A-Za-z0-9_-]{8,}|AIza[A-Za-z0-9_-]{8,})\b/g, "[redacted]")
-    .replace(/\b(api[_ -]?key|token|secret|authorization)\s*[=:]\s*[^\s,;]+/gi, "$1=[redacted]");
+    .replace(/\b(api[_ -]?key(?:\s+(?:provided|supplied))?|token|secret|authorization)\s*[=:]\s*[^\s,;]+/gi, "$1=[redacted]");
 }
 
 function requiredApiKey(configuration) {
