@@ -371,9 +371,9 @@ const nav = [
   ["⚙", "Settings"],
 ];
 
-export default function Home() {
+export default function Home({ initialView = "Overview" }: { initialView?: string }) {
   const router = useRouter();
-  const [active, setActive] = useState("Overview");
+  const [active, setActive] = useState(initialView);
   const [authUser, setAuthUser] = useState<AuthUser | null>(null);
   const [collapsed, setCollapsed] = useState(false);
   const [modal, setModal] = useState("");

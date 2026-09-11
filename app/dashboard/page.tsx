@@ -13,5 +13,5 @@ export default async function DashboardPage({
   const query = await searchParams;
   const requested = typeof query.view === "string" ? query.view : "Overview";
   if (ADMIN_VIEWS.has(requested) && user.role !== "ADMIN") redirect("/dashboard?forbidden=1");
-  return <Home />;
+  return <Home initialView={requested} />;
 }

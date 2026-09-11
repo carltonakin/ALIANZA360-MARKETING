@@ -104,8 +104,21 @@ function localDate(date = new Date()) {
 
 async function jsonRequest<T>(url: string, init?: RequestInit): Promise<T> {
   const response = await fetch(url, init);
-  const body = await response.json().catch(() => ({})) as T & { error?: string; message?: string };
-  if (!response.ok) throw new Error(body.error || body.message || "The request could not be completed.");
+  const responseText = await response.text();
+  let body = {} as T & { error?: string; message?: string };
+  if (responseText) {
+    try {
+      body = JSON.parse(responseText) as T & { error?: string; message?: string };
+    } catch {
+      // A stale backend can return its HTML 404 page instead of the JSON contract.
+    }
+  }
+  if (!response.ok) {
+    const endpointMessage = response.status === 404
+      ? "This configuration endpoint is not available. Restart or redeploy the application so the dashboard and Social Listener use the same release."
+      : "The request could not be completed.";
+    throw new Error(body.error || body.message || endpointMessage);
+  }
   return body;
 }
 
@@ -152,7 +165,7 @@ function CompanyProfileSettings() {
       <form key={profile?.updatedAt || "new-profile"} onSubmit={save} className="ai-settings-form">
         <label>Company name<input name="companyName" required defaultValue={profile?.companyName || ""} /></label>
         <label>Industry<input name="industry" defaultValue={profile?.industry || ""} /></label>
-        <label className="wide">Company description<textarea name="companyDescription" required defaultValue={profile?.companyDescription || ""} /></label>
+        <label className="wide">Company description<textarea name="companyDescription" defaultValue={profile?.companyDescription || ""} /></label>
         <label className="wide">Products and services<textarea name="productsServices" defaultValue={profile?.productsServices || ""} /></label>
         <label className="wide">Target audience<textarea name="targetAudience" defaultValue={profile?.targetAudience || ""} /></label>
         <label>Brand voice<input name="brandVoice" placeholder="Clear, warm, confident" defaultValue={profile?.brandVoice || ""} /></label>
@@ -254,6 +267,7 @@ function AIProviderSettings() {
       <div className="ai-provider-grid">
         {providers.map((provider) => <ProviderCard key={`${provider.id}-${provider.updatedAt || provider.connectionStatus}`} provider={provider} onChanged={load} />)}
       </div>
+      {!providers.length && <small className="form-error">{message}</small>}
       <small className="config-state">Keys are AES-256-GCM encrypted in MSSQL and are never returned to the browser.</small>
     </article>
   );

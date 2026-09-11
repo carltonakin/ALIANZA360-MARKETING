@@ -275,3 +275,69 @@ test("provider configuration API encrypts submitted keys and returns only a mask
   assert.doesNotMatch(JSON.stringify(body), /do-not-return/);
   assert.doesNotMatch(storedEnvelope.ciphertext, /do-not-return/);
 });
+
+test("Company Profile API saves and reloads the complete normalized profile", async () => {
+  let storedProfile = null;
+  const repository = {
+    getCompanyProfile: async () => storedProfile,
+    saveCompanyProfile: async (input) => {
+      storedProfile = {
+        id: 1,
+        ...input,
+        createdAt: "2026-09-11T12:00:00.000Z",
+        updatedAt: "2026-09-11T12:00:00.000Z",
+      };
+      return storedProfile;
+    },
+  };
+  const app = await createSocialListenerApp({
+    env: { SERVICE_AUTH_TOKEN: "service-token" },
+    repository,
+    adapters: {},
+    bufferCampaignService: {},
+    aiProviderService: {},
+    aiCampaignAutomationEngine: {},
+    logger: { error() {}, info() {} },
+  });
+
+  const saveResponse = await app.handle(new Request("http://localhost/company-profile", {
+    method: "PUT",
+    headers: { authorization: "Bearer service-token", "content-type": "application/json" },
+    body: JSON.stringify({
+      companyName: "Next2TheTop",
+      companyDescription: "",
+      productsServices: "CRM and marketing automation",
+      targetAudience: "Growth-focused businesses",
+      website: "https://next2thetop.com",
+      otherProfileContext: "Preserve the existing campaign architecture.",
+    }),
+  }));
+  const saved = await saveResponse.json();
+  const reloadResponse = await app.handle(new Request("http://localhost/company-profile", {
+    headers: { authorization: "Bearer service-token" },
+  }));
+  const reloaded = await reloadResponse.json();
+
+  assert.equal(saveResponse.status, 200);
+  assert.equal(reloadResponse.status, 200);
+  assert.equal(saved.profile.companyName, "Next2TheTop");
+  assert.equal(saved.profile.companyDescription, "");
+  assert.equal(reloaded.profile.productsServices, "CRM and marketing automation");
+  assert.equal(reloaded.profile.website, "https://next2thetop.com/");
+  assert.equal(reloaded.profile.otherProfileContext, "Preserve the existing campaign architecture.");
+});
+
+test("Settings deep link renders AI configuration immediately and keeps optional profile fields optional", async () => {
+  const [dashboard, home, configuration] = await Promise.all([
+    readFile(new URL("../app/dashboard/page.tsx", import.meta.url), "utf8"),
+    readFile(new URL("../app/page.tsx", import.meta.url), "utf8"),
+    readFile(new URL("../app/components/AIConfiguration.tsx", import.meta.url), "utf8"),
+  ]);
+
+  assert.match(dashboard, /<Home initialView=\{requested\} \/>/);
+  assert.match(home, /useState\(initialView\)/);
+  assert.match(home, /<AISettingsPanels \/>/);
+  assert.match(configuration, /<h3>AI Provider Configuration<\/h3>/);
+  assert.match(configuration, /<textarea name="companyDescription" defaultValue=/);
+  assert.doesNotMatch(configuration, /<textarea name="companyDescription" required/);
+});
