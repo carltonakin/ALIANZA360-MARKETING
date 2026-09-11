@@ -332,6 +332,126 @@ function mapCampaign(row) {
   };
 }
 
+function dateOnly(value) {
+  if (!value) return null;
+  if (value instanceof Date && !Number.isNaN(value.getTime())) return value.toISOString().slice(0, 10);
+  return String(value).slice(0, 10);
+}
+
+function mapCompanyProfile(row) {
+  if (!row) return null;
+  return {
+    id: Number(row.CompanyProfileId),
+    companyName: row.CompanyName || "",
+    companyDescription: row.CompanyDescription || "",
+    productsServices: row.ProductsServices || "",
+    targetAudience: row.TargetAudience || "",
+    brandVoice: row.BrandVoice || "",
+    offers: row.Offers || "",
+    website: row.Website || "",
+    preferredCTA: row.PreferredCTA || "",
+    industry: row.Industry || "",
+    businessGoals: row.BusinessGoals || "",
+    otherProfileContext: row.OtherProfileContext || "",
+    createdAt: iso(row.CreatedAt),
+    updatedAt: iso(row.UpdatedAt),
+  };
+}
+
+function mapAiProviderConfiguration(row, encryptionKey = null) {
+  const configuration = {
+    id: Number(row.AIProviderConfigurationId),
+    providerCode: row.ProviderCode,
+    providerName: row.ProviderName,
+    model: row.Model,
+    enabled: Boolean(row.Enabled),
+    isDefault: Boolean(row.IsDefault),
+    capabilities: jsonValue(row.CapabilitiesJson, []),
+    hasSecret: Boolean(row.SecretCiphertext),
+    secretFields: String(row.SecretFields || "").split(",").filter(Boolean),
+    connectionStatus: row.ConnectionStatus || "NOT_TESTED",
+    lastTestedAt: iso(row.LastTestedAt),
+    lastSuccessAt: iso(row.LastSuccessAt),
+    lastErrorAt: iso(row.LastErrorAt),
+    lastError: row.LastError || null,
+    createdAt: iso(row.CreatedAt),
+    updatedAt: iso(row.UpdatedAt),
+  };
+  if (encryptionKey && row.SecretCiphertext) {
+    configuration.secrets = decryptChannelSecrets({
+      ciphertext: row.SecretCiphertext,
+      iv: row.SecretIv,
+      authTag: row.SecretAuthTag,
+    }, encryptionKey);
+  }
+  return configuration;
+}
+
+function mapAiCampaignConfiguration(row) {
+  return {
+    id: Number(row.AICampaignConfigurationId),
+    campaignName: row.CampaignName,
+    campaignObjective: row.CampaignObjective,
+    startDate: dateOnly(row.StartDate),
+    endDate: dateOnly(row.EndDate),
+    postsPerDay: Number(row.PostsPerDay || 1),
+    contentTypes: jsonValue(row.ContentTypesJson, []),
+    aiProviderId: Number(row.AIProviderConfigurationId),
+    aiModel: row.AIModel || null,
+    fallbackProviderId: row.FallbackProviderConfigurationId ? Number(row.FallbackProviderConfigurationId) : null,
+    selectedBufferChannelIds: jsonValue(row.SelectedBufferChannelIdsJson, []),
+    cta: row.CTA || "",
+    destinationUrl: row.DestinationUrl || "",
+    publishingMode: row.PublishingMode || "DRAFT",
+    status: row.Status || "DRAFT",
+    lastGenerationDate: dateOnly(row.LastGenerationDate),
+    lastError: row.LastError || null,
+    providerCode: row.ProviderCode || null,
+    providerName: row.ProviderName || null,
+    providerDefaultModel: row.ProviderDefaultModel || null,
+    fallbackProviderCode: row.FallbackProviderCode || null,
+    fallbackProviderName: row.FallbackProviderName || null,
+    successfulGenerationCount: Number(row.SuccessfulGenerationCount || 0),
+    lastGenerationAt: iso(row.LastGenerationAt),
+    createdAt: iso(row.CreatedAt),
+    updatedAt: iso(row.UpdatedAt),
+  };
+}
+
+function mapAiGenerationRun(row) {
+  return {
+    id: Number(row.AICampaignGenerationRunId),
+    configurationId: Number(row.AICampaignConfigurationId),
+    generationDate: dateOnly(row.GenerationDate),
+    runSlot: Number(row.RunSlot),
+    bufferChannelId: row.BufferChannelId,
+    regenerationSequence: Number(row.RegenerationSequence || 0),
+    generationStatus: row.GenerationStatus,
+    providerId: row.AIProviderConfigurationId ? Number(row.AIProviderConfigurationId) : null,
+    providerCode: row.ProviderCode || null,
+    model: row.Model || null,
+    campaignId: row.CampaignId ? `campaign:${row.CampaignId}` : null,
+    campaignPostId: row.CampaignPostId ? Number(row.CampaignPostId) : null,
+    regenerated: Boolean(row.RegeneratedFlag),
+    fallbackUsed: Boolean(row.FallbackUsed),
+    attemptCount: Number(row.AttemptCount || 0),
+    inputContext: jsonValue(row.InputContextJson, null),
+    normalizedOutput: jsonValue(row.NormalizedOutputJson, null),
+    error: row.ErrorMessage || null,
+    campaignName: row.CampaignName || null,
+    campaignObjective: row.CampaignObjective || null,
+    generatedCampaignName: row.GeneratedCampaignName || null,
+    postStatus: row.PostStatus || null,
+    scheduledAt: iso(row.ScheduledAt),
+    publishedAt: iso(row.PublishedAt),
+    bufferPostId: row.BufferPostId || null,
+    postUrl: row.PostUrl || null,
+    startedAt: iso(row.StartedAt),
+    completedAt: iso(row.CompletedAt),
+    updatedAt: iso(row.UpdatedAt),
+  };
+}
+
 function mapSocialCampaign(row) {
   return {
     id: row.SocialCampaignId ?? numericId(row.CampaignId),
@@ -1502,6 +1622,165 @@ export class SqlServerRepository {
     request.input("LeadId", this.sql.BigInt, Number(leadId));
     const response = await request.execute("dbo.SocialLead_Delete");
     return Number(response.recordset?.[0]?.Deleted || 0) === 1;
+  }
+
+  async getCompanyProfile() {
+    const response = await this.request().execute("dbo.CompanyProfile_Get");
+    return mapCompanyProfile(response.recordset?.[0]);
+  }
+
+  async saveCompanyProfile(input) {
+    const request = this.request();
+    request.input("CompanyName", this.sql.NVarChar(255), input.companyName);
+    request.input("CompanyDescription", this.sql.NVarChar(this.sql.MAX), input.companyDescription || null);
+    request.input("ProductsServices", this.sql.NVarChar(this.sql.MAX), input.productsServices || null);
+    request.input("TargetAudience", this.sql.NVarChar(this.sql.MAX), input.targetAudience || null);
+    request.input("BrandVoice", this.sql.NVarChar(2000), input.brandVoice || null);
+    request.input("Offers", this.sql.NVarChar(this.sql.MAX), input.offers || null);
+    request.input("Website", this.sql.NVarChar(2048), input.website || null);
+    request.input("PreferredCTA", this.sql.NVarChar(500), input.preferredCTA || null);
+    request.input("Industry", this.sql.NVarChar(255), input.industry || null);
+    request.input("BusinessGoals", this.sql.NVarChar(this.sql.MAX), input.businessGoals || null);
+    request.input("OtherProfileContext", this.sql.NVarChar(this.sql.MAX), input.otherProfileContext || null);
+    const response = await request.execute("dbo.CompanyProfile_Upsert");
+    return mapCompanyProfile(response.recordset?.[0]);
+  }
+
+  async getAiProviderConfigurations({ providerId = null, enabledOnly = false, encryptionKey = null } = {}) {
+    const request = this.request();
+    request.input("AIProviderConfigurationId", this.sql.BigInt, numericId(providerId));
+    request.input("EnabledOnly", this.sql.Bit, enabledOnly ? 1 : 0);
+    const response = await request.execute("dbo.AIProviderConfiguration_Get");
+    return (response.recordset || []).map((row) => mapAiProviderConfiguration(row, encryptionKey));
+  }
+
+  async saveAiProviderConfiguration(input, envelope = null) {
+    const request = this.request();
+    request.input("AIProviderConfigurationId", this.sql.BigInt, numericId(input.id));
+    request.input("ProviderName", this.sql.NVarChar(255), input.providerName);
+    request.input("Model", this.sql.NVarChar(255), input.model);
+    request.input("Enabled", this.sql.Bit, input.enabled ? 1 : 0);
+    request.input("IsDefault", this.sql.Bit, input.isDefault ? 1 : 0);
+    request.input("CapabilitiesJson", this.sql.NVarChar(2000), JSON.stringify(input.capabilities || []));
+    request.input("ReplaceSecret", this.sql.Bit, envelope ? 1 : 0);
+    request.input("SecretCiphertext", this.sql.NVarChar(this.sql.MAX), envelope?.ciphertext || null);
+    request.input("SecretIv", this.sql.NVarChar(255), envelope?.iv || null);
+    request.input("SecretAuthTag", this.sql.NVarChar(255), envelope?.authTag || null);
+    request.input("SecretFields", this.sql.NVarChar(1000), envelope ? "apiKey" : null);
+    request.input("KeyVersion", this.sql.NVarChar(32), envelope?.keyVersion || null);
+    const response = await request.execute("dbo.AIProviderConfiguration_Upsert");
+    return response.recordset?.[0] ? mapAiProviderConfiguration(response.recordset[0]) : null;
+  }
+
+  async setAiProviderTestResult(providerId, { succeeded, error = null }) {
+    const request = this.request();
+    request.input("AIProviderConfigurationId", this.sql.BigInt, numericId(providerId));
+    request.input("Succeeded", this.sql.Bit, succeeded ? 1 : 0);
+    request.input("ErrorMessage", this.sql.NVarChar(1000), error || null);
+    const response = await request.execute("dbo.AIProviderConfiguration_SetTestResult");
+    return response.recordset?.[0] ? mapAiProviderConfiguration(response.recordset[0]) : null;
+  }
+
+  async saveAiCampaignConfiguration(input) {
+    const request = this.request();
+    request.input("AICampaignConfigurationId", this.sql.BigInt, numericId(input.id));
+    request.input("CampaignName", this.sql.NVarChar(255), input.campaignName);
+    request.input("CampaignObjective", this.sql.NVarChar(2000), input.campaignObjective);
+    request.input("StartDate", this.sql.Date, input.startDate);
+    request.input("EndDate", this.sql.Date, input.endDate);
+    request.input("PostsPerDay", this.sql.Int, input.postsPerDay);
+    request.input("ContentTypesJson", this.sql.NVarChar(2000), JSON.stringify(input.contentTypes));
+    request.input("AIProviderConfigurationId", this.sql.BigInt, numericId(input.aiProviderId));
+    request.input("AIModel", this.sql.NVarChar(255), input.aiModel || null);
+    request.input("FallbackProviderConfigurationId", this.sql.BigInt, numericId(input.fallbackProviderId));
+    request.input("SelectedBufferChannelIdsJson", this.sql.NVarChar(this.sql.MAX), JSON.stringify(input.selectedBufferChannelIds));
+    request.input("CTA", this.sql.NVarChar(500), input.cta || null);
+    request.input("DestinationUrl", this.sql.NVarChar(2048), input.destinationUrl || null);
+    request.input("PublishingMode", this.sql.NVarChar(16), input.publishingMode);
+    request.input("Status", this.sql.NVarChar(16), input.status || "DRAFT");
+    const response = await request.execute("dbo.AICampaignConfiguration_Save");
+    return response.recordset?.[0] ? mapAiCampaignConfiguration(response.recordset[0]) : null;
+  }
+
+  async getAiCampaignConfigurations(id = null) {
+    const request = this.request();
+    request.input("AICampaignConfigurationId", this.sql.BigInt, numericId(id));
+    const response = await request.execute("dbo.AICampaignConfiguration_Get");
+    return (response.recordset || []).map(mapAiCampaignConfiguration);
+  }
+
+  async setAiCampaignStatus(id, status, error = null) {
+    const request = this.request();
+    request.input("AICampaignConfigurationId", this.sql.BigInt, numericId(id));
+    request.input("Status", this.sql.NVarChar(16), status);
+    request.input("ErrorMessage", this.sql.NVarChar(1000), error || null);
+    const response = await request.execute("dbo.AICampaignConfiguration_SetStatus");
+    return response.recordset?.[0] ? mapAiCampaignConfiguration(response.recordset[0]) : null;
+  }
+
+  async getDueAiCampaignConfigurations(currentDate) {
+    const request = this.request();
+    request.input("CurrentDate", this.sql.Date, currentDate);
+    const response = await request.execute("dbo.AICampaignConfiguration_GetDue");
+    return (response.recordset || []).map(mapAiCampaignConfiguration);
+  }
+
+  async completeExpiredAiCampaigns(currentDate) {
+    const request = this.request();
+    request.input("CurrentDate", this.sql.Date, currentDate);
+    const response = await request.execute("dbo.AICampaignConfiguration_CompleteExpired");
+    return Number(response.recordset?.[0]?.CompletedCount || 0);
+  }
+
+  async claimAiGenerationRun(input) {
+    const request = this.request();
+    request.input("AICampaignConfigurationId", this.sql.BigInt, numericId(input.configurationId));
+    request.input("GenerationDate", this.sql.Date, input.generationDate);
+    request.input("RunSlot", this.sql.Int, input.runSlot);
+    request.input("BufferChannelId", this.sql.NVarChar(255), input.bufferChannelId);
+    request.input("RegeneratedFlag", this.sql.Bit, input.regenerated ? 1 : 0);
+    request.input("RetryFailed", this.sql.Bit, input.retryFailed ? 1 : 0);
+    request.input("InputContextJson", this.sql.NVarChar(this.sql.MAX), input.inputContext ? JSON.stringify(input.inputContext) : null);
+    const response = await request.execute("dbo.AICampaignGenerationRun_Claim");
+    return response.recordset?.[0] ? mapAiGenerationRun(response.recordset[0]) : null;
+  }
+
+  async succeedAiGenerationRun(runId, input) {
+    const request = this.request();
+    request.input("AICampaignGenerationRunId", this.sql.BigInt, numericId(runId));
+    request.input("AIProviderConfigurationId", this.sql.BigInt, numericId(input.providerId));
+    request.input("ProviderCode", this.sql.NVarChar(64), input.providerCode);
+    request.input("Model", this.sql.NVarChar(255), input.model);
+    request.input("CampaignId", this.sql.BigInt, numericId(input.campaignId));
+    request.input("CampaignPostId", this.sql.BigInt, numericId(input.campaignPostId));
+    request.input("FallbackUsed", this.sql.Bit, input.fallbackUsed ? 1 : 0);
+    request.input("AttemptCount", this.sql.Int, input.attemptCount || 1);
+    request.input("NormalizedOutputJson", this.sql.NVarChar(this.sql.MAX), JSON.stringify(input.normalizedOutput));
+    const response = await request.execute("dbo.AICampaignGenerationRun_Succeed");
+    return response.recordset?.[0] ? mapAiGenerationRun(response.recordset[0]) : null;
+  }
+
+  async failAiGenerationRun(runId, input) {
+    const request = this.request();
+    request.input("AICampaignGenerationRunId", this.sql.BigInt, numericId(runId));
+    request.input("AIProviderConfigurationId", this.sql.BigInt, numericId(input.providerId));
+    request.input("ProviderCode", this.sql.NVarChar(64), input.providerCode || null);
+    request.input("Model", this.sql.NVarChar(255), input.model || null);
+    request.input("FallbackUsed", this.sql.Bit, input.fallbackUsed ? 1 : 0);
+    request.input("AttemptCount", this.sql.Int, input.attemptCount || 0);
+    request.input("ErrorMessage", this.sql.NVarChar(1000), input.error);
+    const response = await request.execute("dbo.AICampaignGenerationRun_Fail");
+    return response.recordset?.[0] ? mapAiGenerationRun(response.recordset[0]) : null;
+  }
+
+  async getAiGenerationHistory({ configurationId = null, runId = null, campaignPostId = null, limit = 100 } = {}) {
+    const request = this.request();
+    request.input("AICampaignConfigurationId", this.sql.BigInt, numericId(configurationId));
+    request.input("AICampaignGenerationRunId", this.sql.BigInt, numericId(runId));
+    request.input("CampaignPostId", this.sql.BigInt, numericId(campaignPostId));
+    request.input("Limit", this.sql.Int, Math.max(1, Math.min(500, Number(limit) || 100)));
+    const response = await request.execute("dbo.AICampaignGenerationHistory_Get");
+    return (response.recordset || []).map(mapAiGenerationRun);
   }
 
   async deleteContent(entity, id) {

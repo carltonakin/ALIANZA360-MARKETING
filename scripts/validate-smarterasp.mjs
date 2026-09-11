@@ -108,6 +108,8 @@ for (const name of [
   "DB_ENCRYPT",
   "DB_TRUST_SERVER_CERTIFICATE",
   "CHANNEL_CONFIG_ENCRYPTION_KEY",
+  "AI_PROVIDER_ENCRYPTION_KEY",
+  "AI_CAMPAIGN_AUTOMATION_INTERVAL_MS",
   "CLOUDINARY_CLOUD_NAME",
   "CLOUDINARY_API_KEY",
   "CLOUDINARY_API_SECRET",
@@ -123,7 +125,7 @@ for (const name of [
 }
 assert.doesNotMatch(
   productionEnvironment,
-  /^(DB_PASSWORD|SERVICE_AUTH_TOKEN|CHANNEL_CONFIG_ENCRYPTION_KEY|CLOUDINARY_API_SECRET)=(?!<)[^\r\n]+/m,
+  /^(DB_PASSWORD|SERVICE_AUTH_TOKEN|CHANNEL_CONFIG_ENCRYPTION_KEY|AI_PROVIDER_ENCRYPTION_KEY|CLOUDINARY_API_SECRET)=(?!<)[^\r\n]+/m,
   "The production environment template must contain only non-secret placeholders.",
 );
 assert.match(

@@ -13,6 +13,7 @@ import { useRouter } from "next/navigation";
 import { LandingVideoPlayer } from "./components/LandingVideoPlayer";
 import { BrandLogo } from "./components/BrandLogo";
 import { LandingPageStudio } from "./components/LandingPageStudio";
+import { AICampaignManager, AISettingsPanels } from "./components/AIConfiguration";
 import type { LandingPageBlock } from "./components/LandingPageBlocks";
 import { browserVideoValidationErrors, INSTAGRAM_VIDEO_MAX_BYTES } from "../lib/instagram-video-validation.mjs";
 import { LANDING_PAGE_SUBMIT_TEXT, normalizeExternalVideoUrl } from "../lib/landing-page-video.mjs";
@@ -1303,6 +1304,8 @@ export default function Home() {
                 setModal("campaign");
               }}
               syncBuffer={syncBufferPosts}
+              onRefresh={load}
+              bufferChannels={bufferChannels}
               busy={busy}
             />
           )}
@@ -1625,12 +1628,16 @@ function Campaigns({
   onCreate,
   onEdit,
   syncBuffer,
+  onRefresh,
+  bufferChannels,
   busy,
 }: {
   rows: Campaign[];
   onCreate: () => void;
   onEdit: (campaign: Campaign) => void;
   syncBuffer: (campaignId?: number | string) => Promise<void>;
+  onRefresh: () => Promise<void>;
+  bufferChannels: BufferChannel[];
   busy: boolean;
 }) {
   return (
@@ -1641,6 +1648,7 @@ function Campaigns({
         action="New Buffer campaign"
         click={onCreate}
       />
+      <AICampaignManager bufferChannels={bufferChannels} onCampaignsChanged={onRefresh} />
       {!rows.length ? (
         <Empty
           icon="◎"
@@ -2629,6 +2637,7 @@ function Settings({
       <ModuleHead title="Settings" sub="Configure and verify the server-side services that power your funnel" />
       <div className="settings-grid">
         <BackendServiceConfiguration onConfigured={onBackendConfigured} />
+        <AISettingsPanels />
         <article className="panel buffer-settings">
           <div className="panel-head">
             <div>

@@ -28,6 +28,16 @@ import {
 import { SqlServerRepository } from "./sql-server.mjs";
 import { createBufferAdapterFromEnv } from "./buffer-adapter.mjs";
 import { BufferCampaignService } from "./buffer-campaigns.mjs";
+import {
+  AI_PROVIDER_DEFINITIONS,
+  AIProviderService,
+  providerCapabilities,
+  safeAiMessage,
+} from "./ai-providers.mjs";
+import {
+  AICampaignAutomationEngine,
+  normalizeAiCampaignInput,
+} from "./ai-campaign-automation.mjs";
 import { AuthService } from "./auth.mjs";
 import {
   campaignMediaMaximumBytes,
@@ -144,6 +154,57 @@ function safeMessage(error) {
         )
         .slice(0, 300)
     : "Unexpected listener error.";
+}
+
+function publicAiProvider(configuration) {
+  return {
+    id: configuration.id,
+    providerCode: configuration.providerCode,
+    providerName: configuration.providerName,
+    model: configuration.model,
+    enabled: configuration.enabled,
+    isDefault: configuration.isDefault,
+    capabilities: configuration.capabilities || providerCapabilities(configuration.providerCode),
+    hasSecret: Boolean(configuration.hasSecret || configuration.secrets?.apiKey),
+    maskedSecret: configuration.hasSecret || configuration.secrets?.apiKey ? "********" : "",
+    connectionStatus: configuration.connectionStatus || "NOT_TESTED",
+    lastTestedAt: configuration.lastTestedAt || null,
+    lastSuccessAt: configuration.lastSuccessAt || null,
+    lastErrorAt: configuration.lastErrorAt || null,
+    lastError: configuration.lastError ? safeMessage(new Error(configuration.lastError)) : null,
+    updatedAt: configuration.updatedAt || null,
+  };
+}
+
+function textField(value, maximum) {
+  return String(value ?? "").trim().slice(0, maximum);
+}
+
+function companyProfileInput(body = {}) {
+  const profile = {
+    companyName: textField(body.companyName, 255),
+    companyDescription: textField(body.companyDescription, 16_000),
+    productsServices: textField(body.productsServices, 16_000),
+    targetAudience: textField(body.targetAudience, 16_000),
+    brandVoice: textField(body.brandVoice, 2000),
+    offers: textField(body.offers, 16_000),
+    website: textField(body.website, 2048),
+    preferredCTA: textField(body.preferredCTA, 500),
+    industry: textField(body.industry, 255),
+    businessGoals: textField(body.businessGoals, 16_000),
+    otherProfileContext: textField(body.otherProfileContext, 16_000),
+  };
+  if (!profile.companyName) throw Object.assign(new Error("Company name is required."), { statusCode: 400 });
+  if (profile.website) {
+    try {
+      const url = new URL(profile.website);
+      if (!new Set(["http:", "https:"]).has(url.protocol)) throw new Error("invalid protocol");
+      profile.website = url.toString();
+    } catch {
+      throw Object.assign(new Error("Company website must be a valid HTTP or HTTPS URL."), { statusCode: 400 });
+    }
+  }
+  return profile;
 }
 
 function equalToken(left, right) {
@@ -1789,6 +1850,8 @@ export async function createSocialListenerApp({
   adapters,
   bufferAdapter,
   bufferCampaignService,
+  aiProviderService: providedAiProviderService,
+  aiCampaignAutomationEngine: providedAiCampaignAutomationEngine,
   authService: providedAuthService,
   fetchImpl,
   logger = console,
@@ -1904,6 +1967,27 @@ export async function createSocialListenerApp({
       env,
 
       fetchImpl,
+    });
+
+  const aiEncryptionKey =
+    env.AI_PROVIDER_ENCRYPTION_KEY ||
+    env.CHANNEL_CONFIG_ENCRYPTION_KEY;
+
+  const activeAiProviderService =
+    providedAiProviderService ||
+    new AIProviderService({
+      repository: activeRepository,
+      encryptionKey: aiEncryptionKey,
+      fetchImpl,
+    });
+
+  const activeAiCampaignAutomationEngine =
+    providedAiCampaignAutomationEngine ||
+    new AICampaignAutomationEngine({
+      repository: activeRepository,
+      providerService: activeAiProviderService,
+      bufferCampaignService: activeBufferCampaignService,
+      logger,
     });
 
   async function refreshConfiguredAdapters() {
@@ -2527,6 +2611,122 @@ export async function createSocialListenerApp({
           channels:
             await listener.getStatuses(),
         });
+      }
+
+      /*
+      |--------------------------------------------------------------------------
+      | COMPANY PROFILE + MULTI-PROVIDER AI CAMPAIGNS
+      |--------------------------------------------------------------------------
+      */
+
+      if (request.method === "GET" && url.pathname === "/company-profile") {
+        return json({ ok: true, profile: await activeRepository.getCompanyProfile() });
+      }
+
+      if (request.method === "PUT" && url.pathname === "/company-profile") {
+        return json({
+          ok: true,
+          profile: await activeRepository.saveCompanyProfile(companyProfileInput(await readJson(request))),
+        });
+      }
+
+      if (request.method === "GET" && url.pathname === "/ai/providers") {
+        const providers = await activeRepository.getAiProviderConfigurations();
+        return json({ ok: true, providers: providers.map(publicAiProvider) });
+      }
+
+      if (request.method === "PUT" && url.pathname === "/ai/providers") {
+        const body = await readJson(request);
+        const providerId = optionalPositiveId(body.id || body.providerId, "AI provider ID");
+        if (!providerId) return json({ error: "An AI provider ID is required." }, 400);
+        const existing = (await activeRepository.getAiProviderConfigurations({ providerId }))[0];
+        if (!existing) return json({ error: "AI provider configuration was not found." }, 404);
+        if (!AI_PROVIDER_DEFINITIONS[existing.providerCode]) {
+          return json({ error: "This AI provider has no installed server adapter." }, 409);
+        }
+        const apiKey = textField(body.apiKey, 10_000);
+        const enabled = Boolean(body.enabled);
+        if (existing.isDefault && existing.enabled && !enabled) {
+          return json({ error: "Select and save another default provider before disabling this one." }, 409);
+        }
+        if (enabled && !apiKey && !existing.hasSecret) {
+          return json({ error: "Store an API key before enabling this AI provider." }, 400);
+        }
+        const envelope = apiKey
+          ? encryptChannelSecrets({ apiKey }, aiEncryptionKey)
+          : null;
+        const saved = await activeRepository.saveAiProviderConfiguration({
+          id: providerId,
+          providerName: textField(body.providerName, 255) || existing.providerName,
+          model: textField(body.model, 255) || existing.model,
+          enabled,
+          // The current default can only be replaced by selecting another provider.
+          isDefault: Boolean(body.isDefault) || existing.isDefault,
+          capabilities: providerCapabilities(existing.providerCode),
+        }, envelope);
+        return json({ ok: true, provider: publicAiProvider(saved) });
+      }
+
+      if (request.method === "POST" && url.pathname === "/ai/providers/test") {
+        const body = await readJson(request);
+        const providerId = optionalPositiveId(body.id || body.providerId, "AI provider ID");
+        if (!providerId) return json({ error: "An AI provider ID is required." }, 400);
+        try {
+          await activeAiProviderService.testConnection(providerId);
+          const provider = await activeRepository.setAiProviderTestResult(providerId, { succeeded: true });
+          return json({ ok: true, provider: publicAiProvider(provider), message: "AI provider connection succeeded." });
+        } catch (error) {
+          const message = safeAiMessage(error);
+          const provider = await activeRepository.setAiProviderTestResult(providerId, { succeeded: false, error: message });
+          return json(
+            { ok: false, provider: publicAiProvider(provider), error: message },
+            Number.isInteger(error?.statusCode) ? error.statusCode : 502,
+          );
+        }
+      }
+
+      if (request.method === "GET" && url.pathname === "/ai/campaigns") {
+        const configurationId = optionalId(url.searchParams.get("configurationId"));
+        const configurations = await activeRepository.getAiCampaignConfigurations(configurationId);
+        const history = await activeRepository.getAiGenerationHistory({ configurationId, limit: 200 });
+        return json({ ok: true, configurations, history });
+      }
+
+      if (request.method === "POST" && url.pathname === "/ai/campaigns") {
+        const body = await readJson(request);
+        const existingId = optionalId(body.id || body.aiCampaignConfigurationId);
+        const existing = existingId
+          ? (await activeRepository.getAiCampaignConfigurations(existingId))[0]
+          : null;
+        const input = normalizeAiCampaignInput({
+          ...body,
+          status: existing?.status || "DRAFT",
+        });
+        const configuration = await activeAiCampaignAutomationEngine.saveConfiguration(input);
+        return json({ ok: true, configuration }, existing ? 200 : 201);
+      }
+
+      if (request.method === "POST" && url.pathname === "/ai/campaigns/start") {
+        const body = await readJson(request);
+        const result = await activeAiCampaignAutomationEngine.start(body.id || body.configurationId);
+        return json({ ok: true, ...result });
+      }
+
+      if (request.method === "POST" && url.pathname === "/ai/campaigns/action") {
+        const body = await readJson(request);
+        const action = textField(body.action, 32).toUpperCase();
+        if (action === "GENERATE_NOW") {
+          const generated = await activeAiCampaignAutomationEngine.generateNow(body.id || body.configurationId);
+          return json({ ok: true, generated });
+        }
+        const configuration = await activeAiCampaignAutomationEngine.setStatus(body.id || body.configurationId, action);
+        return json({ ok: true, configuration });
+      }
+
+      if (request.method === "POST" && url.pathname === "/ai/campaigns/regenerate") {
+        const body = await readJson(request);
+        const result = await activeAiCampaignAutomationEngine.regenerate(body.runId, body.providerId || null);
+        return json({ ok: true, ...result });
       }
 
       /*
@@ -4394,6 +4594,9 @@ export async function createSocialListenerApp({
 
     automationEngine,
 
+    aiCampaignAutomationEngine:
+      activeAiCampaignAutomationEngine,
+
     bufferCampaignService:
       activeBufferCampaignService,
 
@@ -4488,6 +4691,12 @@ async function start() {
         process.env
           .CAMPAIGN_AUTOMATION_INTERVAL_MS
       ) || 60_000
+    );
+
+  const aiCampaignAutomationIntervalMs =
+    Math.max(
+      60_000,
+      Number(process.env.AI_CAMPAIGN_AUTOMATION_INTERVAL_MS) || 300_000
     );
 
   /*
@@ -4635,6 +4844,24 @@ async function start() {
 
   automationTimer.unref();
 
+  const aiCampaignAutomationTick = () => {
+    socialListenerApp.aiCampaignAutomationEngine
+      .tick()
+      .catch((error) => {
+        console.error(JSON.stringify({
+          component: "ai_campaign_automation",
+          operation: "daily_tick",
+          status: "error",
+          error: safeMessage(error),
+        }));
+      });
+  };
+
+  // Run once after startup, then rely on the idempotent SQL run identity.
+  aiCampaignAutomationTick();
+  const aiCampaignAutomationTimer = setInterval(aiCampaignAutomationTick, aiCampaignAutomationIntervalMs);
+  aiCampaignAutomationTimer.unref();
+
   /*
   |--------------------------------------------------------------------------
   | SERVER CLOSE CLEANUP
@@ -4647,6 +4874,8 @@ async function start() {
       clearInterval(
         automationTimer
       );
+
+      clearInterval(aiCampaignAutomationTimer);
 
       socialListenerApp
         .close()

@@ -99,6 +99,8 @@ DB_PASSWORD=<database password>
 DB_ENCRYPT=true
 DB_TRUST_SERVER_CERTIFICATE=false
 CHANNEL_CONFIG_ENCRYPTION_KEY=<strong-random-key>
+AI_PROVIDER_ENCRYPTION_KEY=<strong-random-key>
+AI_CAMPAIGN_AUTOMATION_INTERVAL_MS=300000
 BUFFER_API_KEY=<Buffer API key>
 BUFFER_ORGANIZATION_ID=<Buffer organization ID>
 BUFFER_API_URL=https://api.buffer.com
@@ -131,6 +133,20 @@ registration scoring events and migrates recognized legacy landing video links
 without restoring videos that an admin later removes. Migration 020 adds the
 landing-page picture asset, explicit teaser media mode/order, and saved CTA
 enabled state without changing the lead-scoring formula or temperature bands.
+Migration 024 adds the singleton Company Profile, encrypted multi-provider AI
+settings, AI campaign configuration, and idempotent generation history. Daily
+AI output is persisted through the same `Campaigns`, `CampaignPosts`, Buffer,
+and Cloudinary architecture used by manual campaigns.
+
+OpenAI, Anthropic Claude, and Google Gemini keys are entered in the admin
+Settings screen and encrypted server-side. When set,
+`AI_PROVIDER_ENCRYPTION_KEY` must be a base64-encoded 32-byte key; when omitted, the existing
+`CHANNEL_CONFIG_ENCRYPTION_KEY` is reused. `AI_CAMPAIGN_AUTOMATION_INTERVAL_MS`
+controls how often the server checks for a missing daily run (default five
+minutes). The SQL run identity prevents repeated checks or restarts from
+creating duplicate posts. Provider fallback occurs only when a campaign has an
+explicit fallback selection. Existing n8n inbound comment, DM, lead-matching,
+timeline, scoring, and follow-up workflows do not require any change.
 
 Buffer requires `BUFFER_API_KEY` and `BUFFER_ORGANIZATION_ID` in the listener
 environment. Keep both server-only; never prefix them with `NEXT_PUBLIC_` or

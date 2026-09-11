@@ -58,6 +58,8 @@ DB_PASSWORD=<database password>
 DB_ENCRYPT=true
 DB_TRUST_SERVER_CERTIFICATE=false
 CHANNEL_CONFIG_ENCRYPTION_KEY=<strong-random-encryption-key>
+AI_PROVIDER_ENCRYPTION_KEY=<strong-random-encryption-key>
+AI_CAMPAIGN_AUTOMATION_INTERVAL_MS=300000
 BUFFER_API_KEY=<Buffer API key>
 BUFFER_ORGANIZATION_ID=<Buffer organization ID>
 BUFFER_API_URL=https://api.buffer.com
@@ -146,6 +148,33 @@ references have been checked.
     device timezone. Migrations 022 and 023 are idempotent and do not require new
     environment variables or an n8n workflow change. The read-only duplicate
     audit is available in `sql/diagnostics/timeline_duplicate_dry_run.sql`.
+
+## Multi-provider AI campaign release checklist
+
+1. Pull the release from `main`, run `npm ci`, and run `npm run build`.
+2. Set `AI_PROVIDER_ENCRYPTION_KEY` to a base64-encoded 32-byte secret in the
+   SmarterASP control panel. It may be omitted only when the existing
+   `CHANNEL_CONFIG_ENCRYPTION_KEY` should intentionally encrypt both kinds of
+   server-side credentials.
+3. Set `AI_CAMPAIGN_AUTOMATION_INTERVAL_MS=300000` (or another value of at
+   least 60000 milliseconds).
+4. Run `npm run db:setup:mssql` with the production `DB_*` values so migration
+   024 installs the Company Profile, provider configuration, AI campaign
+   configuration, generation history, indexes, and stored procedures.
+5. Restart the Node application. In Settings, save the Company Profile, save
+   each provider API key and model, enable the intended providers, select one
+   default, and run each connection test.
+6. In Campaign Studio, create an AI campaign using only live Facebook or
+   Instagram accounts returned by Buffer. Use draft publishing for review, or
+   production publishing to schedule through the existing Buffer flow.
+7. Confirm the first run creates ordinary `Campaigns` and `CampaignPosts`
+   records, and confirm a repeated Generate Today action reports an idempotent
+   skip instead of creating another post.
+
+No AI provider key belongs in a `NEXT_PUBLIC_*` variable. Provider keys are
+entered through the admin UI, encrypted in MSSQL, masked in all responses, and
+never passed to n8n. Existing n8n webhook URLs and comment/DM workflows are
+unchanged.
 
 The CRM uses its own MSSQL-backed users and sessions. The listener creates the
 `next2thetop` ADMIN account only when absent and never resets it during later

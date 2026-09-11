@@ -62,6 +62,8 @@ function requiresAdmin(request: NextRequest) {
     "/api/social/config",
     "/api/social/channels",
     "/api/social/scoring",
+    "/api/ai/providers",
+    "/api/company-profile",
   ].some((prefix) => pathname === prefix || pathname.startsWith(`${prefix}/`));
 }
 
