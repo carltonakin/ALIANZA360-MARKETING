@@ -7,6 +7,7 @@ import { RegisterForm } from "../landing/[slug]/RegisterForm";
 
 export type LandingPageBlock = {
   id: string;
+  blockId?: number;
   type: string;
   sortOrder: number;
   enabled: boolean;
@@ -15,6 +16,12 @@ export type LandingPageBlock = {
 
 const value = (input: unknown) => typeof input === "string" ? input : "";
 const items = (input: unknown) => Array.isArray(input) ? input as Array<Record<string, unknown>> : [];
+const safeHttpUrl = (input: unknown) => {
+  try {
+    const url = new URL(value(input));
+    return url.protocol === "http:" || url.protocol === "https:" ? url.toString() : "";
+  } catch { return ""; }
+};
 
 function Countdown({ targetAt, expiredText }: { targetAt: string; expiredText: string }) {
   const [label, setLabel] = useState("--d --h --m --s");
@@ -57,17 +64,22 @@ export function LandingPageBlocks({
   pageId,
   paymentUrl = "",
   preview = false,
+  selectedBlockId,
+  onSelectBlock,
 }: {
   blocks: LandingPageBlock[];
   pageId: string;
   paymentUrl?: string;
   preview?: boolean;
+  selectedBlockId?: string;
+  onSelectBlock?: (id: string) => void;
 }) {
   return (
     <div className="lp-blocks">
       {blocks.filter((block) => block.enabled).sort((a, b) => a.sortOrder - b.sortOrder).map((block) => {
         const config = block.config || {};
         const alignment = value(config.alignment) || "left";
+        const rendered = (() => {
         if (block.type === "HERO") return (
           <section className={`lp-block lp-block-hero${config.backgroundUrl ? " has-background" : ""}`} key={block.id} style={config.backgroundUrl ? { backgroundImage: `linear-gradient(#18182799,#18182799),url(${value(config.backgroundUrl)})` } : undefined}>
             <div style={{ textAlign: alignment as "left" | "center" | "right" }}>
@@ -102,12 +114,13 @@ export function LandingPageBlocks({
           </section>
         ) : preview ? <div className="lp-block lp-empty-media" key={block.id}>Add a video</div> : null;
         if (block.type === "CTA_BUTTON") {
-          if (!preview && !value(config.url)) return null;
+          const destination = safeHttpUrl(config.url);
+          if (!preview && (!destination || !value(config.text).trim())) return null;
           return (
           <section className="lp-block lp-block-cta" key={block.id} style={{ textAlign: alignment as "left" | "center" | "right" }}>
             {preview
               ? <button className={`lp-button ${config.style === "secondary" ? "lp-button-secondary" : ""}`} type="button">{value(config.text) || "Call to action"}</button>
-              : <a className={`lp-button ${config.style === "secondary" ? "lp-button-secondary" : ""}`} href={value(config.url)} target={config.openInNewTab ? "_blank" : undefined} rel={config.openInNewTab ? "noreferrer" : undefined}>{value(config.text) || "Call to action"}</a>}
+              : <a className={`lp-button ${config.style === "secondary" ? "lp-button-secondary" : ""}`} href={destination} target={config.openInNewTab ? "_blank" : undefined} rel={config.openInNewTab ? "noreferrer" : undefined}>{value(config.text)}</a>}
           </section>
           );
         }
@@ -137,6 +150,14 @@ export function LandingPageBlocks({
           );
         }
         return null;
+        })();
+        if (!rendered || !preview || !onSelectBlock) return rendered;
+        return (
+          <div data-studio-block-id={block.id} key={block.id} className={`studio-preview-control${selectedBlockId === block.id ? " selected" : ""}`}>
+            {rendered}
+            <button type="button" className="studio-preview-select" aria-label={`Edit ${block.type.toLowerCase().replaceAll("_", " ")} block`} onClick={() => onSelectBlock(block.id)} />
+          </div>
+        );
       })}
     </div>
   );

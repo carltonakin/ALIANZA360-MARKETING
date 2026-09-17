@@ -102,7 +102,10 @@ export function LandingPageStudio({
   const updateBlock = (id: string, change: Partial<LandingPageBlock>) => setBlocks((current) => current.map((block) => block.id === id ? { ...block, ...change } : block));
   const updateConfig = (key: string, value: unknown) => {
     if (!selected) return;
-    updateBlock(selected.id, { config: { ...selected.config, [key]: value } });
+    const id = selected.id;
+    setBlocks((current) => current.map((block) => block.id === id
+      ? { ...block, config: { ...block.config, [key]: value } }
+      : block));
   };
   const ordered = (next: LandingPageBlock[]) => next.map((block, sortOrder) => ({ ...block, sortOrder }));
   const move = (id: string, offset: number) => setBlocks((current) => {
@@ -114,11 +117,16 @@ export function LandingPageStudio({
     next.splice(to, 0, item);
     return ordered(next);
   });
-  const remove = (id: string) => setBlocks((current) => {
-    const next = ordered(current.filter((block) => block.id !== id));
+  const remove = (id: string) => {
+    const next = ordered(blocks.filter((block) => block.id !== id));
+    setBlocks(next);
     if (selectedId === id) setSelectedId(next[0]?.id || "");
-    return next;
-  });
+    setPendingFiles((current) => Object.fromEntries(Object.entries(current).filter(([key]) => !key.startsWith(`${id}:`))));
+    setPreviews((current) => {
+      for (const [key, url] of Object.entries(current)) if (key.startsWith(`${id}:`)) URL.revokeObjectURL(url);
+      return Object.fromEntries(Object.entries(current).filter(([key]) => !key.startsWith(`${id}:`)));
+    });
+  };
   const add = (type: string) => {
     const block = { ...uniqueBlock(type), sortOrder: blocks.length };
     setBlocks((current) => [...current, block]);
@@ -206,8 +214,13 @@ export function LandingPageStudio({
           blocks: ordered(nextBlocks),
         }),
       });
-      const body = await response.json().catch(() => ({})) as { error?: string; message?: string };
+      const body = await response.json().catch(() => ({})) as { error?: string; message?: string; record?: StudioPage };
       if (!response.ok) throw new Error(body.error || body.message || "The landing page could not be saved.");
+      if (body.record?.blocks) {
+        const persisted = resolveLandingPageBlocks(body.record) as LandingPageBlock[];
+        setBlocks(persisted);
+        setSelectedId((current) => persisted.some((block) => block.id === current) ? current : persisted[0]?.id || "");
+      }
       await onSaved(page ? "Landing-page design saved" : "Landing page created");
     } catch (error) {
       for (const item of uploaded) {
@@ -264,7 +277,7 @@ export function LandingPageStudio({
         <section className="studio-canvas">
           <div className="studio-canvas-toolbar"><div><button className={viewport === "desktop" ? "active" : ""} type="button" onClick={() => setViewport("desktop")}>Desktop</button><button className={viewport === "tablet" ? "active" : ""} type="button" onClick={() => setViewport("tablet")}>Tablet</button><button className={viewport === "mobile" ? "active" : ""} type="button" onClick={() => setViewport("mobile")}>Mobile</button></div><small>Drag blocks to reorder</small></div>
           <div className="studio-block-order">{blocks.map((block, index) => <div role="button" tabIndex={0} draggable key={block.id} className={`studio-order-item${selectedId === block.id ? " selected" : ""}`} onClick={() => setSelectedId(block.id)} onKeyDown={(event) => { if (event.key === "Enter" || event.key === " ") setSelectedId(block.id); }} onDragStart={() => { draggedId.current = block.id; }} onDragOver={(event) => event.preventDefault()} onDrop={(event) => drop(event, block.id)}><span className="studio-drag">⋮⋮</span><strong>{index + 1}. {BLOCK_LABELS[block.type]}</strong><span>{block.enabled ? "Visible" : "Hidden"}</span><i><button type="button" aria-label={`Move ${BLOCK_LABELS[block.type]} up`} onClick={(event) => { event.stopPropagation(); move(block.id, -1); }}>↑</button><button type="button" aria-label={`Move ${BLOCK_LABELS[block.type]} down`} onClick={(event) => { event.stopPropagation(); move(block.id, 1); }}>↓</button></i></div>)}</div>
-          <div className={`studio-preview studio-preview-${viewport}`}><div><LandingPageBlocks blocks={previewBlocks} pageId={String(page?.id || "preview")} paymentUrl={page?.paymentUrl || ""} preview /></div></div>
+          <div className={`studio-preview studio-preview-${viewport}`}><div><LandingPageBlocks blocks={previewBlocks} pageId={String(page?.id || "preview")} paymentUrl={page?.paymentUrl || ""} preview selectedBlockId={selectedId} onSelectBlock={setSelectedId} /></div></div>
         </section>
         <aside className="studio-settings"><h3>Block settings</h3>{settings}</aside>
       </div>

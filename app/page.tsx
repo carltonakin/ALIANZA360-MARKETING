@@ -1,4 +1,4 @@
-"use client";
+﻿"use client";
 import {
   type ChangeEvent,
   type DragEvent,
@@ -384,6 +384,10 @@ export default function Home({ initialView = "Overview" }: { initialView?: strin
   const [unifiedLead, setUnifiedLead] = useState<UnifiedLead | null>(null);
   const [busy, setBusy] = useState(false);
   const [toast, setToast] = useState("");
+  const [newLeadToast, setNewLeadToast] = useState("");
+  const [totalLeadCount, setTotalLeadCount] = useState<number | null>(null);
+  const newLeadToastTimer = useRef<number | null>(null);
+  const announcedLeadIds = useRef(new Set<number>());
   const [campaignSaveError, setCampaignSaveError] = useState("");
 
   const [leads, setLeads] = useState<Lead[]>([]);
@@ -565,7 +569,9 @@ export default function Home({ initialView = "Overview" }: { initialView?: strin
         instagram: lead.instagram || (lead.source?.toLowerCase().includes("instagram") ? lead.social || "" : ""),
         x: lead.x || (/^(x|x \/ twitter|twitter)$/i.test(lead.source || "") ? lead.social || "" : ""),
       });
-      setLeads((d.leads ?? []).map(normalizeLead));
+      setLeads((d.leads ?? []).map(normalizeLead).sort((a, b) =>
+        Date.parse(b.createdAt || "") - Date.parse(a.createdAt || "") ||
+        Number(String(b.id).replace(/^social:/, "")) - Number(String(a.id).replace(/^social:/, ""))));
       setCampaigns(d.campaigns ?? []);
       setPages(d.pages ?? []);
       setWebinars(d.webinars ?? []);
@@ -686,6 +692,40 @@ export default function Home({ initialView = "Overview" }: { initialView?: strin
   };
 
   useEffect(() => {
+    let pollTimer: number | undefined;
+    let polling = false;
+    let cursor: number | null = null;
+    const pollNewLeads = async () => {
+      if (polling) return;
+      polling = true;
+      try {
+        const path = cursor === null ? "/api/leads/changes" : `/api/leads/changes?after=${cursor}`;
+        const response = await fetch(path, { cache: "no-store" });
+        if (!response.ok) return;
+        const result = await response.json() as {
+          cursor: number; totalLeads: number;
+          leads: Array<{ event: "LEAD_CREATED"; leadId: number; name: string }>;
+        };
+        if (Number.isSafeInteger(result.totalLeads)) setTotalLeadCount(result.totalLeads);
+        if (Array.isArray(result.leads) && result.leads.length) {
+          const unseen = result.leads.filter((lead) => {
+            if (lead.event !== "LEAD_CREATED") return false;
+            if (announcedLeadIds.current.has(lead.leadId)) return false;
+            announcedLeadIds.current.add(lead.leadId);
+            return true;
+          });
+          if (unseen.length) {
+            void load();
+            const latest = unseen.at(-1)!;
+            setNewLeadToast(`New lead received: ${latest.name || "Lead"}`);
+            if (newLeadToastTimer.current !== null) window.clearTimeout(newLeadToastTimer.current);
+            newLeadToastTimer.current = window.setTimeout(() => setNewLeadToast(""), 5000);
+          }
+        }
+        if (Number.isSafeInteger(result.cursor)) cursor = result.cursor;
+      } catch { /* Retry on the next interval. */ }
+      finally { polling = false; }
+    };
     const initialLoad = window.setTimeout(async () => {
       const response = await fetch("/api/auth/me", { cache: "no-store" });
       if (!response.ok) {
@@ -703,11 +743,17 @@ export default function Home({ initialView = "Overview" }: { initialView?: strin
       const adminView = requestedView === "Settings" || requestedView === "User Management";
       if (requestedView && (!adminView || auth.user.role === "ADMIN")) setActive(requestedView);
       if (query.has("forbidden")) setToast("Administrator access is required for that area.");
+      await pollNewLeads();
       void load();
+      pollTimer = window.setInterval(() => void pollNewLeads(), 5000);
       void loadSocialStatus();
       void loadBufferChannels();
     }, 0);
-    return () => window.clearTimeout(initialLoad);
+    return () => {
+      window.clearTimeout(initialLoad);
+      if (pollTimer !== undefined) window.clearInterval(pollTimer);
+      if (newLeadToastTimer.current !== null) window.clearTimeout(newLeadToastTimer.current);
+    };
     // Initial server state is loaded once when the dashboard mounts.
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
@@ -1197,7 +1243,7 @@ export default function Home({ initialView = "Overview" }: { initialView?: strin
             >
               <span className="nav-icon">{i}</span>
               <span>{n}</span>
-              {n === "Leads" && <b>{leads.length}</b>}
+              {n === "Leads" && <b>{totalLeadCount ?? leads.length}</b>}
             </button>
           ))}
           <p className="nav-label second">SYSTEM</p>
@@ -1267,7 +1313,7 @@ export default function Home({ initialView = "Overview" }: { initialView?: strin
           {dataError && <p className="backend-config-message" role="alert">{dataError}</p>}
           {active === "Overview" && (
             <Overview
-              leads={leads}
+              totalLeadCount={totalLeadCount ?? leads.length}
               campaigns={campaigns}
               totalValue={totalValue}
               setActive={setActive}
@@ -1420,17 +1466,18 @@ export default function Home({ initialView = "Overview" }: { initialView?: strin
         </div>
       )}
       {toast && <div className="toast">✓ {toast}</div>}
+      {newLeadToast && <div className="toast new-lead-toast" role="status">{newLeadToast}<button type="button" aria-label="Dismiss new lead notification" onClick={() => { if (newLeadToastTimer.current !== null) window.clearTimeout(newLeadToastTimer.current); setNewLeadToast(""); }}>Close</button></div>}
     </main>
   );
 }
 
 function Overview({
-  leads,
+  totalLeadCount,
   campaigns,
   totalValue,
   setActive,
 }: {
-  leads: Lead[];
+  totalLeadCount: number;
   campaigns: Campaign[];
   totalValue: number;
   setActive: (x: string) => void;
@@ -1449,7 +1496,7 @@ function Overview({
           [
             "♙",
             "Total leads",
-            leads.length,
+            totalLeadCount,
             "+24.8%",
             "coral",
           ],
@@ -1504,9 +1551,9 @@ function Overview({
             {[
               ["Social reach", 84200, 100],
               ["Engaged", 12800, 62],
-              ["Leads", leads.length, 40],
-              ["Webinar", Math.round(leads.length * 0.48), 25],
-              ["Customers", Math.round(leads.length * 0.18), 12],
+              ["Leads", totalLeadCount, 40],
+              ["Webinar", Math.round(totalLeadCount * 0.48), 25],
+              ["Customers", Math.round(totalLeadCount * 0.18), 12],
             ].map(([n, v, w]) => (
               <div key={n as string}>
                 <span>{n}</span>

@@ -4120,6 +4120,15 @@ export async function createSocialListenerApp({
           : json({ error: "Social lead not found." }, 404);
       }
 
+      if (request.method === "GET" && url.pathname === "/leads/changes") {
+        const rawAfter = url.searchParams.get("after");
+        const afterId = rawAfter === null ? null : Number(rawAfter);
+        if (afterId !== null && (!Number.isSafeInteger(afterId) || afterId < 0)) {
+          return json({ error: "Invalid lead cursor." }, 400);
+        }
+        return json({ ok: true, ...(await activeRepository.getLeadChanges(afterId)) });
+      }
+
       if (
         request.method ===
           "GET" &&

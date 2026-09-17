@@ -575,6 +575,7 @@ function mapLandingPage(row) {
 function mapLandingPageBlock(row) {
   return {
     id: row.BlockKey || `block:${row.LandingPageBlockId}`,
+    blockId: Number(row.LandingPageBlockId),
     type: row.BlockType,
     sortOrder: Number(row.SortOrder || 0),
     enabled: row.IsEnabled == null ? true : Boolean(row.IsEnabled),
@@ -1107,7 +1108,12 @@ export class SqlServerRepository {
     request.input("CreatedByAi", this.sql.Bit, input.createdByAi ? 1 : 0);
     request.input("BlocksJson", this.sql.NVarChar(this.sql.MAX), Array.isArray(input.blocks) ? JSON.stringify(input.blocks) : null);
     const response = await request.execute("dbo.LandingPage_Save");
-    return response.recordset?.[0] ? { ...mapLandingPage(response.recordset[0]), blocks: input.blocks || [] } : null;
+    if (!response.recordset?.[0]) return null;
+    const savedPage = mapLandingPage(response.recordset[0]);
+    const blocksRequest = this.request();
+    blocksRequest.input("LandingPageId", this.sql.BigInt, numericId(savedPage.id));
+    const savedBlocks = await blocksRequest.query("SELECT * FROM dbo.LandingPageBlocks WHERE LandingPageId = @LandingPageId ORDER BY SortOrder");
+    return { ...savedPage, blocks: (savedBlocks.recordset || []).map(mapLandingPageBlock) };
   }
 
   async duplicateLandingPage(id) {
@@ -1201,6 +1207,28 @@ export class SqlServerRepository {
     request.input("Limit", this.sql.Int, Math.max(1, Math.min(500, Number(limit) || 100)));
     const response = await request.execute("dbo.SocialLead_GetRecent");
     return (response.recordset || []).map(mapLead);
+  }
+
+  async getLeadChanges(afterId = null, limit = 100) {
+    if (afterId === null) {
+      const baseline = await this.request().query("SELECT COUNT_BIG(*) AS TotalLeads, COALESCE(MAX(LeadId), 0) AS LatestLeadId FROM dbo.Leads");
+      return {
+        cursor: Number(baseline.recordset?.[0]?.LatestLeadId || 0),
+        totalLeads: Number(baseline.recordset?.[0]?.TotalLeads || 0), leads: [],
+      };
+    }
+    const request = this.request();
+    request.input("AfterLeadId", this.sql.BigInt, afterId);
+    request.input("Limit", this.sql.Int, Math.max(1, Math.min(100, limit)));
+    const response = await request.query("SELECT TOP (@Limit) LeadId, Name, [Source] AS SourceChannel, LeadScore, ScoreBand, CreatedAt FROM dbo.Leads WHERE LeadId > @AfterLeadId ORDER BY LeadId ASC");
+    const leads = (response.recordset || []).map((row) => ({
+      event: "LEAD_CREATED", leadId: Number(row.LeadId), name: row.Name || "Lead", source: row.SourceChannel || "Manual",
+      score: Number(row.LeadScore || 0), scoreBand: row.ScoreBand || null, createdAt: iso(row.CreatedAt),
+    }));
+    const totalLeads = leads.length
+      ? Number((await this.request().query("SELECT COUNT_BIG(*) AS TotalLeads FROM dbo.Leads")).recordset?.[0]?.TotalLeads || 0)
+      : null;
+    return { cursor: leads.at(-1)?.leadId ?? afterId, totalLeads, leads };
   }
 
   async getReport(reportName, filters = {}) {

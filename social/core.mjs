@@ -926,7 +926,10 @@ export class InMemorySocialRepository {
   }
 
   async getLeads(limit = 100) {
-    return [...this.leads.values()].slice(0, limit).map((lead) => ({
+    return [...this.leads.values()].sort((a, b) =>
+      String(b.createdAt || "").localeCompare(String(a.createdAt || "")) ||
+      Number(String(b.id).replace(/^social:/, "")) - Number(String(a.id).replace(/^social:/, "")))
+      .slice(0, limit).map((lead) => ({
       id: lead.id,
       name: lead.name,
       email: lead.email || "",
@@ -964,6 +967,19 @@ export class InMemorySocialRepository {
       lastResponseType: lead.lastResponseType || null,
       lastResponseText: lead.lastResponseText || "",
     }));
+  }
+
+  async getLeadChanges(afterId = null, limit = 100) {
+    const records = [...this.leads.values()].map((lead) => ({
+      event: "LEAD_CREATED",
+      leadId: Number(String(lead.id).replace(/^social:/, "")),
+      name: lead.name || "Lead", source: lead.source || "Manual",
+      score: Number(lead.leadScore || 0), scoreBand: lead.scoreBand || null,
+      createdAt: lead.createdAt,
+    })).filter((lead) => Number.isInteger(lead.leadId)).sort((a, b) => a.leadId - b.leadId);
+    if (afterId === null) return { cursor: records.at(-1)?.leadId || 0, totalLeads: records.length, leads: [] };
+    const leads = records.filter((lead) => lead.leadId > afterId).slice(0, limit);
+    return { cursor: leads.at(-1)?.leadId ?? afterId, totalLeads: records.length, leads };
   }
 
   async getScoringConfiguration() {

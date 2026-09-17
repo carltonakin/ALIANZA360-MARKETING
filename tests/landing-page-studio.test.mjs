@@ -1,18 +1,41 @@
 import assert from "node:assert/strict";
 import { readFile } from "node:fs/promises";
+import { createRequire } from "node:module";
 import test from "node:test";
+import { runInNewContext } from "node:vm";
+import typescript from "typescript";
 import {
   LANDING_PAGE_BLOCK_TYPES,
   defaultLandingPageBlock,
   legacyLandingPageBlocks,
   normalizeLandingPageBlocks,
   projectLegacyLandingPageFields,
+  resolveLandingPageBlocks,
 } from "../lib/landing-page-studio.mjs";
 import { InMemorySocialRepository } from "../social/core.mjs";
 import { createSocialListenerApp } from "../social/server.mjs";
 
 const env = { SERVICE_AUTH_TOKEN: "service-token", META_VERIFY_TOKEN: "verify", META_APP_SECRET: "secret" };
 const logger = { info() {}, error() {}, log() {} };
+const nodeRequire = createRequire(import.meta.url);
+
+async function loadBlockRenderer() {
+  const source = await readFile(new URL("../app/components/LandingPageBlocks.tsx", import.meta.url), "utf8");
+  const output = typescript.transpileModule(source, {
+    compilerOptions: { module: typescript.ModuleKind.CommonJS, jsx: typescript.JsxEmit.ReactJSX, esModuleInterop: true },
+  }).outputText;
+  const exports = {};
+  runInNewContext(output, {
+    exports, URL,
+    require(specifier) {
+      if (specifier === "./LandingVideoPlayer") return { LandingVideoPlayer: () => null };
+      if (specifier === "../landing/[slug]/RegisterForm") return { RegisterForm: () => null };
+      if (specifier === "next/image") return () => null;
+      return nodeRequire(specifier);
+    },
+  });
+  return exports.LandingPageBlocks;
+}
 
 function request(path, body, method = "POST") {
   return new Request(`http://listener.test${path}`, {
@@ -62,6 +85,89 @@ test("legacy fields convert to blocks and blocks project back for old clients", 
   assert.equal(legacy.teaser, "Legacy teaser");
   assert.equal(legacy.webinarUrl, "https://example.com/watch");
   assert.equal(legacy.preVideoCtaText, "Book now");
+});
+
+test("one invalid stored block does not hide a valid published CTA", () => {
+  const blocks = resolveLandingPageBlocks({ blocks: [
+    { ...defaultLandingPageBlock("IMAGE", "broken-image"), config: { url: "javascript:bad" }, sortOrder: 0 },
+    { ...defaultLandingPageBlock("CTA_BUTTON", "cta"), config: { text: "Join", url: "https://example.com/join", alignment: "center" }, sortOrder: 1 },
+  ] });
+  assert.deepEqual(blocks.map((block) => block.id), ["cta"]);
+  assert.equal(blocks[0].config.url, "https://example.com/join");
+});
+
+test("an unedited block can be selected and updated after save and reload", async () => {
+  const { app } = await fixture();
+  const blocks = [defaultLandingPageBlock("HERO", "hero"), defaultLandingPageBlock("CTA_BUTTON", "new-cta")];
+  const created = (await (await app.handle(request("/content", {
+    entity: "landing_page", title: "Edit later", slug: "edit-later", headline: "Edit later", status: "draft", blocks,
+  }))).json()).record;
+  const loaded = (await (await app.handle(request("/content", undefined, "GET"))).json()).pages.find((page) => page.id === created.id);
+  assert.equal(loaded.blocks.find((block) => block.id === "new-cta").config.text, "Get started");
+  const edited = loaded.blocks.map((block) => block.id === "new-cta"
+    ? { ...block, config: { ...block.config, text: "Apply now", url: "https://example.com/apply" } }
+    : block);
+  const response = await app.handle(request("/content", {
+    entity: "landing_page", id: created.id, title: "Edit later", slug: "edit-later", headline: "Edit later", status: "published", blocks: edited,
+  }, "PUT"));
+  assert.equal(response.status, 200);
+  const reloaded = (await (await app.handle(request("/content", undefined, "GET"))).json()).pages.find((page) => page.id === created.id);
+  assert.deepEqual(reloaded.blocks.map((block) => block.id), ["hero", "new-cta"]);
+  assert.equal(reloaded.blocks[1].config.url, "https://example.com/apply");
+});
+
+test("saved preview controls remain selectable through three reopen and edit cycles", async () => {
+  const { app } = await fixture();
+  const LandingPageBlocks = await loadBlockRenderer();
+  const blocks = [
+    defaultLandingPageBlock("HERO", "hero"),
+    defaultLandingPageBlock("TEXT", "text"),
+    defaultLandingPageBlock("CTA_BUTTON", "cta"),
+  ];
+  const created = (await (await app.handle(request("/content", {
+    entity: "landing_page", title: "Repeated edits", slug: "repeated-edits", headline: "Repeated edits", status: "draft", blocks,
+  }))).json()).record;
+
+  for (let cycle = 1; cycle <= 3; cycle += 1) {
+    const reopened = (await (await app.handle(request("/content", undefined, "GET"))).json()).pages.find((page) => page.id === created.id);
+    let selectedId = "";
+    const preview = LandingPageBlocks({
+      blocks: reopened.blocks, pageId: reopened.id, preview: true,
+      selectedBlockId: "hero", onSelectBlock: (id) => { selectedId = id; },
+    });
+    const controls = preview.props.children;
+    assert.equal(controls.length, 3);
+    for (const control of controls) {
+      control.props.children[1].props.onClick();
+      assert.equal(selectedId, control.props["data-studio-block-id"]);
+      assert.ok(reopened.blocks.find((block) => block.id === selectedId)?.config);
+    }
+    const edited = reopened.blocks.map((block) => block.id === "cta"
+      ? { ...block, config: { ...block.config, text: `Apply ${cycle}`, url: `https://example.com/apply-${cycle}` } }
+      : block);
+    const response = await app.handle(request("/content", {
+      entity: "landing_page", id: created.id, title: reopened.title, slug: reopened.slug,
+      headline: reopened.headline, status: "draft", blocks: edited,
+    }, "PUT"));
+    assert.equal(response.status, 200);
+    const saved = (await response.json()).record;
+    assert.equal(saved.blocks.length, 3);
+    assert.equal(saved.blocks.find((block) => block.id === "cta")?.config.text, `Apply ${cycle}`);
+  }
+});
+
+test("lead change cursor announces only newly created canonical leads", async () => {
+  const { app } = await fixture();
+  const baseline = await (await app.handle(request("/leads/changes", undefined, "GET"))).json();
+  assert.equal(baseline.cursor, 0);
+  const created = await (await app.handle(request("/leads", { name: "A New Lead", email: "new@example.com" }))).json();
+  const afterCreate = await (await app.handle(request(`/leads/changes?after=${baseline.cursor}`, undefined, "GET"))).json();
+  assert.equal(afterCreate.leads[0].event, "LEAD_CREATED");
+  assert.deepEqual(afterCreate.leads.map((lead) => lead.leadId), [Number(created.lead.id.replace("social:", ""))]);
+  await app.handle(request("/leads", { name: "Updated Lead", email: "new@example.com" }));
+  const afterUpdate = await (await app.handle(request(`/leads/changes?after=${afterCreate.cursor}`, undefined, "GET"))).json();
+  assert.deepEqual(afterUpdate.leads, []);
+  assert.equal(afterUpdate.totalLeads, 1);
 });
 
 test("content API saves ordered blocks and duplicates design without lead history", async () => {
