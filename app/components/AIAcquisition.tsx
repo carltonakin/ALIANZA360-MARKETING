@@ -86,6 +86,23 @@ async function api<T>(path: string, init?: RequestInit): Promise<T> {
   return body;
 }
 
+async function aiProviderOptions(): Promise<AIProvider[]> {
+  const response = await fetch("/api/ai/providers", { cache: "no-store" });
+  const body = await response.json().catch(() => ({})) as { providers?: AIProvider[]; error?: string; message?: string };
+  if (!response.ok) throw new Error(body.error || body.message || `AI provider request failed (${response.status}).`);
+  if (!Array.isArray(body.providers)) throw new Error("AI provider response did not include a provider list.");
+  return body.providers.filter((provider) => provider.enabled);
+}
+
+async function loadPart<T>(label: string, request: Promise<T>, apply: (value: T) => void): Promise<string | null> {
+  try {
+    apply(await request);
+    return null;
+  } catch (error) {
+    return `${label}: ${error instanceof Error ? error.message : "Could not load."}`;
+  }
+}
+
 function numberMetric(value: unknown) {
   return Number(value || 0).toLocaleString();
 }
@@ -158,25 +175,19 @@ export function AIAcquisition({ view }: { view: AcquisitionView }) {
   const load = useCallback(async () => {
     setBusy(true);
     try {
-      const [configurationData, prospectData, conversationData, manualTaskData, overviewData, analyticsData, providerResponse] = await Promise.all([
-        api<{ configurations: AcquisitionConfiguration[] }>("configurations"),
-        api<{ prospects: Prospect[] }>("prospects?limit=500"),
-        api<{ conversations: Conversation[] }>("conversations?limit=500"),
-        api<{ tasks: ManualTask[] }>("manual-tasks"),
-        api<{ overview: Overview }>("overview"),
-        api<{ analytics: Analytics }>("analytics"),
-        fetch("/api/ai/providers", { cache: "no-store" }),
+      const failures = await Promise.all([
+        loadPart("Configurations", api<{ configurations: AcquisitionConfiguration[] }>("configurations"), (data) => {
+          setConfigurations(data.configurations || []);
+          setSelectedConfigurationId((current) => current || data.configurations?.[0]?.id || null);
+        }),
+        loadPart("Prospects", api<{ prospects: Prospect[] }>("prospects?limit=500"), (data) => setProspects(data.prospects || [])),
+        loadPart("Conversations", api<{ conversations: Conversation[] }>("conversations?limit=500"), (data) => setConversations(data.conversations || [])),
+        loadPart("Manual tasks", api<{ tasks: ManualTask[] }>("manual-tasks"), (data) => setManualTasks(data.tasks || [])),
+        loadPart("Overview", api<{ overview: Overview }>("overview"), (data) => setOverview(data.overview || {})),
+        loadPart("Analytics", api<{ analytics: Analytics }>("analytics"), (data) => setAnalytics(data.analytics || { overview: {}, sources: [], channels: [], configurations: [] })),
+        loadPart("AI providers", aiProviderOptions(), setProviders),
       ]);
-      const providerData = providerResponse.ok ? await providerResponse.json() as { providers?: AIProvider[] } : {};
-      setConfigurations(configurationData.configurations || []);
-      setProspects(prospectData.prospects || []);
-      setConversations(conversationData.conversations || []);
-      setManualTasks(manualTaskData.tasks || []);
-      setOverview(overviewData.overview || {});
-      setAnalytics(analyticsData.analytics || { overview: {}, sources: [], channels: [], configurations: [] });
-      setProviders((providerData.providers || []).filter((provider) => provider.enabled));
-      setSelectedConfigurationId((current) => current || configurationData.configurations?.[0]?.id || null);
-      setError("");
+      setError(failures.filter((failure): failure is string => Boolean(failure)).join(" "));
     } catch (loadError) {
       setError(loadError instanceof Error ? loadError.message : "AI Acquisition could not be loaded.");
     } finally {
