@@ -14,6 +14,7 @@ import { LandingVideoPlayer } from "./components/LandingVideoPlayer";
 import { BrandLogo } from "./components/BrandLogo";
 import { LandingPageStudio } from "./components/LandingPageStudio";
 import { AICampaignManager, AISettingsPanels } from "./components/AIConfiguration";
+import { AIAcquisition, type AcquisitionView } from "./components/AIAcquisition";
 import type { LandingPageBlock } from "./components/LandingPageBlocks";
 import { browserVideoValidationErrors, INSTAGRAM_VIDEO_MAX_BYTES } from "../lib/instagram-video-validation.mjs";
 import { LANDING_PAGE_SUBMIT_TEXT, normalizeExternalVideoUrl } from "../lib/landing-page-video.mjs";
@@ -369,6 +370,16 @@ const nav = [
   ["▤", "Reports"],
   ["◉", "Social Listener"],
   ["⚙", "Settings"],
+];
+
+const acquisitionNav: Array<[string, AcquisitionView]> = [
+  ["✦", "Overview"],
+  ["⚑", "Acquisition Configurations"],
+  ["⌕", "Prospects"],
+  ["◌", "Conversations"],
+  ["⌁", "Search Sources"],
+  ["⇄", "Communication Settings"],
+  ["▥", "Analytics"],
 ];
 
 export default function Home({ initialView = "Overview" }: { initialView?: string }) {
@@ -1246,6 +1257,13 @@ export default function Home({ initialView = "Overview" }: { initialView?: strin
               {n === "Leads" && <b>{totalLeadCount ?? leads.length}</b>}
             </button>
           ))}
+          <p className="nav-label second">AI ACQUISITION</p>
+          {acquisitionNav.map(([icon, name]) => {
+            const key = `AI Acquisition: ${name}`;
+            return <button key={key} className={active === key ? "active" : ""} onClick={() => setActive(key)}>
+              <span className="nav-icon">{icon}</span><span>{name}</span>
+            </button>;
+          })}
           <p className="nav-label second">SYSTEM</p>
           {authUser?.role === "ADMIN" && <>
             <button
@@ -1410,6 +1428,9 @@ export default function Home({ initialView = "Overview" }: { initialView?: strin
                 await Promise.all([load(), loadSocialStatus(), loadBufferChannels()]);
               }}
             />
+          )}
+          {active.startsWith("AI Acquisition: ") && (
+            <AIAcquisition view={active.slice("AI Acquisition: ".length) as AcquisitionView} />
           )}
           {active === "User Management" && authUser?.role === "ADMIN" && <UserManagement />}
         </div>

@@ -101,6 +101,8 @@ DB_TRUST_SERVER_CERTIFICATE=false
 CHANNEL_CONFIG_ENCRYPTION_KEY=<strong-random-key>
 AI_PROVIDER_ENCRYPTION_KEY=<strong-random-key>
 AI_CAMPAIGN_AUTOMATION_INTERVAL_MS=300000
+AI_ACQUISITION_INTERVAL_MS=900000
+GOOGLE_PLACES_API_KEY=<server-only-google-places-key>
 BUFFER_API_KEY=<Buffer API key>
 BUFFER_ORGANIZATION_ID=<Buffer organization ID>
 BUFFER_API_URL=https://api.buffer.com
@@ -137,6 +139,12 @@ Migration 024 adds the singleton Company Profile, encrypted multi-provider AI
 settings, AI campaign configuration, and idempotent generation history. Daily
 AI output is persisted through the same `Campaigns`, `CampaignPosts`, Buffer,
 and Cloudinary architecture used by manual campaigns.
+Migration 026 adds the independent AI Acquisition configuration, provider-neutral
+prospect discovery, contact provenance, communication policy queue, prospect
+conversation history, conversion through the existing Lead matcher/scorer, and
+authoritative acquisition analytics. Outbound delivery requires a separate
+approved channel worker; migration 026 is not applied by a code build alone.
+See `docs/ai-acquisition.md`.
 
 OpenAI, Anthropic Claude, and Google Gemini keys are entered in the admin
 Settings screen and encrypted server-side. When set,

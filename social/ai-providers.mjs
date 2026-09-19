@@ -105,6 +105,17 @@ function providerPrompt(context) {
   ].join("\n\n");
 }
 
+function structuredRequest(value) {
+  const request = value && typeof value === "object" ? value : {};
+  const prompt = clean(request.prompt, 100_000);
+  const schemaName = clean(request.schemaName, 64).replace(/[^a-zA-Z0-9_-]/g, "_") || "structured_output";
+  const schema = request.schema && typeof request.schema === "object" && !Array.isArray(request.schema)
+    ? request.schema
+    : null;
+  if (!prompt || !schema) throw new Error("A structured-output prompt and JSON schema are required.");
+  return { prompt, schemaName, schema };
+}
+
 export class OpenAIAdapter {
   constructor({ fetchImpl = globalThis.fetch } = {}) {
     this.fetchImpl = fetchImpl;
@@ -129,6 +140,27 @@ export class OpenAIAdapter {
             schema: NORMALIZED_AI_OUTPUT_SCHEMA,
           },
         },
+      }),
+      signal: AbortSignal.timeout(45_000),
+    });
+    const body = await response.json().catch(() => ({}));
+    if (!response.ok) throw statusError(configuration.providerName, response, body);
+    return jsonFromText(responseText(body));
+  }
+
+  async generateStructuredOutput(configuration, requestValue) {
+    const request = structuredRequest(requestValue);
+    const response = await this.fetchImpl("https://api.openai.com/v1/responses", {
+      method: "POST",
+      headers: {
+        authorization: `Bearer ${requiredApiKey(configuration)}`,
+        "content-type": "application/json",
+      },
+      body: JSON.stringify({
+        model: configuration.effectiveModel,
+        input: request.prompt,
+        store: false,
+        text: { format: { type: "json_schema", name: request.schemaName, strict: true, schema: request.schema } },
       }),
       signal: AbortSignal.timeout(45_000),
     });
@@ -176,6 +208,28 @@ export class AnthropicAdapter {
     return jsonFromText(responseText(body));
   }
 
+  async generateStructuredOutput(configuration, requestValue) {
+    const request = structuredRequest(requestValue);
+    const response = await this.fetchImpl("https://api.anthropic.com/v1/messages", {
+      method: "POST",
+      headers: {
+        "x-api-key": requiredApiKey(configuration),
+        "anthropic-version": "2023-06-01",
+        "content-type": "application/json",
+      },
+      body: JSON.stringify({
+        model: configuration.effectiveModel,
+        max_tokens: 1800,
+        messages: [{ role: "user", content: request.prompt }],
+        output_config: { format: { type: "json_schema", schema: request.schema } },
+      }),
+      signal: AbortSignal.timeout(45_000),
+    });
+    const body = await response.json().catch(() => ({}));
+    if (!response.ok) throw statusError(configuration.providerName, response, body);
+    return jsonFromText(responseText(body));
+  }
+
   async testConnection(configuration) {
     const response = await this.fetchImpl("https://api.anthropic.com/v1/models", {
       headers: {
@@ -209,6 +263,26 @@ export class GeminiAdapter {
           responseMimeType: "application/json",
           responseJsonSchema: NORMALIZED_AI_OUTPUT_SCHEMA,
         },
+      }),
+      signal: AbortSignal.timeout(45_000),
+    });
+    const body = await response.json().catch(() => ({}));
+    if (!response.ok) throw statusError(configuration.providerName, response, body);
+    return jsonFromText(responseText(body));
+  }
+
+  async generateStructuredOutput(configuration, requestValue) {
+    const request = structuredRequest(requestValue);
+    const model = clean(configuration.effectiveModel, 255).replace(/^models\//, "");
+    const response = await this.fetchImpl(`https://generativelanguage.googleapis.com/v1beta/models/${encodeURIComponent(model)}:generateContent`, {
+      method: "POST",
+      headers: {
+        "x-goog-api-key": requiredApiKey(configuration),
+        "content-type": "application/json",
+      },
+      body: JSON.stringify({
+        contents: [{ role: "user", parts: [{ text: request.prompt }] }],
+        generationConfig: { responseMimeType: "application/json", responseJsonSchema: request.schema },
       }),
       signal: AbortSignal.timeout(45_000),
     });
@@ -348,6 +422,51 @@ export class AIProviderService {
           destinationUrl: context.destinationUrl,
           cta: context.cta,
         }),
+        providerId: provider.id,
+        providerCode: provider.providerCode,
+        model: effectiveModel,
+        fallbackUsed,
+        attempts: attempted.attempts,
+      };
+    };
+
+    try {
+      return await execute(providerId, false);
+    } catch (primaryError) {
+      if (!fallbackProviderId) throw primaryError;
+      try {
+        const result = await execute(fallbackProviderId, true);
+        return { ...result, attempts: (Number(primaryError?.attempts) || 3) + result.attempts };
+      } catch (fallbackError) {
+        fallbackError.message = `Primary provider failed: ${safeAiMessage(primaryError)} Fallback provider failed: ${safeAiMessage(fallbackError)}`;
+        fallbackError.attempts = (Number(primaryError?.attempts) || 3) + (Number(fallbackError?.attempts) || 3);
+        throw fallbackError;
+      }
+    }
+  }
+
+  async generateStructuredOutput({ providerId, fallbackProviderId = null, model = null, prompt, schema, schemaName }) {
+    const execute = async (id, fallbackUsed) => {
+      const provider = await this.provider(id);
+      const effectiveModel = clean(model && !fallbackUsed ? model : provider.model, 255);
+      if (typeof provider.adapter.generateStructuredOutput !== "function") {
+        throw Object.assign(new Error(`${provider.providerName} does not support structured output.`), { statusCode: 409 });
+      }
+      let attempted;
+      try {
+        attempted = await withRetry(() => provider.adapter.generateStructuredOutput(
+          { ...provider, effectiveModel },
+          { prompt, schema, schemaName },
+        ));
+      } catch (error) {
+        error.providerId = provider.id;
+        error.providerCode = provider.providerCode;
+        error.model = effectiveModel;
+        error.fallbackUsed = fallbackUsed;
+        throw error;
+      }
+      return {
+        output: attempted.value,
         providerId: provider.id,
         providerCode: provider.providerCode,
         model: effectiveModel,

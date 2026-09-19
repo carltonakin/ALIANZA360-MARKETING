@@ -452,6 +452,160 @@ function mapAiGenerationRun(row) {
   };
 }
 
+function mapAcquisitionSearchSource(row) {
+  return {
+    id: Number(row.AIAcquisitionSearchSourceId),
+    acquisitionConfigurationId: Number(row.AIAcquisitionConfigurationId),
+    sourceCode: row.SourceCode,
+    enabled: Boolean(row.Enabled),
+    priority: Number(row.Priority || 0),
+    settings: jsonValue(row.SettingsJson, {}),
+  };
+}
+
+function mapAcquisitionCommunicationMethod(row) {
+  return {
+    id: Number(row.AIAcquisitionCommunicationMethodId),
+    acquisitionConfigurationId: Number(row.AIAcquisitionConfigurationId),
+    channel: row.Channel,
+    enabled: Boolean(row.Enabled),
+    priority: Number(row.Priority || 0),
+    maximumAttempts: Number(row.MaximumAttempts || 0),
+    retryDelayMinutes: Number(row.RetryDelayMinutes || 0),
+    delayBeforeNextChannelMinutes: Number(row.DelayBeforeNextChannelMinutes || 0),
+    stopOnResponse: Boolean(row.StopOnResponse),
+    allowSimultaneous: Boolean(row.AllowSimultaneous),
+  };
+}
+
+function mapAcquisitionConfiguration(row, sourceRows = [], methodRows = []) {
+  return {
+    id: Number(row.AIAcquisitionConfigurationId),
+    acquisitionName: row.AcquisitionName,
+    objective: row.Objective,
+    companyProfileId: Number(row.CompanyProfileId),
+    productOrService: row.ProductOrService,
+    targetIndustry: row.TargetIndustry || "",
+    targetCustomerType: row.TargetCustomerType || "",
+    targetLocation: row.TargetLocation || "",
+    keywords: row.Keywords || "",
+    businessSize: row.BusinessSize || "",
+    startDate: dateOnly(row.StartDate),
+    endDate: dateOnly(row.EndDate),
+    dailyProspectLimit: Number(row.DailyProspectLimit || 0),
+    aiProviderId: Number(row.AIProviderConfigurationId),
+    fallbackAIProviderId: row.FallbackProviderConfigurationId ? Number(row.FallbackProviderConfigurationId) : null,
+    minimumProspectFitScore: Number(row.MinimumProspectFitScore || 0),
+    qualificationQuestions: jsonValue(row.QualificationQuestionsJson, []),
+    landingPageOrCTA: row.LandingPageOrCTA || "",
+    humanHandoffRules: jsonValue(row.HumanHandoffRulesJson, {}),
+    followUpRules: jsonValue(row.FollowUpRulesJson, {}),
+    conversionCriteria: jsonValue(row.ConversionCriteriaJson, {}),
+    status: row.Status,
+    lastError: row.LastError || null,
+    providerCode: row.ProviderCode || null,
+    providerName: row.ProviderName || null,
+    fallbackProviderCode: row.FallbackProviderCode || null,
+    fallbackProviderName: row.FallbackProviderName || null,
+    searchSources: sourceRows.filter((item) => Number(item.AIAcquisitionConfigurationId) === Number(row.AIAcquisitionConfigurationId)).map(mapAcquisitionSearchSource),
+    communicationMethods: methodRows.filter((item) => Number(item.AIAcquisitionConfigurationId) === Number(row.AIAcquisitionConfigurationId)).map(mapAcquisitionCommunicationMethod),
+    createdAt: iso(row.CreatedAt),
+    updatedAt: iso(row.UpdatedAt),
+  };
+}
+
+function mapAcquisitionProspect(row) {
+  return {
+    id: Number(row.AIAcquisitionProspectId),
+    acquisitionConfigurationId: Number(row.AIAcquisitionConfigurationId),
+    identityKey: row.IdentityKey,
+    companyName: row.CompanyName,
+    contactName: row.ContactName || "",
+    industry: row.Industry || "",
+    location: row.Location || "",
+    website: row.Website || "",
+    email: row.Email || "",
+    phone: row.Phone || "",
+    whatsAppNumber: row.WhatsAppNumber || "",
+    instagram: row.Instagram || "",
+    facebook: row.Facebook || "",
+    x: row.X || "",
+    source: row.Source,
+    externalSourceId: row.ExternalSourceId || null,
+    sourceUrl: row.SourceUrl || "",
+    fitScore: Number(row.FitScore || 0),
+    fitReason: row.FitReason || "",
+    status: row.Status,
+    qualification: jsonValue(row.QualificationJson, {}),
+    metadata: jsonValue(row.MetadataJson, {}),
+    consentStatus: row.ConsentStatus || "",
+    optedOut: Boolean(row.OptedOut),
+    responded: Boolean(row.Responded),
+    discoveredAt: iso(row.DiscoveredAt),
+    lastContactAt: iso(row.LastContactAt),
+    lastResponseAt: iso(row.LastResponseAt),
+    nextContactAt: iso(row.NextContactAt),
+    convertedLeadId: row.ConvertedLeadId ? `social:${row.ConvertedLeadId}` : null,
+    contacts: jsonValue(row.ContactsJson, []),
+    inserted: row.Inserted == null ? undefined : Boolean(row.Inserted),
+    createdAt: iso(row.CreatedAt),
+    updatedAt: iso(row.UpdatedAt),
+  };
+}
+
+function mapAcquisitionConversation(row) {
+  return {
+    id: Number(row.AIAcquisitionConversationId),
+    acquisitionConfigurationId: Number(row.AIAcquisitionConfigurationId),
+    prospectId: Number(row.AIAcquisitionProspectId),
+    leadId: row.LeadId ? `social:${row.LeadId}` : null,
+    companyName: row.CompanyName || "",
+    contactName: row.ContactName || "",
+    channel: row.Channel,
+    direction: row.Direction,
+    message: row.Message,
+    origin: row.OriginAIOrHuman,
+    aiProviderId: row.AIProviderConfigurationId ? Number(row.AIProviderConfigurationId) : null,
+    aiModel: row.AIModel || null,
+    deliveryStatus: row.DeliveryStatus,
+    externalMessageId: row.ExternalMessageId || null,
+    decision: jsonValue(row.DecisionJson, null),
+    occurredAt: iso(row.OccurredAt),
+    duplicate: Boolean(row.Duplicate),
+  };
+}
+
+function mapAcquisitionContactAttempt(row) {
+  return {
+    id: Number(row.AIAcquisitionContactAttemptId),
+    acquisitionConfigurationId: Number(row.AIAcquisitionConfigurationId),
+    prospectId: Number(row.AIAcquisitionProspectId),
+    channel: row.Channel,
+    contactValue: row.ContactValue,
+    message: row.Message || "",
+    origin: row.OriginAIOrHuman || "HUMAN",
+    isReply: Boolean(row.IsReply),
+    idempotencyKey: row.IdempotencyKey,
+    status: row.Status,
+    attemptCount: Number(row.AttemptCount || 0),
+    nextAttemptAt: iso(row.NextAttemptAt),
+    lockToken: row.LockToken ? String(row.LockToken) : null,
+    lockedAt: iso(row.LockedAt),
+    externalMessageId: row.ExternalMessageId || null,
+    attemptedAt: iso(row.AttemptedAt),
+    lastError: row.LastError || null,
+    createdAt: iso(row.CreatedAt),
+    updatedAt: iso(row.UpdatedAt),
+  };
+}
+
+function acquisitionMetricRow(row) {
+  return Object.fromEntries(Object.entries(row || {}).map(([key, value]) => [
+    key ? `${key[0].toLowerCase()}${key.slice(1)}` : key,
+    typeof value === "bigint" ? Number(value) : value,
+  ]));
+}
+
 function mapSocialCampaign(row) {
   return {
     id: row.SocialCampaignId ?? numericId(row.CampaignId),
@@ -1809,6 +1963,266 @@ export class SqlServerRepository {
     request.input("Limit", this.sql.Int, Math.max(1, Math.min(500, Number(limit) || 100)));
     const response = await request.execute("dbo.AICampaignGenerationHistory_Get");
     return (response.recordset || []).map(mapAiGenerationRun);
+  }
+
+  async getAcquisitionConfigurations(id = null) {
+    const request = this.request();
+    request.input("AIAcquisitionConfigurationId", this.sql.BigInt, numericId(id));
+    const response = await request.execute("dbo.AIAcquisitionConfiguration_Get");
+    const [configurations = [], sources = [], methods = []] = response.recordsets || [];
+    return configurations.map((row) => mapAcquisitionConfiguration(row, sources, methods));
+  }
+
+  async saveAcquisitionConfiguration(input) {
+    const request = this.request();
+    request.input("AIAcquisitionConfigurationId", this.sql.BigInt, numericId(input.id));
+    request.input("AcquisitionName", this.sql.NVarChar(255), input.acquisitionName);
+    request.input("Objective", this.sql.NVarChar(2000), input.objective);
+    request.input("CompanyProfileId", this.sql.Int, Number(input.companyProfileId || 1));
+    request.input("ProductOrService", this.sql.NVarChar(1000), input.productOrService);
+    request.input("TargetIndustry", this.sql.NVarChar(500), input.targetIndustry || null);
+    request.input("TargetCustomerType", this.sql.NVarChar(500), input.targetCustomerType || null);
+    request.input("TargetLocation", this.sql.NVarChar(500), input.targetLocation || null);
+    request.input("Keywords", this.sql.NVarChar(2000), input.keywords || null);
+    request.input("BusinessSize", this.sql.NVarChar(255), input.businessSize || null);
+    request.input("StartDate", this.sql.Date, input.startDate ? new Date(`${input.startDate}T00:00:00Z`) : null);
+    request.input("EndDate", this.sql.Date, input.endDate ? new Date(`${input.endDate}T00:00:00Z`) : null);
+    request.input("DailyProspectLimit", this.sql.Int, Number(input.dailyProspectLimit));
+    request.input("AIProviderConfigurationId", this.sql.Int, Number(input.aiProviderId));
+    request.input("FallbackProviderConfigurationId", this.sql.Int, numericId(input.fallbackAIProviderId));
+    request.input("MinimumProspectFitScore", this.sql.Int, Number(input.minimumProspectFitScore));
+    request.input("QualificationQuestionsJson", this.sql.NVarChar(this.sql.MAX), JSON.stringify(input.qualificationQuestions || []));
+    request.input("LandingPageOrCTA", this.sql.NVarChar(2048), input.landingPageOrCTA || null);
+    request.input("HumanHandoffRulesJson", this.sql.NVarChar(this.sql.MAX), JSON.stringify(input.humanHandoffRules || {}));
+    request.input("FollowUpRulesJson", this.sql.NVarChar(this.sql.MAX), JSON.stringify(input.followUpRules || {}));
+    request.input("ConversionCriteriaJson", this.sql.NVarChar(this.sql.MAX), JSON.stringify(input.conversionCriteria || {}));
+    request.input("Status", this.sql.NVarChar(32), input.status || "DRAFT");
+    request.input("SearchSourcesJson", this.sql.NVarChar(this.sql.MAX), JSON.stringify(input.searchSources || []));
+    request.input("CommunicationMethodsJson", this.sql.NVarChar(this.sql.MAX), JSON.stringify(input.communicationMethods || []));
+    const response = await request.execute("dbo.AIAcquisitionConfiguration_Save");
+    const id = Number(response.recordset?.[0]?.AIAcquisitionConfigurationId);
+    return (await this.getAcquisitionConfigurations(id))[0] || null;
+  }
+
+  async setAcquisitionConfigurationStatus(id, status, error = null) {
+    const request = this.request();
+    request.input("AIAcquisitionConfigurationId", this.sql.BigInt, numericId(id));
+    request.input("Status", this.sql.NVarChar(32), status);
+    request.input("LastError", this.sql.NVarChar(1000), error);
+    const response = await request.execute("dbo.AIAcquisitionConfiguration_SetStatus");
+    const [configurations = [], sources = [], methods = []] = response.recordsets || [];
+    return configurations[0] ? mapAcquisitionConfiguration(configurations[0], sources, methods) : null;
+  }
+
+  async getAcquisitionOverview(configurationId = null) {
+    const request = this.request();
+    request.input("AIAcquisitionConfigurationId", this.sql.BigInt, numericId(configurationId));
+    const response = await request.execute("dbo.AIAcquisitionOverview_Get");
+    return acquisitionMetricRow(response.recordset?.[0]);
+  }
+
+  async getAcquisitionAnalytics(configurationId = null) {
+    const request = this.request();
+    request.input("AIAcquisitionConfigurationId", this.sql.BigInt, numericId(configurationId));
+    const response = await request.execute("dbo.AIAcquisitionAnalytics_Get");
+    const [overview = [], sources = [], channels = [], configurations = []] = response.recordsets || [];
+    return {
+      overview: acquisitionMetricRow(overview[0]),
+      sources: sources.map(acquisitionMetricRow),
+      channels: channels.map(acquisitionMetricRow),
+      configurations: configurations.map(acquisitionMetricRow),
+    };
+  }
+
+  async getAcquisitionProspects({ prospectId = null, configurationId = null, status = null, limit = 250 } = {}) {
+    const request = this.request();
+    request.input("AIAcquisitionProspectId", this.sql.BigInt, numericId(prospectId));
+    request.input("AIAcquisitionConfigurationId", this.sql.BigInt, numericId(configurationId));
+    request.input("Status", this.sql.NVarChar(32), status || null);
+    request.input("Limit", this.sql.Int, Math.max(1, Math.min(1000, Number(limit) || 250)));
+    const response = await request.execute("dbo.AIAcquisitionProspect_Get");
+    return (response.recordset || []).map(mapAcquisitionProspect);
+  }
+
+  async upsertAcquisitionProspect(input) {
+    const request = this.request();
+    request.input("AIAcquisitionConfigurationId", this.sql.BigInt, numericId(input.acquisitionConfigurationId));
+    request.input("IdentityKey", this.sql.Char(64), input.identityKey);
+    request.input("CompanyName", this.sql.NVarChar(255), input.companyName);
+    request.input("ContactName", this.sql.NVarChar(255), input.contactName || null);
+    request.input("Industry", this.sql.NVarChar(500), input.industry || null);
+    request.input("Location", this.sql.NVarChar(500), input.location || null);
+    request.input("Website", this.sql.NVarChar(2048), input.website || null);
+    request.input("Email", this.sql.NVarChar(320), input.email || null);
+    request.input("Phone", this.sql.NVarChar(80), input.phone || null);
+    request.input("WhatsAppNumber", this.sql.NVarChar(80), input.whatsAppNumber || null);
+    request.input("Instagram", this.sql.NVarChar(500), input.instagram || null);
+    request.input("Facebook", this.sql.NVarChar(500), input.facebook || null);
+    request.input("X", this.sql.NVarChar(500), input.x || null);
+    request.input("Source", this.sql.NVarChar(64), input.source);
+    request.input("ExternalSourceId", this.sql.NVarChar(255), input.externalSourceId || null);
+    request.input("SourceUrl", this.sql.NVarChar(2048), input.sourceUrl || null);
+    request.input("FitScore", this.sql.Int, Number(input.fitScore || 0));
+    request.input("FitReason", this.sql.NVarChar(1000), input.fitReason || null);
+    request.input("Status", this.sql.NVarChar(32), input.status || "DISCOVERED");
+    request.input("ConsentStatus", this.sql.NVarChar(32), input.consentStatus || null);
+    request.input("OptedOut", this.sql.Bit, input.optedOut ? 1 : 0);
+    request.input("MetadataJson", this.sql.NVarChar(this.sql.MAX), JSON.stringify(input.metadata || {}));
+    request.input("ContactsJson", this.sql.NVarChar(this.sql.MAX), JSON.stringify(input.contacts || []));
+    const response = await request.execute("dbo.AIAcquisitionProspect_Upsert");
+    return response.recordset?.[0] ? mapAcquisitionProspect(response.recordset[0]) : null;
+  }
+
+  async getAcquisitionDiscoveryCountToday(configurationId) {
+    const request = this.request();
+    request.input("AIAcquisitionConfigurationId", this.sql.BigInt, numericId(configurationId));
+    const response = await request.query(`SELECT COUNT_BIG(*) Total FROM dbo.AIAcquisitionProspects
+      WHERE AIAcquisitionConfigurationId=@AIAcquisitionConfigurationId AND DiscoveredAt>=CONVERT(date,SYSUTCDATETIME())`);
+    return Number(response.recordset?.[0]?.Total || 0);
+  }
+
+  async discoverAcquisitionCandidates(sourceCode, configuration, settings = {}) {
+    const request = this.request();
+    request.input("SourceCode", this.sql.NVarChar(64), sourceCode);
+    request.input("Limit", this.sql.Int, Math.max(1, Math.min(500, Number(settings.resultLimit || configuration.dailyProspectLimit) || 50)));
+    const response = await request.query(`
+      SELECT TOP (@Limit) l.Name CompanyName, l.DisplayName ContactName, l.Company, l.Email, l.Phone,
+        l.Instagram, l.Facebook, l.[X], l.[Source], l.Status, l.ScoreBand, l.ConsentStatus,
+        CONCAT(N'lead:',l.LeadId) ExternalSourceId,
+        CASE WHEN @SourceCode=N'LANDING_PAGE' THEN N'LANDING_PAGE'
+             WHEN @SourceCode=N'INSTAGRAM_INBOUND' THEN N'INSTAGRAM_INBOUND'
+             WHEN @SourceCode=N'FACEBOOK_INBOUND' THEN N'FACEBOOK_INBOUND'
+             ELSE @SourceCode END CandidateSource
+      FROM dbo.Leads l
+      WHERE (@SourceCode=N'EXISTING_CRM') OR
+            (@SourceCode=N'INACTIVE_LEADS' AND (l.ScoreBand=N'COLD' OR l.Status IN (N'Inactive',N'Lost'))) OR
+            (@SourceCode=N'LANDING_PAGE' AND EXISTS (SELECT 1 FROM dbo.LeadRoutineEvents e WHERE e.LeadId=l.LeadId AND e.Routine=N'landing_page_registration')) OR
+            (@SourceCode=N'INSTAGRAM_INBOUND' AND (NULLIF(l.Instagram,N'') IS NOT NULL OR LOWER(l.[Source])=N'instagram')) OR
+            (@SourceCode=N'FACEBOOK_INBOUND' AND (NULLIF(l.Facebook,N'') IS NOT NULL OR LOWER(l.[Source])=N'facebook'))
+      ORDER BY l.UpdatedAt DESC, l.LeadId DESC`);
+    return (response.recordset || []).map((row) => ({
+      companyName: row.Company || row.CompanyName,
+      contactName: row.ContactName || row.CompanyName,
+      email: row.Email || "",
+      phone: row.Phone || "",
+      instagram: row.Instagram || "",
+      facebook: row.Facebook || "",
+      x: row.X || "",
+      source: row.CandidateSource,
+      externalSourceId: row.ExternalSourceId,
+      metadata: { existingLeadStatus: row.Status, existingLeadScoreBand: row.ScoreBand },
+      consentStatus: row.ConsentStatus || "",
+      status: row.Status,
+      contactProvenance: {
+        EMAIL: { source: "NEXT2THETOP_CRM", verified: false },
+        PHONE: { source: "NEXT2THETOP_CRM", verified: false },
+        INSTAGRAM: { source: "NEXT2THETOP_CRM", verified: false },
+        FACEBOOK: { source: "NEXT2THETOP_CRM", verified: false },
+        X: { source: "NEXT2THETOP_CRM", verified: false },
+      },
+    }));
+  }
+
+  async getAcquisitionConversations({ prospectId = null, configurationId = null, limit = 250 } = {}) {
+    const request = this.request();
+    request.input("AIAcquisitionProspectId", this.sql.BigInt, numericId(prospectId));
+    request.input("AIAcquisitionConfigurationId", this.sql.BigInt, numericId(configurationId));
+    request.input("Limit", this.sql.Int, Math.max(1, Math.min(1000, Number(limit) || 250)));
+    const response = await request.execute("dbo.AIAcquisitionConversation_Get");
+    return (response.recordset || []).map(mapAcquisitionConversation);
+  }
+
+  async saveAcquisitionConversation(input) {
+    const request = this.request();
+    request.input("AIAcquisitionConfigurationId", this.sql.BigInt, numericId(input.acquisitionConfigurationId));
+    request.input("AIAcquisitionProspectId", this.sql.BigInt, numericId(input.prospectId));
+    request.input("LeadId", this.sql.BigInt, numericId(input.leadId));
+    request.input("Channel", this.sql.NVarChar(64), input.channel);
+    request.input("Direction", this.sql.NVarChar(16), input.direction);
+    request.input("Message", this.sql.NVarChar(this.sql.MAX), input.message);
+    request.input("OriginAIOrHuman", this.sql.NVarChar(32), input.origin);
+    request.input("AIProviderConfigurationId", this.sql.Int, numericId(input.aiProviderId));
+    request.input("AIModel", this.sql.NVarChar(255), input.aiModel || null);
+    request.input("DeliveryStatus", this.sql.NVarChar(32), input.deliveryStatus);
+    request.input("ExternalMessageId", this.sql.NVarChar(255), input.externalMessageId || null);
+    request.input("DecisionJson", this.sql.NVarChar(this.sql.MAX), input.decision ? JSON.stringify(input.decision) : null);
+    const response = await request.execute("dbo.AIAcquisitionConversation_Save");
+    return response.recordset?.[0] ? mapAcquisitionConversation(response.recordset[0]) : null;
+  }
+
+  async updateAcquisitionProspectEngagement(prospectId, { status, responded = false, optedOut = false, qualification = null } = {}) {
+    const request = this.request();
+    request.input("AIAcquisitionProspectId", this.sql.BigInt, numericId(prospectId));
+    request.input("Status", this.sql.NVarChar(32), status);
+    request.input("Responded", this.sql.Bit, responded ? 1 : 0);
+    request.input("OptedOut", this.sql.Bit, optedOut ? 1 : 0);
+    request.input("QualificationJson", this.sql.NVarChar(this.sql.MAX), qualification ? JSON.stringify(qualification) : null);
+    await request.query(`UPDATE dbo.AIAcquisitionProspects SET [Status]=@Status,
+      Responded=CASE WHEN @Responded=1 THEN 1 ELSE Responded END,
+      OptedOut=CASE WHEN @OptedOut=1 THEN 1 ELSE OptedOut END,
+      QualificationJson=COALESCE(@QualificationJson,QualificationJson),
+      LastResponseAt=CASE WHEN @Responded=1 THEN SYSUTCDATETIME() ELSE LastResponseAt END,
+      UpdatedAt=SYSUTCDATETIME() WHERE AIAcquisitionProspectId=@AIAcquisitionProspectId`);
+    return (await this.getAcquisitionProspects({ prospectId }))[0] || null;
+  }
+
+  async getAcquisitionContactAttempts(prospectId) {
+    const request = this.request();
+    request.input("AIAcquisitionProspectId", this.sql.BigInt, numericId(prospectId));
+    const response = await request.query(`SELECT * FROM dbo.AIAcquisitionContactAttempts
+      WHERE AIAcquisitionProspectId=@AIAcquisitionProspectId ORDER BY CreatedAt DESC,AIAcquisitionContactAttemptId DESC`);
+    return (response.recordset || []).map(mapAcquisitionContactAttempt);
+  }
+
+  async createAcquisitionContactAttempt(input) {
+    const request = this.request();
+    request.input("AIAcquisitionConfigurationId", this.sql.BigInt, numericId(input.acquisitionConfigurationId));
+    request.input("AIAcquisitionProspectId", this.sql.BigInt, numericId(input.prospectId));
+    request.input("Channel", this.sql.NVarChar(64), input.channel);
+    request.input("ContactValue", this.sql.NVarChar(2048), input.contactValue);
+    request.input("Message", this.sql.NVarChar(this.sql.MAX), input.message || null);
+    request.input("OriginAIOrHuman", this.sql.NVarChar(32), input.origin || "HUMAN");
+    request.input("IsReply", this.sql.Bit, input.isReply ? 1 : 0);
+    request.input("IdempotencyKey", this.sql.NVarChar(255), input.idempotencyKey);
+    request.input("Status", this.sql.NVarChar(32), input.status || "QUEUED");
+    const response = await request.execute("dbo.AIAcquisitionContactAttempt_Create");
+    return response.recordset?.[0] ? mapAcquisitionContactAttempt(response.recordset[0]) : null;
+  }
+
+  async claimAcquisitionContactAttempts({ limit = 10, lockToken }) {
+    const request = this.request();
+    request.input("Limit", this.sql.Int, Math.max(1, Math.min(100, Number(limit) || 10)));
+    request.input("LockToken", this.sql.UniqueIdentifier, lockToken);
+    const response = await request.execute("dbo.AIAcquisitionContactAttempt_Claim");
+    return (response.recordset || []).map(mapAcquisitionContactAttempt);
+  }
+
+  async completeAcquisitionContactAttempt(attemptId, result) {
+    const request = this.request();
+    request.input("AIAcquisitionContactAttemptId", this.sql.BigInt, numericId(attemptId));
+    request.input("LockToken", this.sql.UniqueIdentifier, result.lockToken);
+    request.input("Succeeded", this.sql.Bit, result.succeeded ? 1 : 0);
+    request.input("ExternalMessageId", this.sql.NVarChar(255), result.externalMessageId || null);
+    request.input("LastError", this.sql.NVarChar(1000), result.error || null);
+    request.input("Retryable", this.sql.Bit, result.retryable ? 1 : 0);
+    request.input("NextAttemptAt", this.sql.DateTime2, result.nextAttemptAt ? new Date(result.nextAttemptAt) : null);
+    const response = await request.execute("dbo.AIAcquisitionContactAttempt_Complete");
+    return response.recordset?.[0] ? mapAcquisitionContactAttempt(response.recordset[0]) : null;
+  }
+
+  async convertAcquisitionProspect(prospectId) {
+    const request = this.request();
+    request.input("AIAcquisitionProspectId", this.sql.BigInt, numericId(prospectId));
+    const response = await request.execute("dbo.AIAcquisitionProspect_Convert");
+    const row = response.recordset?.[0];
+    return row ? {
+      prospectId: Number(row.ProspectId),
+      leadId: `social:${row.LeadId}`,
+      duplicate: Boolean(row.Duplicate),
+      leadScore: Number(row.LeadScore || 0),
+      scoreBand: row.ScoreBand,
+      status: row.Status,
+    } : null;
   }
 
   async deleteContent(entity, id) {

@@ -40,6 +40,11 @@ import {
 } from "./ai-campaign-automation.mjs";
 import { AuthService } from "./auth.mjs";
 import {
+  AcquisitionService,
+  COMMUNICATION_CHANNELS,
+  SEARCH_SOURCE_DEFINITIONS,
+} from "./acquisition.mjs";
+import {
   campaignMediaMaximumBytes,
   storeCampaignMediaBuffer,
 } from "../lib/campaign-media.mjs";
@@ -1852,6 +1857,7 @@ export async function createSocialListenerApp({
   bufferCampaignService,
   aiProviderService: providedAiProviderService,
   aiCampaignAutomationEngine: providedAiCampaignAutomationEngine,
+  acquisitionService: providedAcquisitionService,
   authService: providedAuthService,
   fetchImpl,
   logger = console,
@@ -1988,6 +1994,15 @@ export async function createSocialListenerApp({
       providerService: activeAiProviderService,
       bufferCampaignService: activeBufferCampaignService,
       logger,
+    });
+
+  const activeAcquisitionService =
+    providedAcquisitionService ||
+    new AcquisitionService({
+      repository: activeRepository,
+      aiProviderService: activeAiProviderService,
+      env,
+      fetchImpl,
     });
 
   async function refreshConfiguredAdapters() {
@@ -2727,6 +2742,133 @@ export async function createSocialListenerApp({
         const body = await readJson(request);
         const result = await activeAiCampaignAutomationEngine.regenerate(body.runId, body.providerId || null);
         return json({ ok: true, ...result });
+      }
+
+      /*
+      |--------------------------------------------------------------------------
+      | INDEPENDENT AI ACQUISITION
+      |--------------------------------------------------------------------------
+      */
+
+      if (request.method === "GET" && url.pathname === "/acquisition/overview") {
+        return json({
+          ok: true,
+          overview: await activeAcquisitionService.overview(optionalId(url.searchParams.get("configurationId"))),
+        });
+      }
+
+      if (request.method === "GET" && url.pathname === "/acquisition/analytics") {
+        return json({
+          ok: true,
+          analytics: await activeAcquisitionService.analytics(optionalId(url.searchParams.get("configurationId"))),
+        });
+      }
+
+      if (request.method === "GET" && url.pathname === "/acquisition/configurations") {
+        return json({
+          ok: true,
+          configurations: await activeAcquisitionService.configurations(optionalId(url.searchParams.get("configurationId"))),
+        });
+      }
+
+      if (request.method === "POST" && url.pathname === "/acquisition/configurations") {
+        const body = await readJson(request);
+        const configuration = await activeAcquisitionService.saveConfiguration(body);
+        return json({ ok: true, configuration }, body.id ? 200 : 201);
+      }
+
+      if (request.method === "POST" && url.pathname === "/acquisition/configurations/action") {
+        const body = await readJson(request);
+        const configuration = await activeAcquisitionService.setStatus(body.id || body.configurationId, body.action);
+        return json({ ok: true, configuration });
+      }
+
+      if (request.method === "GET" && url.pathname === "/acquisition/search-sources") {
+        const configurationId = optionalId(url.searchParams.get("configurationId"));
+        const configuration = configurationId ? (await activeAcquisitionService.configurations(configurationId))[0] : null;
+        return json({ ok: true, definitions: SEARCH_SOURCE_DEFINITIONS, sources: configuration?.searchSources || [] });
+      }
+
+      if (request.method === "GET" && url.pathname === "/acquisition/communication-settings") {
+        const configurationId = optionalId(url.searchParams.get("configurationId"));
+        const configuration = configurationId ? (await activeAcquisitionService.configurations(configurationId))[0] : null;
+        return json({ ok: true, channels: COMMUNICATION_CHANNELS, methods: configuration?.communicationMethods || [] });
+      }
+
+      if (request.method === "POST" && url.pathname === "/acquisition/discover") {
+        const body = await readJson(request);
+        const discovery = await activeAcquisitionService.discover(body.configurationId || body.id, {
+          sourceCode: body.sourceCode,
+          rows: Array.isArray(body.rows) ? body.rows : [],
+        });
+        return json({ ok: true, discovery });
+      }
+
+      if (request.method === "GET" && url.pathname === "/acquisition/prospects") {
+        return json({
+          ok: true,
+          prospects: await activeAcquisitionService.prospects({
+            prospectId: optionalId(url.searchParams.get("prospectId")),
+            configurationId: optionalId(url.searchParams.get("configurationId")),
+            status: textField(url.searchParams.get("status"), 32) || null,
+            limit: Number(url.searchParams.get("limit")) || 250,
+          }),
+        });
+      }
+
+      if (request.method === "POST" && url.pathname === "/acquisition/prospects/import") {
+        const body = await readJson(request);
+        if (!Array.isArray(body.rows)) return json({ error: "CSV import rows must be supplied as an array." }, 400);
+        const discovery = await activeAcquisitionService.discover(body.configurationId || body.id, {
+          sourceCode: "CSV_IMPORT",
+          rows: body.rows,
+        });
+        return json({ ok: true, discovery }, 201);
+      }
+
+      if (request.method === "POST" && url.pathname === "/acquisition/prospects/contact") {
+        const body = await readJson(request);
+        const result = await activeAcquisitionService.queueContact(body.prospectId || body.id, body);
+        return json({ ok: true, ...result }, 201);
+      }
+
+      if (request.method === "POST" && url.pathname === "/acquisition/outreach/claim") {
+        const body = await readJson(request);
+        const result = await activeAcquisitionService.claimOutreach({
+          limit: Number(body.limit) || 10,
+          lockToken: textField(body.lockToken, 64) || undefined,
+        });
+        return json({ ok: true, ...result });
+      }
+
+      const acquisitionOutreachCompletion = url.pathname.match(/^\/acquisition\/outreach\/(\d+)\/complete$/);
+      if (request.method === "POST" && acquisitionOutreachCompletion) {
+        const body = await readJson(request);
+        const attempt = await activeAcquisitionService.completeOutreach(Number(acquisitionOutreachCompletion[1]), body);
+        return json({ ok: true, attempt });
+      }
+
+      if (request.method === "POST" && url.pathname === "/acquisition/prospects/convert") {
+        const body = await readJson(request);
+        const conversion = await activeAcquisitionService.convert(body.prospectId || body.id);
+        return json({ ok: true, conversion });
+      }
+
+      if (request.method === "GET" && url.pathname === "/acquisition/conversations") {
+        return json({
+          ok: true,
+          conversations: await activeAcquisitionService.conversations({
+            prospectId: optionalId(url.searchParams.get("prospectId")),
+            configurationId: optionalId(url.searchParams.get("configurationId")),
+            limit: Number(url.searchParams.get("limit")) || 250,
+          }),
+        });
+      }
+
+      if (request.method === "POST" && url.pathname === "/acquisition/conversations/incoming") {
+        const body = await readJson(request);
+        const result = await activeAcquisitionService.receiveMessage(body.prospectId || body.id, body);
+        return json({ ok: true, ...result }, 201);
       }
 
       /*
@@ -4606,6 +4748,9 @@ export async function createSocialListenerApp({
     aiCampaignAutomationEngine:
       activeAiCampaignAutomationEngine,
 
+    acquisitionService:
+      activeAcquisitionService,
+
     bufferCampaignService:
       activeBufferCampaignService,
 
@@ -4706,6 +4851,12 @@ async function start() {
     Math.max(
       60_000,
       Number(process.env.AI_CAMPAIGN_AUTOMATION_INTERVAL_MS) || 300_000
+    );
+
+  const aiAcquisitionIntervalMs =
+    Math.max(
+      60_000,
+      Number(process.env.AI_ACQUISITION_INTERVAL_MS) || 900_000
     );
 
   /*
@@ -4871,6 +5022,24 @@ async function start() {
   const aiCampaignAutomationTimer = setInterval(aiCampaignAutomationTick, aiCampaignAutomationIntervalMs);
   aiCampaignAutomationTimer.unref();
 
+  const aiAcquisitionTick = () => {
+    socialListenerApp.acquisitionService
+      .tick()
+      .catch((error) => {
+        console.error(JSON.stringify({
+          component: "ai_acquisition",
+          operation: "discovery_tick",
+          status: "error",
+          error: safeMessage(error),
+        }));
+      });
+  };
+
+  // The daily-limit and prospect identity indexes make startup and timer retries idempotent.
+  aiAcquisitionTick();
+  const aiAcquisitionTimer = setInterval(aiAcquisitionTick, aiAcquisitionIntervalMs);
+  aiAcquisitionTimer.unref();
+
   /*
   |--------------------------------------------------------------------------
   | SERVER CLOSE CLEANUP
@@ -4885,6 +5054,8 @@ async function start() {
       );
 
       clearInterval(aiCampaignAutomationTimer);
+
+      clearInterval(aiAcquisitionTimer);
 
       socialListenerApp
         .close()
