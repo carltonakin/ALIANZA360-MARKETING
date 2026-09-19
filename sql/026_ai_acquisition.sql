@@ -15,8 +15,9 @@ BEGIN
         StartDate DATE NULL,
         EndDate DATE NULL,
         DailyProspectLimit INT NOT NULL CONSTRAINT DF_AIAcquisitionConfigurations_DailyLimit DEFAULT 50,
-        AIProviderConfigurationId INT NOT NULL,
-        FallbackProviderConfigurationId INT NULL,
+        AutomaticOutreachEnabled BIT NOT NULL CONSTRAINT DF_AIAcquisitionConfigurations_AutoOutreach DEFAULT 0,
+        AIProviderConfigurationId BIGINT NOT NULL,
+        FallbackProviderConfigurationId BIGINT NULL,
         MinimumProspectFitScore INT NOT NULL CONSTRAINT DF_AIAcquisitionConfigurations_MinFit DEFAULT 50,
         QualificationQuestionsJson NVARCHAR(MAX) NOT NULL CONSTRAINT DF_AIAcquisitionConfigurations_Questions DEFAULT N'[]',
         LandingPageOrCTA NVARCHAR(2048) NULL,
@@ -172,7 +173,7 @@ BEGIN
         Direction NVARCHAR(16) NOT NULL,
         Message NVARCHAR(MAX) NOT NULL,
         OriginAIOrHuman NVARCHAR(32) NOT NULL,
-        AIProviderConfigurationId INT NULL,
+        AIProviderConfigurationId BIGINT NULL,
         AIModel NVARCHAR(255) NULL,
         DeliveryStatus NVARCHAR(32) NOT NULL,
         ExternalMessageId NVARCHAR(255) NULL,
@@ -239,8 +240,8 @@ CREATE OR ALTER PROCEDURE dbo.AIAcquisitionConfiguration_Save
     @ProductOrService NVARCHAR(1000), @TargetIndustry NVARCHAR(500) = NULL,
     @TargetCustomerType NVARCHAR(500) = NULL, @TargetLocation NVARCHAR(500) = NULL,
     @Keywords NVARCHAR(2000) = NULL, @BusinessSize NVARCHAR(255) = NULL,
-    @StartDate DATE = NULL, @EndDate DATE = NULL, @DailyProspectLimit INT,
-    @AIProviderConfigurationId INT, @FallbackProviderConfigurationId INT = NULL,
+    @StartDate DATE = NULL, @EndDate DATE = NULL, @DailyProspectLimit INT, @AutomaticOutreachEnabled BIT,
+    @AIProviderConfigurationId BIGINT, @FallbackProviderConfigurationId BIGINT = NULL,
     @MinimumProspectFitScore INT, @QualificationQuestionsJson NVARCHAR(MAX),
     @LandingPageOrCTA NVARCHAR(2048) = NULL, @HumanHandoffRulesJson NVARCHAR(MAX),
     @FollowUpRulesJson NVARCHAR(MAX), @ConversionCriteriaJson NVARCHAR(MAX), @Status NVARCHAR(32),
@@ -257,12 +258,12 @@ BEGIN
         BEGIN
             INSERT dbo.AIAcquisitionConfigurations
                 (AcquisitionName, Objective, CompanyProfileId, ProductOrService, TargetIndustry, TargetCustomerType,
-                 TargetLocation, Keywords, BusinessSize, StartDate, EndDate, DailyProspectLimit,
+                 TargetLocation, Keywords, BusinessSize, StartDate, EndDate, DailyProspectLimit, AutomaticOutreachEnabled,
                  AIProviderConfigurationId, FallbackProviderConfigurationId, MinimumProspectFitScore,
                  QualificationQuestionsJson, LandingPageOrCTA, HumanHandoffRulesJson, FollowUpRulesJson, ConversionCriteriaJson, Status)
             VALUES
                 (@AcquisitionName, @Objective, @CompanyProfileId, @ProductOrService, @TargetIndustry, @TargetCustomerType,
-                 @TargetLocation, @Keywords, @BusinessSize, @StartDate, @EndDate, @DailyProspectLimit,
+                 @TargetLocation, @Keywords, @BusinessSize, @StartDate, @EndDate, @DailyProspectLimit, @AutomaticOutreachEnabled,
                  @AIProviderConfigurationId, @FallbackProviderConfigurationId, @MinimumProspectFitScore,
                  @QualificationQuestionsJson, @LandingPageOrCTA, @HumanHandoffRulesJson, @FollowUpRulesJson, @ConversionCriteriaJson, @Status);
             SET @AIAcquisitionConfigurationId = SCOPE_IDENTITY();
@@ -273,7 +274,8 @@ BEGIN
                 AcquisitionName=@AcquisitionName, Objective=@Objective, CompanyProfileId=@CompanyProfileId,
                 ProductOrService=@ProductOrService, TargetIndustry=@TargetIndustry, TargetCustomerType=@TargetCustomerType,
                 TargetLocation=@TargetLocation, Keywords=@Keywords, BusinessSize=@BusinessSize, StartDate=@StartDate,
-                EndDate=@EndDate, DailyProspectLimit=@DailyProspectLimit, AIProviderConfigurationId=@AIProviderConfigurationId,
+                EndDate=@EndDate, DailyProspectLimit=@DailyProspectLimit, AutomaticOutreachEnabled=@AutomaticOutreachEnabled,
+                AIProviderConfigurationId=@AIProviderConfigurationId,
                 FallbackProviderConfigurationId=@FallbackProviderConfigurationId, MinimumProspectFitScore=@MinimumProspectFitScore,
                 QualificationQuestionsJson=@QualificationQuestionsJson, LandingPageOrCTA=@LandingPageOrCTA,
                 HumanHandoffRulesJson=@HumanHandoffRulesJson, FollowUpRulesJson=@FollowUpRulesJson,
@@ -281,6 +283,12 @@ BEGIN
             WHERE AIAcquisitionConfigurationId=@AIAcquisitionConfigurationId;
             IF @@ROWCOUNT = 0 THROW 52602, 'AI Acquisition configuration was not found.', 1;
         END;
+
+        IF @AutomaticOutreachEnabled=0
+            UPDATE dbo.AIAcquisitionContactAttempts SET [Status]=N'CANCELLED',LockToken=NULL,LockedAt=NULL,
+                LastError=N'Automatic outreach disabled.',UpdatedAt=SYSUTCDATETIME()
+            WHERE AIAcquisitionConfigurationId=@AIAcquisitionConfigurationId AND
+                  IdempotencyKey LIKE N'acquisition:auto:%' AND [Status] IN (N'QUEUED',N'RETRY');
 
         MERGE dbo.AIAcquisitionSearchSources AS target
         USING
@@ -452,10 +460,30 @@ BEGIN
 END;
 GO
 
+CREATE OR ALTER PROCEDURE dbo.AIAcquisitionOutreachCandidates_Get
+    @AIAcquisitionConfigurationId BIGINT, @Limit INT=1000
+AS
+BEGIN
+    SET NOCOUNT ON;
+    SET @Limit=CASE WHEN @Limit<1 THEN 1 WHEN @Limit>1000 THEN 1000 ELSE @Limit END;
+    SELECT TOP (@Limit) prospect.*,
+        (SELECT ContactType [type], ContactValue [value], SourceName [source], SourceUrl [sourceUrl], Verified [verified]
+         FROM dbo.AIAcquisitionProspectContacts contact WHERE contact.AIAcquisitionProspectId=prospect.AIAcquisitionProspectId
+         ORDER BY contact.AIAcquisitionProspectContactId FOR JSON PATH) ContactsJson
+    FROM dbo.AIAcquisitionProspects prospect
+    WHERE prospect.AIAcquisitionConfigurationId=@AIAcquisitionConfigurationId AND
+          prospect.ConsentStatus IN (N'GRANTED',N'OPT_IN') AND prospect.OptedOut=0 AND prospect.Responded=0 AND
+          prospect.ConvertedLeadId IS NULL AND
+          prospect.[Status] IN (N'DISCOVERED',N'CONTACTABLE',N'CONTACTING',N'CONTACTED') AND
+          (prospect.NextContactAt IS NULL OR prospect.NextContactAt<=SYSUTCDATETIME())
+    ORDER BY COALESCE(prospect.NextContactAt,prospect.DiscoveredAt),prospect.AIAcquisitionProspectId;
+END;
+GO
+
 CREATE OR ALTER PROCEDURE dbo.AIAcquisitionConversation_Save
     @AIAcquisitionConfigurationId BIGINT, @AIAcquisitionProspectId BIGINT, @LeadId BIGINT=NULL,
     @Channel NVARCHAR(64), @Direction NVARCHAR(16), @Message NVARCHAR(MAX), @OriginAIOrHuman NVARCHAR(32),
-    @AIProviderConfigurationId INT=NULL, @AIModel NVARCHAR(255)=NULL, @DeliveryStatus NVARCHAR(32),
+    @AIProviderConfigurationId BIGINT=NULL, @AIModel NVARCHAR(255)=NULL, @DeliveryStatus NVARCHAR(32),
     @ExternalMessageId NVARCHAR(255)=NULL, @DecisionJson NVARCHAR(MAX)=NULL
 AS
 BEGIN
@@ -466,6 +494,10 @@ BEGIN
     BEGIN TRY
         SELECT @ConversationId=AIAcquisitionConversationId FROM dbo.AIAcquisitionConversations WITH (UPDLOCK,HOLDLOCK)
         WHERE ExternalMessageId IS NOT NULL AND Channel=@Channel AND ExternalMessageId=@ExternalMessageId;
+        IF @ConversationId IS NOT NULL AND NOT EXISTS
+            (SELECT 1 FROM dbo.AIAcquisitionConversations WHERE AIAcquisitionConversationId=@ConversationId AND
+             AIAcquisitionProspectId=@AIAcquisitionProspectId AND Direction=@Direction)
+            THROW 52613, 'External message identity belongs to another acquisition conversation.', 1;
         IF @ConversationId IS NULL
         BEGIN
             INSERT dbo.AIAcquisitionConversations
@@ -529,6 +561,10 @@ BEGIN
         BEGIN TRANSACTION;
         SELECT @AttemptId=AIAcquisitionContactAttemptId FROM dbo.AIAcquisitionContactAttempts WITH (UPDLOCK,HOLDLOCK)
         WHERE IdempotencyKey=@IdempotencyKey;
+        IF @AttemptId IS NOT NULL AND NOT EXISTS
+            (SELECT 1 FROM dbo.AIAcquisitionContactAttempts WHERE AIAcquisitionContactAttemptId=@AttemptId AND
+             AIAcquisitionConfigurationId=@AIAcquisitionConfigurationId AND AIAcquisitionProspectId=@AIAcquisitionProspectId AND Channel=@Channel)
+            THROW 52614, 'Contact idempotency key belongs to another acquisition attempt.', 1;
         IF @AttemptId IS NULL
         BEGIN
             IF @Channel<>N'MANUAL_HUMAN_FOLLOW_UP' AND
@@ -563,7 +599,8 @@ BEGIN
     ;WITH due AS
     (
         SELECT TOP (@Limit) attempt.* FROM dbo.AIAcquisitionContactAttempts attempt WITH (UPDLOCK,READPAST,ROWLOCK)
-        WHERE ([Status] IN (N'QUEUED',N'RETRY') OR
+        WHERE attempt.Channel<>N'MANUAL_HUMAN_FOLLOW_UP' AND
+              ([Status] IN (N'QUEUED',N'RETRY') OR
                ([Status]=N'PROCESSING' AND LockedAt<DATEADD(MINUTE,-10,SYSUTCDATETIME()))) AND
               NextAttemptAt<=SYSUTCDATETIME() AND
               EXISTS
@@ -573,6 +610,8 @@ BEGIN
                   JOIN dbo.AIAcquisitionCommunicationMethods method ON method.AIAcquisitionConfigurationId=configuration.AIAcquisitionConfigurationId AND method.Channel=attempt.Channel
                   WHERE prospect.AIAcquisitionProspectId=attempt.AIAcquisitionProspectId AND
                         configuration.Status=N'ACTIVE' AND method.Enabled=1 AND prospect.OptedOut=0 AND
+                        (attempt.IdempotencyKey NOT LIKE N'acquisition:auto:%' OR
+                         (configuration.AutomaticOutreachEnabled=1 AND prospect.ConsentStatus IN (N'GRANTED',N'OPT_IN'))) AND
                         (configuration.StartDate IS NULL OR configuration.StartDate<=CONVERT(date,SYSUTCDATETIME())) AND
                         (configuration.EndDate IS NULL OR configuration.EndDate>=CONVERT(date,SYSUTCDATETIME())) AND
                         (prospect.NextContactAt IS NULL OR prospect.NextContactAt<=SYSUTCDATETIME()) AND
@@ -659,6 +698,36 @@ BEGIN
 END;
 GO
 
+CREATE OR ALTER PROCEDURE dbo.AIAcquisitionManualTask_Get
+    @AIAcquisitionConfigurationId BIGINT=NULL, @Limit INT=250
+AS
+BEGIN
+    SET NOCOUNT ON;
+    SET @Limit=CASE WHEN @Limit<1 THEN 1 WHEN @Limit>1000 THEN 1000 ELSE @Limit END;
+    SELECT TOP (@Limit) attempt.*,prospect.CompanyName,prospect.ContactName
+    FROM dbo.AIAcquisitionContactAttempts attempt
+    JOIN dbo.AIAcquisitionProspects prospect ON prospect.AIAcquisitionProspectId=attempt.AIAcquisitionProspectId
+    WHERE attempt.Channel=N'MANUAL_HUMAN_FOLLOW_UP' AND attempt.[Status]=N'QUEUED' AND
+          (@AIAcquisitionConfigurationId IS NULL OR attempt.AIAcquisitionConfigurationId=@AIAcquisitionConfigurationId)
+    ORDER BY attempt.CreatedAt,attempt.AIAcquisitionContactAttemptId;
+END;
+GO
+
+CREATE OR ALTER PROCEDURE dbo.AIAcquisitionManualTask_Complete @AIAcquisitionContactAttemptId BIGINT
+AS
+BEGIN
+    SET NOCOUNT ON;
+    UPDATE dbo.AIAcquisitionContactAttempts SET [Status]=N'COMPLETED',AttemptedAt=SYSUTCDATETIME(),UpdatedAt=SYSUTCDATETIME()
+    WHERE AIAcquisitionContactAttemptId=@AIAcquisitionContactAttemptId AND
+          Channel=N'MANUAL_HUMAN_FOLLOW_UP' AND [Status]=N'QUEUED';
+    IF @@ROWCOUNT=0 AND NOT EXISTS
+        (SELECT 1 FROM dbo.AIAcquisitionContactAttempts WHERE AIAcquisitionContactAttemptId=@AIAcquisitionContactAttemptId AND
+         Channel=N'MANUAL_HUMAN_FOLLOW_UP' AND [Status]=N'COMPLETED')
+        THROW 52612, 'Manual acquisition task was not found.', 1;
+    SELECT * FROM dbo.AIAcquisitionContactAttempts WHERE AIAcquisitionContactAttemptId=@AIAcquisitionContactAttemptId;
+END;
+GO
+
 CREATE OR ALTER PROCEDURE dbo.AIAcquisitionProspect_Convert @AIAcquisitionProspectId BIGINT
 AS
 BEGIN
@@ -667,7 +736,7 @@ BEGIN
         @Email NVARCHAR(320), @Phone NVARCHAR(80), @Facebook NVARCHAR(500), @Instagram NVARCHAR(500), @X NVARCHAR(500),
         @Source NVARCHAR(64), @ExternalSourceId NVARCHAR(255), @QualificationJson NVARCHAR(MAX), @Duplicate BIT=0,
         @Status NVARCHAR(32), @Responded BIT, @OptedOut BIT, @FitScore INT, @ConversionCriteriaJson NVARCHAR(MAX),
-        @ConversionEventId NVARCHAR(255), @LeadName NVARCHAR(255), @SourceDetail NVARCHAR(1000);
+        @ConversionEventId NVARCHAR(255), @LeadName NVARCHAR(255), @SourceDetail NVARCHAR(1000), @KnownLeadId BIGINT;
     BEGIN TRY
     BEGIN TRANSACTION;
     SELECT @ConfigurationId=AIAcquisitionConfigurationId, @LeadId=ConvertedLeadId, @CompanyName=CompanyName,
@@ -692,16 +761,31 @@ BEGIN
         SET @ConversionEventId=CONCAT(N'acquisition-prospect:',@AIAcquisitionProspectId);
         SET @LeadName=COALESCE(NULLIF(@ContactName,N''),@CompanyName);
         SET @SourceDetail=CONCAT(N'Configuration ',@ConfigurationId,N'; source ',@Source,N'; external ',COALESCE(@ExternalSourceId,N''));
-        DECLARE @Result TABLE (LeadId BIGINT, Duplicate BIT, OccurredAt DATETIME2(3));
-        INSERT @Result EXEC dbo.CRMLead_UpsertFromRoutine
-            @Routine=N'ai_acquisition_conversion',
-            @ExternalEventId=@ConversionEventId,
-            @Name=@LeadName, @Email=@Email, @Phone=@Phone,
-            @Facebook=@Facebook, @Instagram=@Instagram, @X=@X, @Source=N'AI Acquisition',
-            @CampaignId=NULL, @LandingPageId=NULL, @WebinarId=NULL,
-            @SourceDetail=@SourceDetail,
-            @OccurredAt=NULL;
-        SELECT TOP (1) @LeadId=LeadId, @Duplicate=Duplicate FROM @Result;
+        IF @Source IN (N'EXISTING_CRM',N'INACTIVE_LEADS',N'LANDING_PAGE',N'INSTAGRAM_INBOUND',N'FACEBOOK_INBOUND') AND
+           LEFT(@ExternalSourceId,5)=N'lead:'
+            SET @KnownLeadId=TRY_CONVERT(BIGINT,SUBSTRING(@ExternalSourceId,6,250));
+        IF @KnownLeadId IS NOT NULL AND EXISTS (SELECT 1 FROM dbo.Leads WITH (UPDLOCK,HOLDLOCK) WHERE LeadId=@KnownLeadId)
+        BEGIN
+            SET @LeadId=@KnownLeadId;
+            SET @Duplicate=1;
+            IF NOT EXISTS (SELECT 1 FROM dbo.LeadRoutineEvents WITH (UPDLOCK,HOLDLOCK)
+                           WHERE Routine=N'ai_acquisition_conversion' AND ExternalEventId=@ConversionEventId)
+                INSERT dbo.LeadRoutineEvents(Routine,ExternalEventId,LeadId,SourceDetail,OccurredAt)
+                VALUES(N'ai_acquisition_conversion',@ConversionEventId,@LeadId,@SourceDetail,SYSUTCDATETIME());
+        END
+        ELSE
+        BEGIN
+            DECLARE @Result TABLE (LeadId BIGINT, Duplicate BIT, OccurredAt DATETIME2(3));
+            INSERT @Result EXEC dbo.CRMLead_UpsertFromRoutine
+                @Routine=N'ai_acquisition_conversion',
+                @ExternalEventId=@ConversionEventId,
+                @Name=@LeadName, @Email=@Email, @Phone=@Phone,
+                @Facebook=@Facebook, @Instagram=@Instagram, @X=@X, @Source=N'AI Acquisition',
+                @CampaignId=NULL, @LandingPageId=NULL, @WebinarId=NULL,
+                @SourceDetail=@SourceDetail,
+                @OccurredAt=NULL;
+            SELECT TOP (1) @LeadId=LeadId, @Duplicate=Duplicate FROM @Result;
+        END;
         UPDATE dbo.AIAcquisitionProspects SET ConvertedLeadId=@LeadId, [Status]=N'CONVERTED_TO_LEAD', UpdatedAt=SYSUTCDATETIME()
         WHERE AIAcquisitionProspectId=@AIAcquisitionProspectId;
         UPDATE dbo.AIAcquisitionConversations SET LeadId=@LeadId WHERE AIAcquisitionProspectId=@AIAcquisitionProspectId AND LeadId IS NULL;
@@ -742,9 +826,21 @@ BEGIN
     SELECT
         (SELECT COUNT_BIG(*) FROM dbo.AIAcquisitionConfigurations WHERE Status=N'ACTIVE' AND (@AIAcquisitionConfigurationId IS NULL OR AIAcquisitionConfigurationId=@AIAcquisitionConfigurationId)) ActiveConfigurations,
         COUNT_BIG(*) ProspectsDiscovered,
+        SUM(CASE WHEN prospect.OptedOut=0 AND prospect.[Status] NOT IN (N'DO_NOT_CONTACT',N'NOT_INTERESTED',N'LOST') AND
+            (NULLIF(prospect.Email,N'') IS NOT NULL OR NULLIF(prospect.Phone,N'') IS NOT NULL OR
+             NULLIF(prospect.WhatsAppNumber,N'') IS NOT NULL OR NULLIF(prospect.Instagram,N'') IS NOT NULL OR
+             NULLIF(prospect.Facebook,N'') IS NOT NULL) THEN 1 ELSE 0 END) ContactableProspects,
         SUM(CASE WHEN prospect.LastContactAt IS NOT NULL THEN 1 ELSE 0 END) ProspectsContacted,
+        (SELECT COUNT_BIG(*) FROM dbo.AIAcquisitionContactAttempts attempt
+         WHERE attempt.[Status] IN (N'PROCESSING',N'RETRY',N'SENT',N'FAILED') AND
+               (@AIAcquisitionConfigurationId IS NULL OR attempt.AIAcquisitionConfigurationId=@AIAcquisitionConfigurationId)) ContactsAttempted,
         SUM(CASE WHEN prospect.Responded=1 THEN 1 ELSE 0 END) ConversationsStarted,
+        CAST(100.0*SUM(CASE WHEN prospect.Responded=1 AND prospect.LastContactAt IS NOT NULL THEN 1 ELSE 0 END)/
+             NULLIF(SUM(CASE WHEN prospect.LastContactAt IS NOT NULL THEN 1 ELSE 0 END),0) AS DECIMAL(6,2)) ReplyRatePercent,
         SUM(CASE WHEN prospect.ConvertedLeadId IS NOT NULL THEN 1 ELSE 0 END) LeadsCreated,
+        CAST(100.0*SUM(CASE WHEN prospect.ConvertedLeadId IS NOT NULL THEN 1 ELSE 0 END)/
+             NULLIF(COUNT_BIG(*),0) AS DECIMAL(6,2)) LeadConversionRatePercent,
+        CAST(AVG(CAST(lead.LeadScore AS DECIMAL(10,2))) AS DECIMAL(10,2)) AverageLeadScore,
         SUM(CASE WHEN lead.ScoreBand=N'QUALIFIED' THEN 1 ELSE 0 END) QualifiedLeads,
         SUM(CASE WHEN lead.ScoreBand=N'HOT' THEN 1 ELSE 0 END) HotLeads,
         SUM(CASE WHEN prospect.Status=N'HUMAN_HANDOFF' THEN 1 ELSE 0 END) HumanHandoffs,
@@ -763,22 +859,34 @@ BEGIN
     SELECT [Source], COUNT_BIG(*) ProspectsDiscovered,
         SUM(CASE WHEN LastContactAt IS NOT NULL THEN 1 ELSE 0 END) Contacted,
         SUM(CASE WHEN Responded=1 THEN 1 ELSE 0 END) Replies,
-        SUM(CASE WHEN ConvertedLeadId IS NOT NULL THEN 1 ELSE 0 END) LeadsCreated
+        SUM(CASE WHEN ConvertedLeadId IS NOT NULL THEN 1 ELSE 0 END) LeadsCreated,
+        CAST(100.0*SUM(CASE WHEN Responded=1 AND LastContactAt IS NOT NULL THEN 1 ELSE 0 END)/
+             NULLIF(SUM(CASE WHEN LastContactAt IS NOT NULL THEN 1 ELSE 0 END),0) AS DECIMAL(6,2)) ReplyRatePercent,
+        CAST(100.0*SUM(CASE WHEN ConvertedLeadId IS NOT NULL THEN 1 ELSE 0 END)/NULLIF(COUNT_BIG(*),0) AS DECIMAL(6,2)) LeadConversionRatePercent
     FROM dbo.AIAcquisitionProspects
     WHERE @AIAcquisitionConfigurationId IS NULL OR AIAcquisitionConfigurationId=@AIAcquisitionConfigurationId
     GROUP BY [Source] ORDER BY COUNT_BIG(*) DESC;
-    SELECT attempt.Channel, COUNT_BIG(*) Attempts,
-        SUM(CASE WHEN prospect.Responded=1 THEN 1 ELSE 0 END) RespondedProspects,
-        SUM(CASE WHEN prospect.ConvertedLeadId IS NOT NULL THEN 1 ELSE 0 END) LeadsCreated
+    SELECT attempt.Channel,
+        SUM(CASE WHEN attempt.[Status] IN (N'PROCESSING',N'RETRY',N'SENT',N'FAILED') THEN 1 ELSE 0 END) Attempts,
+        SUM(CASE WHEN attempt.[Status]=N'SENT' THEN 1 ELSE 0 END) Sent,
+        SUM(CASE WHEN attempt.[Status]=N'FAILED' THEN 1 ELSE 0 END) Failed,
+        COUNT_BIG(DISTINCT CASE WHEN prospect.Responded=1 THEN prospect.AIAcquisitionProspectId END) RespondedProspects,
+        COUNT_BIG(DISTINCT CASE WHEN prospect.ConvertedLeadId IS NOT NULL THEN prospect.AIAcquisitionProspectId END) LeadsCreated
     FROM dbo.AIAcquisitionContactAttempts attempt
     JOIN dbo.AIAcquisitionProspects prospect ON prospect.AIAcquisitionProspectId=attempt.AIAcquisitionProspectId
     WHERE @AIAcquisitionConfigurationId IS NULL OR attempt.AIAcquisitionConfigurationId=@AIAcquisitionConfigurationId
     GROUP BY attempt.Channel ORDER BY COUNT_BIG(*) DESC;
     SELECT configuration.AIAcquisitionConfigurationId, configuration.AcquisitionName,
         COUNT_BIG(prospect.AIAcquisitionProspectId) ProspectsDiscovered,
-        SUM(CASE WHEN prospect.ConvertedLeadId IS NOT NULL THEN 1 ELSE 0 END) LeadsCreated
+        SUM(CASE WHEN prospect.LastContactAt IS NOT NULL THEN 1 ELSE 0 END) Contacted,
+        SUM(CASE WHEN prospect.Responded=1 THEN 1 ELSE 0 END) Replies,
+        SUM(CASE WHEN prospect.ConvertedLeadId IS NOT NULL THEN 1 ELSE 0 END) LeadsCreated,
+        CAST(AVG(CAST(lead.LeadScore AS DECIMAL(10,2))) AS DECIMAL(10,2)) AverageLeadScore,
+        CAST(100.0*SUM(CASE WHEN prospect.ConvertedLeadId IS NOT NULL THEN 1 ELSE 0 END)/
+             NULLIF(COUNT_BIG(prospect.AIAcquisitionProspectId),0) AS DECIMAL(6,2)) LeadConversionRatePercent
     FROM dbo.AIAcquisitionConfigurations configuration
     LEFT JOIN dbo.AIAcquisitionProspects prospect ON prospect.AIAcquisitionConfigurationId=configuration.AIAcquisitionConfigurationId
+    LEFT JOIN dbo.Leads lead ON lead.LeadId=prospect.ConvertedLeadId
     WHERE @AIAcquisitionConfigurationId IS NULL OR configuration.AIAcquisitionConfigurationId=@AIAcquisitionConfigurationId
     GROUP BY configuration.AIAcquisitionConfigurationId,configuration.AcquisitionName
     ORDER BY configuration.AIAcquisitionConfigurationId DESC;

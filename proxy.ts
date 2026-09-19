@@ -30,14 +30,17 @@ function equalToken(left: string, right: string) {
   return mismatch === 0;
 }
 
-function isLeadIntegrationApi(request: NextRequest) {
+function isServiceIntegrationApi(request: NextRequest) {
   if (request.method !== "POST") return false;
   const pathname = request.nextUrl.pathname;
   return pathname === "/api/leads/interactions" ||
     /^\/api\/leads\/\d+\/intent$/.test(pathname) ||
     /^\/api\/leads\/\d+\/replies\/automatic$/.test(pathname) ||
     pathname === "/api/replies/outbound/claim" ||
-    /^\/api\/replies\/\d+\/complete$/.test(pathname);
+    /^\/api\/replies\/\d+\/complete$/.test(pathname) ||
+    pathname === "/api/acquisition/outreach/claim" ||
+    /^\/api\/acquisition\/outreach\/\d+\/complete$/.test(pathname) ||
+    pathname === "/api/acquisition/conversations/incoming";
 }
 
 function hasServiceAuthorization(request: NextRequest) {
@@ -120,7 +123,7 @@ export async function proxy(request: NextRequest) {
   const pathname = request.nextUrl.pathname;
   const sessionToken = request.cookies.get(AUTH_COOKIE_NAME)?.value || "";
 
-  if (isLeadIntegrationApi(request)) {
+  if (isServiceIntegrationApi(request)) {
     return hasServiceAuthorization(request)
       ? NextResponse.next()
       : NextResponse.json({ ok: false, error: "Unauthorized." }, { status: 401 });

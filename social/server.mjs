@@ -2832,6 +2832,16 @@ export async function createSocialListenerApp({
         return json({ ok: true, ...result }, 201);
       }
 
+      if (request.method === "GET" && url.pathname === "/acquisition/manual-tasks") {
+        return json({ ok: true, tasks: await activeAcquisitionService.manualTasks(optionalId(url.searchParams.get("configurationId"))) });
+      }
+
+      const acquisitionManualTaskCompletion = url.pathname.match(/^\/acquisition\/manual-tasks\/(\d+)\/complete$/);
+      if (request.method === "POST" && acquisitionManualTaskCompletion) {
+        const task = await activeAcquisitionService.completeManualTask(Number(acquisitionManualTaskCompletion[1]));
+        return json({ ok: true, task });
+      }
+
       if (request.method === "POST" && url.pathname === "/acquisition/outreach/claim") {
         const body = await readJson(request);
         const result = await activeAcquisitionService.claimOutreach({

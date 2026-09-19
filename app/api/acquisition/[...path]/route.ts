@@ -2,9 +2,6 @@ import { proxySocialRequest } from "../../social/_proxy";
 
 async function forward(request: Request, context: RouteContext<"/api/acquisition/[...path]">) {
   const { path } = await context.params;
-  if (path[0] === "outreach" || (path[0] === "conversations" && path[1] === "incoming")) {
-    return Response.json({ error: "This endpoint is available only on the service-authenticated listener." }, { status: 403 });
-  }
   const incoming = new URL(request.url);
   const suffix = Array.isArray(path) ? path.map(encodeURIComponent).join("/") : "";
   const target = `/acquisition/${suffix}${incoming.search}`;

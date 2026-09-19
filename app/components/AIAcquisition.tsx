@@ -12,7 +12,7 @@ type CommunicationMethod = {
 type AcquisitionConfiguration = {
   id: number; acquisitionName: string; objective: string; companyProfileId: number; productOrService: string;
   targetIndustry: string; targetCustomerType: string; targetLocation: string; keywords: string; businessSize: string;
-  startDate: string | null; endDate: string | null; dailyProspectLimit: number; aiProviderId: number;
+  startDate: string | null; endDate: string | null; dailyProspectLimit: number; automaticOutreachEnabled: boolean; aiProviderId: number;
   fallbackAIProviderId: number | null; minimumProspectFitScore: number; qualificationQuestions: string[];
   landingPageOrCTA: string; humanHandoffRules: Record<string, unknown>; followUpRules: Record<string, unknown>;
   conversionCriteria: { requireEngagement: boolean; allowLandingRegistration: boolean; minimumFitScore: number };
@@ -28,6 +28,8 @@ type Conversation = {
   id: number; prospectId: number; companyName: string; contactName: string; channel: string; direction: string;
   message: string; origin: string; deliveryStatus: string; occurredAt: string;
 };
+type ManualTask = { id: number; acquisitionConfigurationId: number; prospectId: number; companyName: string;
+  contactValue: string; message: string; createdAt: string; status: string };
 type Overview = Record<string, number>;
 type Analytics = { overview: Overview; sources: Record<string, unknown>[]; channels: Record<string, unknown>[]; configurations: Record<string, unknown>[] };
 
@@ -68,7 +70,7 @@ function emptyConfiguration(providerId = 0): Omit<AcquisitionConfiguration, "id"
   return {
     acquisitionName: "", objective: "", companyProfileId: 1, productOrService: "", targetIndustry: "",
     targetCustomerType: "", targetLocation: "", keywords: "", businessSize: "", startDate: null, endDate: null,
-    dailyProspectLimit: 50, aiProviderId: providerId, fallbackAIProviderId: null, minimumProspectFitScore: 50,
+    dailyProspectLimit: 50, automaticOutreachEnabled: false, aiProviderId: providerId, fallbackAIProviderId: null, minimumProspectFitScore: 50,
     qualificationQuestions: ["ContactName", "BusinessGoal", "Timeline"], landingPageOrCTA: "",
     humanHandoffRules: { minimumLeadScore: 80, minimumAIConfidence: 0.65, onHumanRequest: true },
     followUpRules: { enabled: true, maximumFollowUps: 3, delayBetweenAttemptsMinutes: 1440, channelEscalationEnabled: true, stopOnResponse: true, stopOnOptOut: true, stopOnDoNotContact: true },
@@ -140,6 +142,7 @@ export function AIAcquisition({ view }: { view: AcquisitionView }) {
   const [configurations, setConfigurations] = useState<AcquisitionConfiguration[]>([]);
   const [prospects, setProspects] = useState<Prospect[]>([]);
   const [conversations, setConversations] = useState<Conversation[]>([]);
+  const [manualTasks, setManualTasks] = useState<ManualTask[]>([]);
   const [providers, setProviders] = useState<AIProvider[]>([]);
   const [overview, setOverview] = useState<Overview>({});
   const [analytics, setAnalytics] = useState<Analytics>({ overview: {}, sources: [], channels: [], configurations: [] });
@@ -155,10 +158,11 @@ export function AIAcquisition({ view }: { view: AcquisitionView }) {
   const load = useCallback(async () => {
     setBusy(true);
     try {
-      const [configurationData, prospectData, conversationData, overviewData, analyticsData, providerResponse] = await Promise.all([
+      const [configurationData, prospectData, conversationData, manualTaskData, overviewData, analyticsData, providerResponse] = await Promise.all([
         api<{ configurations: AcquisitionConfiguration[] }>("configurations"),
         api<{ prospects: Prospect[] }>("prospects?limit=500"),
         api<{ conversations: Conversation[] }>("conversations?limit=500"),
+        api<{ tasks: ManualTask[] }>("manual-tasks"),
         api<{ overview: Overview }>("overview"),
         api<{ analytics: Analytics }>("analytics"),
         fetch("/api/ai/providers", { cache: "no-store" }),
@@ -167,6 +171,7 @@ export function AIAcquisition({ view }: { view: AcquisitionView }) {
       setConfigurations(configurationData.configurations || []);
       setProspects(prospectData.prospects || []);
       setConversations(conversationData.conversations || []);
+      setManualTasks(manualTaskData.tasks || []);
       setOverview(overviewData.overview || {});
       setAnalytics(analyticsData.analytics || { overview: {}, sources: [], channels: [], configurations: [] });
       setProviders((providerData.providers || []).filter((provider) => provider.enabled));
@@ -226,8 +231,10 @@ export function AIAcquisition({ view }: { view: AcquisitionView }) {
     {busy && <div className="acquisition-loading">Updating acquisition data…</div>}
 
     {view === "Overview" && <OverviewView overview={overview} configurations={configurations} selected={selected} busy={busy}
+      manualTasks={manualTasks.filter((task) => !selected || task.acquisitionConfigurationId === selected.id)}
       onAction={(action) => selected && mutate("configurations/action", { id: selected.id, action }, `${action.toLowerCase()} completed.`)}
-      onDiscover={() => selected && mutate("discover", { configurationId: selected.id }, "Discovery run completed.")} />}
+      onDiscover={() => selected && mutate("discover", { configurationId: selected.id }, "Discovery run completed.")}
+      onCompleteTask={(id) => mutate(`manual-tasks/${id}/complete`, {}, "Manual review marked complete.")} />}
 
     {view === "Acquisition Configurations" && <ConfigurationView configurations={configurations} editing={editing}
       setEditing={setEditing} providers={providers} busy={busy} save={saveConfiguration} />}
@@ -258,15 +265,18 @@ export function AIAcquisition({ view }: { view: AcquisitionView }) {
   </div>;
 }
 
-function OverviewView({ overview, configurations, selected, busy, onAction, onDiscover }: {
+function OverviewView({ overview, configurations, selected, manualTasks, busy, onAction, onDiscover, onCompleteTask }: {
   overview: Overview; configurations: AcquisitionConfiguration[]; selected: AcquisitionConfiguration | null; busy: boolean;
-  onAction: (action: string) => void; onDiscover: () => void;
+  manualTasks: ManualTask[]; onAction: (action: string) => void; onDiscover: () => void; onCompleteTask: (id: number) => void;
 }) {
   const metrics = [
     ["Active configurations", overview.activeConfigurations], ["Prospects discovered", overview.prospectsDiscovered],
+    ["Contactable prospects", overview.contactableProspects], ["Contacts attempted", overview.contactsAttempted],
     ["Prospects contacted", overview.prospectsContacted], ["Conversations started", overview.conversationsStarted],
+    ["Reply rate %", overview.replyRatePercent], ["Lead conversion rate %", overview.leadConversionRatePercent],
     ["Leads created/matched", overview.leadsCreated], ["Qualified leads", overview.qualifiedLeads],
-    ["Hot leads", overview.hotLeads], ["Human handoffs", overview.humanHandoffs], ["Conversions", overview.conversions],
+    ["Hot leads", overview.hotLeads], ["Average Lead Score", overview.averageLeadScore],
+    ["Human handoffs", overview.humanHandoffs], ["Conversions", overview.conversions],
   ];
   return <>
     <div className="acquisition-metric-grid">{metrics.map(([label, value], index) => <article key={String(label)}><span>{index + 1}</span><p>{label}</p><h3>{numberMetric(value)}</h3></article>)}</div>
@@ -279,6 +289,10 @@ function OverviewView({ overview, configurations, selected, busy, onAction, onDi
         {!['STOPPED', 'COMPLETED'].includes(selected.status) && <button disabled={busy} onClick={() => onAction("STOP")}>Stop</button>}
         <button disabled={busy || !["ACTIVE", "DRAFT", "PAUSED"].includes(selected.status)} onClick={onDiscover}>Run discovery</button>
       </div></> : <p className="acquisition-empty-copy">{configurations.length ? "Select a configuration." : "Create your first acquisition configuration."}</p>}
+    </section>
+    <section className="panel acquisition-settings"><div className="panel-head"><div><h3>Manual review queue</h3><p>Human handoffs stay separate from the outbound delivery worker.</p></div><span className="system-badge">{manualTasks.length} pending</span></div>
+      {manualTasks.map((task) => <article key={task.id}><b>!</b><div><strong>{task.companyName || `Prospect ${task.prospectId}`}</strong><small>{task.message} · {task.contactValue}</small></div><button disabled={busy} onClick={() => onCompleteTask(task.id)}>Mark reviewed</button></article>)}
+      {!manualTasks.length && <p className="acquisition-empty-copy">No manual reviews are pending.</p>}
     </section>
   </>;
 }
@@ -312,6 +326,7 @@ function ConfigurationView({ configurations, editing, setEditing, providers, bus
           <label>Start date<input type="date" value={editing.startDate || ""} onChange={(event) => update("startDate", event.target.value || null)} /></label>
           <label>End date<input type="date" value={editing.endDate || ""} onChange={(event) => update("endDate", event.target.value || null)} /></label>
           <label>Daily prospect limit<input type="number" min="1" max="10000" value={editing.dailyProspectLimit} onChange={(event) => update("dailyProspectLimit", Number(event.target.value))} /></label>
+          <label className="acquisition-checkbox"><input type="checkbox" checked={editing.automaticOutreachEnabled} onChange={(event) => update("automaticOutreachEnabled", event.target.checked)} /> Automatically queue policy-allowed outreach</label>
           <label>Minimum fit score<input type="number" min="0" max="100" value={editing.minimumProspectFitScore} onChange={(event) => update("minimumProspectFitScore", Number(event.target.value))} /></label>
           <label>AI provider<select value={editing.aiProviderId || ""} onChange={(event) => update("aiProviderId", Number(event.target.value))}><option value="">Select provider</option>{providers.map((provider) => <option key={provider.id} value={provider.id}>{provider.providerName}</option>)}</select></label>
           <label>Fallback provider<select value={editing.fallbackAIProviderId || ""} onChange={(event) => update("fallbackAIProviderId", event.target.value ? Number(event.target.value) : null)}><option value="">No fallback</option>{providers.filter((provider) => provider.id !== editing.aiProviderId).map((provider) => <option key={provider.id} value={provider.id}>{provider.providerName}</option>)}</select></label>

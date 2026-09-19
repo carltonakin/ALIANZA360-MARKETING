@@ -141,6 +141,9 @@ export function normalizeAcquisitionInput(value, { existingStatus = "DRAFT" } = 
       settings: objectValue(source.settings),
     };
   });
+  if (new Set(sources.map((source) => source.sourceCode)).size !== sources.length) {
+    throw validationError("Search sources must not be repeated.");
+  }
 
   const knownChannels = new Set(COMMUNICATION_CHANNELS);
   const suppliedMethods = arrayValue(input.communicationMethods);
@@ -159,6 +162,9 @@ export function normalizeAcquisitionInput(value, { existingStatus = "DRAFT" } = 
       allowSimultaneous: Boolean(method.allowSimultaneous),
     };
   });
+  if (new Set(communicationMethods.map((method) => method.channel)).size !== communicationMethods.length) {
+    throw validationError("Communication channels must not be repeated.");
+  }
 
   return {
     id: optionalPositiveId(input.id || input.acquisitionConfigurationId),
@@ -174,6 +180,7 @@ export function normalizeAcquisitionInput(value, { existingStatus = "DRAFT" } = 
     startDate,
     endDate,
     dailyProspectLimit: boundedInteger(input.dailyProspectLimit, 50, 1, 10_000),
+    automaticOutreachEnabled: input.automaticOutreachEnabled === true,
     aiProviderId,
     fallbackAIProviderId,
     minimumProspectFitScore: boundedInteger(input.minimumProspectFitScore, 50, 0, 100),
@@ -326,7 +333,8 @@ export class GooglePlacesProvider extends ProspectDiscoveryProvider {
 
   async searchProspects({ configuration, settings = {} }) {
     if (!this.apiKey) throw validationError("Google Places discovery is enabled but GOOGLE_PLACES_API_KEY is not configured.", 409);
-    const textQuery = clean(settings.searchTerms || [configuration.targetIndustry, configuration.keywords, configuration.targetLocation].filter(Boolean).join(" "), 1000);
+    const textQuery = clean(settings.searchTerms || [settings.industryOrCategory || configuration.targetIndustry,
+      settings.keywords || configuration.keywords, settings.location || configuration.targetLocation].filter(Boolean).join(" "), 1000);
     if (!textQuery) throw validationError("Google Places requires search terms, an industry, keywords, or a location.");
     const response = await this.fetchImpl("https://places.googleapis.com/v1/places:searchText", {
       method: "POST",
@@ -460,6 +468,7 @@ export class AcquisitionService {
     this.aiProviderService = aiProviderService;
     this.discoveryProviders = discoveryProviders || createDiscoveryProviders({ repository, env, fetchImpl });
     this.policyEngine = policyEngine || new CommunicationPolicyEngine();
+    this.outreachBatchSize = boundedInteger(env.AI_ACQUISITION_OUTREACH_BATCH_SIZE, 10, 1, 100);
   }
 
   async configurations(id = null) { return this.repository.getAcquisitionConfigurations(id); }
@@ -467,6 +476,13 @@ export class AcquisitionService {
   async analytics(configurationId = null) { return this.repository.getAcquisitionAnalytics(configurationId); }
   async prospects(filters = {}) { return this.repository.getAcquisitionProspects(filters); }
   async conversations(filters = {}) { return this.repository.getAcquisitionConversations(filters); }
+  async manualTasks(configurationId = null) { return this.repository.getAcquisitionManualTasks(configurationId); }
+
+  async completeManualTask(attemptIdValue) {
+    const attemptId = optionalPositiveId(attemptIdValue);
+    if (!attemptId) throw validationError("A manual task ID is required.");
+    return this.repository.completeAcquisitionManualTask(attemptId);
+  }
 
   async saveConfiguration(body) {
     const existingId = optionalPositiveId(body?.id || body?.acquisitionConfigurationId);
@@ -503,6 +519,9 @@ export class AcquisitionService {
     const results = [];
     for (const source of enabledSources) {
       if (remaining < 1) break;
+      const sourceLimit = Math.min(remaining, boundedInteger(source.settings?.dailyProspectLimit, remaining, 1, 10_000));
+      const minimumFit = Math.max(configuration.minimumProspectFitScore,
+        boundedInteger(source.settings?.minimumFitScore, configuration.minimumProspectFitScore, 0, 100));
       const provider = this.discoveryProviders.get(source.sourceCode);
       if (!provider) {
         results.push({ sourceCode: source.sourceCode, discovered: 0, skipped: true, reason: "No provider adapter is installed for this configured source." });
@@ -517,13 +536,13 @@ export class AcquisitionService {
           const enriched = await provider.enrichProspect(detailed, { configuration, settings: source.settings });
           const prospect = provider.normalizeProspect(enriched, { configuration });
           if (!provider.validateProspect(prospect)) continue;
-          if (prospect.fitScore < configuration.minimumProspectFitScore) { belowMinimum += 1; continue; }
+          if (prospect.fitScore < minimumFit) { belowMinimum += 1; continue; }
           const saved = await this.repository.upsertAcquisitionProspect(prospect);
           if (saved?.inserted !== false) {
             persisted += 1;
             remaining -= 1;
           }
-          if (remaining < 1) break;
+          if (remaining < 1 || persisted >= sourceLimit) break;
         }
         results.push({ sourceCode: source.sourceCode, discovered: persisted, belowMinimum });
       } catch (error) {
@@ -778,6 +797,51 @@ export class AcquisitionService {
     return this.repository.convertAcquisitionProspect(prospectId);
   }
 
+  async scheduleOutreach(configuration, { now = new Date(), limit = this.outreachBatchSize } = {}) {
+    if (!configuration.automaticOutreachEnabled || configuration.status !== "ACTIVE") {
+      return { queued: 0, skipped: "Automatic outreach is disabled or the configuration is not active." };
+    }
+    const prospects = typeof this.repository.getAcquisitionOutreachCandidates === "function"
+      ? await this.repository.getAcquisitionOutreachCandidates(configuration.id, 1000)
+      : await this.prospects({ configurationId: configuration.id, limit: 1000 });
+    const result = { queued: 0, inspected: 0, errors: [] };
+    for (const prospect of prospects) {
+      if (result.queued >= limit) break;
+      result.inspected += 1;
+      if (!["GRANTED", "OPT_IN"].includes(String(prospect.consentStatus || "").toUpperCase())) continue;
+      if (prospect.responded || prospect.optedOut || prospect.convertedLeadId ||
+          ["DO_NOT_CONTACT", "NOT_INTERESTED", "LOST", "HUMAN_HANDOFF"].includes(prospect.status)) continue;
+      try {
+        const selection = await this.communicationSelection(prospect.id);
+        const attempts = selection.attempts;
+        if (attempts.some((attempt) => ["QUEUED", "RETRY", "PROCESSING"].includes(attempt.status))) continue;
+        const sent = attempts.filter((attempt) => attempt.status === "SENT")
+          .sort((left, right) => new Date(left.attemptedAt || left.createdAt) - new Date(right.attemptedAt || right.createdAt));
+        if (attempts.some((attempt) => attempt.status === "FAILED") && !sent.length) continue;
+        if (sent.length) {
+          if (configuration.followUpRules?.enabled === false ||
+              sent.length - 1 >= Number(configuration.followUpRules?.maximumFollowUps ?? 3)) continue;
+          const lastSent = sent.at(-1);
+          const nextDue = new Date(lastSent.attemptedAt || lastSent.createdAt).getTime() +
+            Number(configuration.followUpRules?.delayBetweenAttemptsMinutes ?? 1440) * 60_000;
+          if (now.getTime() < nextDue) continue;
+        }
+        const selected = selection.selected;
+        if (!selected || selected.method.channel === "MANUAL_HUMAN_FOLLOW_UP") continue;
+        if (sent.length && configuration.followUpRules?.channelEscalationEnabled === false &&
+            selected.method.channel !== sent[0].channel) continue;
+        await this.queueContact(prospect.id, {
+          channel: selected.method.channel,
+          idempotencyKey: `acquisition:auto:${prospect.id}:${sent.length}`,
+        });
+        result.queued += 1;
+      } catch (error) {
+        result.errors.push({ prospectId: prospect.id, error: clean(error?.message || error, 500) });
+      }
+    }
+    return result;
+  }
+
   async tick(now = new Date()) {
     const date = now.toISOString().slice(0, 10);
     const configurations = (await this.configurations()).filter((configuration) =>
@@ -786,11 +850,15 @@ export class AcquisitionService {
       (!configuration.endDate || configuration.endDate >= date));
     const results = [];
     for (const configuration of configurations) {
+      const result = { configurationId: configuration.id };
       try {
-        results.push({ configurationId: configuration.id, ...(await this.discover(configuration.id)) });
+        result.discovery = await this.discover(configuration.id);
       } catch (error) {
-        results.push({ configurationId: configuration.id, error: clean(error?.message || error, 1000) });
+        result.discoveryError = clean(error?.message || error, 1000);
       }
+      try { result.outreach = await this.scheduleOutreach(configuration, { now }); }
+      catch (error) { result.outreachError = clean(error?.message || error, 1000); }
+      results.push(result);
     }
     return results;
   }

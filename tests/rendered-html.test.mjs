@@ -131,11 +131,17 @@ test("n8n routes require service Bearer auth without falling through to CRM sess
     "/api/leads/1/replies/automatic",
     "/api/replies/outbound/claim",
     "/api/replies/1/complete",
+    "/api/acquisition/outreach/claim",
+    "/api/acquisition/outreach/1/complete",
+    "/api/acquisition/conversations/incoming",
   ]) {
     const replyRequest = await post(path, `Bearer ${testServiceToken}`);
     assert.notEqual(replyRequest.status, 401, `${path} must use service authentication`);
     assert.doesNotMatch(await replyRequest.text(), /Authentication is required/i);
   }
+
+  const acquisitionMissing = await post("/api/acquisition/outreach/claim");
+  assert.equal(acquisitionMissing.status, 401);
 
   const unrelated = await fetch(`${dashboardUrl}/api/leads/1`, {
     headers: { authorization: `Bearer ${testServiceToken}` },
@@ -261,7 +267,7 @@ test("CRM lead interaction routes expose the n8n contract through service-token 
   assert.match(automaticReplyRoute, /forwardJson\(request, `\/leads\/\$\{leadId\}\/replies\/automatic`\)/i);
   assert.match(claimRoute, /forwardJson\(request, "\/reply-requests\/claim"\)/i);
   assert.match(completionRoute, /forwardJson\(request, `\/reply-requests\/\$\{replyId\}\/complete`\)/i);
-  assert.match(proxy, /isLeadIntegrationApi/i);
+  assert.match(proxy, /isServiceIntegrationApi/i);
   assert.match(proxy, /hasServiceAuthorization/i);
   assert.match(proxy, /process\.env\.SERVICE_AUTH_TOKEN/i);
   assert.match(proxy, /request\.method !== "POST"/i);

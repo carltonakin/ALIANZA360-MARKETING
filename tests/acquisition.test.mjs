@@ -181,6 +181,31 @@ test("AI-classified opt-out also suppresses an outbound reply", async () => {
   assert.ok(updates.some((update) => update.optedOut === true && update.status === "DO_NOT_CONTACT"));
 });
 
+test("automatic outreach is opt-in, consent-gated, delayed, and bounded", async () => {
+  const config = { ...configuration({ automaticOutreachEnabled: true }), id: 8, status: "ACTIVE" };
+  const prospect = (id, consentStatus) => ({ id, acquisitionConfigurationId: 8, companyName: `Company ${id}`,
+    email: `${id}@example.test`, status: "CONTACTABLE", consentStatus, optedOut: false,
+    responded: false, convertedLeadId: null, contacts: [{ type: "EMAIL", value: `${id}@example.test`, source: "CSV_IMPORT" }] });
+  const prospects = [prospect(1, "GRANTED"), prospect(2, ""), prospect(3, "OPT_IN")];
+  const attempts = { 1: [], 2: [], 3: [{ channel: "EMAIL", status: "SENT", attemptedAt: "2026-09-17T12:00:00.000Z" }] };
+  const queued = [];
+  const service = new AcquisitionService({ repository: {
+    getAcquisitionConfigurations: async () => [config],
+    getAcquisitionProspects: async ({ prospectId }) => prospectId ? prospects.filter((item) => item.id === prospectId) : prospects,
+    getAcquisitionContactAttempts: async (id) => attempts[id],
+  }, aiProviderService: {}, env: { AI_ACQUISITION_OUTREACH_BATCH_SIZE: "2" } });
+  service.queueContact = async (id, body) => { queued.push({ id, ...body }); return { attempt: { id } }; };
+  const result = await service.scheduleOutreach(config, { now: new Date("2026-09-19T12:00:00.000Z") });
+  assert.equal(result.queued, 2);
+  assert.deepEqual(queued.map((item) => item.id), [1, 3]);
+  assert.equal(queued[1].idempotencyKey, "acquisition:auto:3:1");
+  assert.equal((await service.scheduleOutreach({ ...config, automaticOutreachEnabled: false })).queued, 0);
+  attempts[3][0].attemptedAt = "2026-09-19T11:30:00.000Z";
+  queued.length = 0;
+  await service.scheduleOutreach(config, { now: new Date("2026-09-19T12:00:00.000Z") });
+  assert.deepEqual(queued.map((item) => item.id), [1], "the follow-up waits for its configured delay");
+});
+
 test("structured acquisition decisions preserve the required contract", () => {
   assert.deepEqual(normalizeAcquisitionDecision({
     intent: "pricing", confidence: 1.4, next_action: "HANDOFF", response: "A specialist can help.",
@@ -216,6 +241,8 @@ test("listener exposes acquisition routes independently of campaign routes", asy
     overview: async () => ({ prospectsDiscovered: 7 }),
     configurations: async () => [{ id: 3, acquisitionName: "Test" }],
     prospects: async () => [], conversations: async () => [], analytics: async () => ({ overview: {}, sources: [], channels: [], configurations: [] }),
+    manualTasks: async () => [{ id: 5, prospectId: 9, channel: "MANUAL_HUMAN_FOLLOW_UP" }],
+    completeManualTask: async (id) => ({ id, status: "COMPLETED" }),
     saveConfiguration: async (body) => ({ ...body, id: 3 }), setStatus: async () => ({ id: 3, status: "ACTIVE" }),
     discover: async (id) => { calls.push(id); return { configurationId: Number(id), results: [] }; },
     queueContact: async () => ({}), convert: async () => ({}), receiveMessage: async () => ({}),
@@ -238,6 +265,10 @@ test("listener exposes acquisition routes independently of campaign routes", asy
   const discovery = await request("/acquisition/discover", { method: "POST", body: JSON.stringify({ configurationId: 3 }) });
   assert.equal(discovery.status, 200);
   assert.deepEqual(calls, [3]);
+  const tasks = await request("/acquisition/manual-tasks");
+  assert.equal((await tasks.json()).tasks[0].id, 5);
+  const completed = await request("/acquisition/manual-tasks/5/complete", { method: "POST", body: "{}" });
+  assert.equal((await completed.json()).task.status, "COMPLETED");
 });
 
 test("acquisition migration keeps Prospect storage independent and conversion inside the existing Lead lifecycle", () => {
@@ -247,8 +278,14 @@ test("acquisition migration keeps Prospect storage independent and conversion in
     assert.match(sql, new RegExp(`CREATE TABLE dbo\\.${table}`));
   }
   assert.match(sql, /CRMLead_UpsertFromRoutine/);
+  assert.match(sql, /@KnownLeadId=TRY_CONVERT\(BIGINT/);
+  assert.match(sql, /INSERT dbo\.LeadRoutineEvents\(Routine,ExternalEventId,LeadId,SourceDetail,OccurredAt\)/);
   assert.match(sql, /LeadScore_Recalculate/);
   assert.match(sql, /AI_ACQUISITION_CONVERSATION/);
   assert.match(sql, /IX_AIAcquisitionContactAttempts_Due/);
+  assert.match(sql, /AutomaticOutreachEnabled/);
+  assert.match(sql, /attempt\.Channel<>N'MANUAL_HUMAN_FOLLOW_UP'/);
+  assert.match(sql, /ReplyRatePercent/);
+  assert.match(sql, /AverageLeadScore/);
   assert.doesNotMatch(sql, /CREATE\s+TABLE\s+dbo\.Leads\b/i);
 });

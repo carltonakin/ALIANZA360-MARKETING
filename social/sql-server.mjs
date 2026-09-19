@@ -493,6 +493,7 @@ function mapAcquisitionConfiguration(row, sourceRows = [], methodRows = []) {
     startDate: dateOnly(row.StartDate),
     endDate: dateOnly(row.EndDate),
     dailyProspectLimit: Number(row.DailyProspectLimit || 0),
+    automaticOutreachEnabled: Boolean(row.AutomaticOutreachEnabled),
     aiProviderId: Number(row.AIProviderConfigurationId),
     fallbackAIProviderId: row.FallbackProviderConfigurationId ? Number(row.FallbackProviderConfigurationId) : null,
     minimumProspectFitScore: Number(row.MinimumProspectFitScore || 0),
@@ -580,6 +581,8 @@ function mapAcquisitionContactAttempt(row) {
     id: Number(row.AIAcquisitionContactAttemptId),
     acquisitionConfigurationId: Number(row.AIAcquisitionConfigurationId),
     prospectId: Number(row.AIAcquisitionProspectId),
+    companyName: row.CompanyName || "",
+    contactName: row.ContactName || "",
     channel: row.Channel,
     contactValue: row.ContactValue,
     message: row.Message || "",
@@ -1988,8 +1991,9 @@ export class SqlServerRepository {
     request.input("StartDate", this.sql.Date, input.startDate ? new Date(`${input.startDate}T00:00:00Z`) : null);
     request.input("EndDate", this.sql.Date, input.endDate ? new Date(`${input.endDate}T00:00:00Z`) : null);
     request.input("DailyProspectLimit", this.sql.Int, Number(input.dailyProspectLimit));
-    request.input("AIProviderConfigurationId", this.sql.Int, Number(input.aiProviderId));
-    request.input("FallbackProviderConfigurationId", this.sql.Int, numericId(input.fallbackAIProviderId));
+    request.input("AutomaticOutreachEnabled", this.sql.Bit, input.automaticOutreachEnabled ? 1 : 0);
+    request.input("AIProviderConfigurationId", this.sql.BigInt, Number(input.aiProviderId));
+    request.input("FallbackProviderConfigurationId", this.sql.BigInt, numericId(input.fallbackAIProviderId));
     request.input("MinimumProspectFitScore", this.sql.Int, Number(input.minimumProspectFitScore));
     request.input("QualificationQuestionsJson", this.sql.NVarChar(this.sql.MAX), JSON.stringify(input.qualificationQuestions || []));
     request.input("LandingPageOrCTA", this.sql.NVarChar(2048), input.landingPageOrCTA || null);
@@ -2041,6 +2045,14 @@ export class SqlServerRepository {
     request.input("Status", this.sql.NVarChar(32), status || null);
     request.input("Limit", this.sql.Int, Math.max(1, Math.min(1000, Number(limit) || 250)));
     const response = await request.execute("dbo.AIAcquisitionProspect_Get");
+    return (response.recordset || []).map(mapAcquisitionProspect);
+  }
+
+  async getAcquisitionOutreachCandidates(configurationId, limit = 1000) {
+    const request = this.request();
+    request.input("AIAcquisitionConfigurationId", this.sql.BigInt, numericId(configurationId));
+    request.input("Limit", this.sql.Int, Math.max(1, Math.min(1000, Number(limit) || 1000)));
+    const response = await request.execute("dbo.AIAcquisitionOutreachCandidates_Get");
     return (response.recordset || []).map(mapAcquisitionProspect);
   }
 
@@ -2141,7 +2153,7 @@ export class SqlServerRepository {
     request.input("Direction", this.sql.NVarChar(16), input.direction);
     request.input("Message", this.sql.NVarChar(this.sql.MAX), input.message);
     request.input("OriginAIOrHuman", this.sql.NVarChar(32), input.origin);
-    request.input("AIProviderConfigurationId", this.sql.Int, numericId(input.aiProviderId));
+    request.input("AIProviderConfigurationId", this.sql.BigInt, numericId(input.aiProviderId));
     request.input("AIModel", this.sql.NVarChar(255), input.aiModel || null);
     request.input("DeliveryStatus", this.sql.NVarChar(32), input.deliveryStatus);
     request.input("ExternalMessageId", this.sql.NVarChar(255), input.externalMessageId || null);
@@ -2207,6 +2219,21 @@ export class SqlServerRepository {
     request.input("Retryable", this.sql.Bit, result.retryable ? 1 : 0);
     request.input("NextAttemptAt", this.sql.DateTime2, result.nextAttemptAt ? new Date(result.nextAttemptAt) : null);
     const response = await request.execute("dbo.AIAcquisitionContactAttempt_Complete");
+    return response.recordset?.[0] ? mapAcquisitionContactAttempt(response.recordset[0]) : null;
+  }
+
+  async getAcquisitionManualTasks(configurationId = null, limit = 250) {
+    const request = this.request();
+    request.input("AIAcquisitionConfigurationId", this.sql.BigInt, numericId(configurationId));
+    request.input("Limit", this.sql.Int, Math.max(1, Math.min(1000, Number(limit) || 250)));
+    const response = await request.execute("dbo.AIAcquisitionManualTask_Get");
+    return (response.recordset || []).map(mapAcquisitionContactAttempt);
+  }
+
+  async completeAcquisitionManualTask(attemptId) {
+    const request = this.request();
+    request.input("AIAcquisitionContactAttemptId", this.sql.BigInt, numericId(attemptId));
+    const response = await request.execute("dbo.AIAcquisitionManualTask_Complete");
     return response.recordset?.[0] ? mapAcquisitionContactAttempt(response.recordset[0]) : null;
   }
 
