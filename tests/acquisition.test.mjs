@@ -237,13 +237,15 @@ test("generic AI structured output retries a primary and uses only the configure
 
 test("listener exposes acquisition routes independently of campaign routes", async () => {
   const calls = [];
+  let saveError = null;
   const acquisitionService = {
     overview: async () => ({ prospectsDiscovered: 7 }),
     configurations: async () => [{ id: 3, acquisitionName: "Test" }],
     prospects: async () => [], conversations: async () => [], analytics: async () => ({ overview: {}, sources: [], channels: [], configurations: [] }),
     manualTasks: async () => [{ id: 5, prospectId: 9, channel: "MANUAL_HUMAN_FOLLOW_UP" }],
     completeManualTask: async (id) => ({ id, status: "COMPLETED" }),
-    saveConfiguration: async (body) => ({ ...body, id: 3 }), setStatus: async () => ({ id: 3, status: "ACTIVE" }),
+    saveConfiguration: async (body) => { if (saveError) throw saveError; return { ...body, id: 3 }; },
+    setStatus: async () => ({ id: 3, status: "ACTIVE" }),
     discover: async (id) => { calls.push(id); return { configurationId: Number(id), results: [] }; },
     queueContact: async () => ({}), convert: async () => ({}), receiveMessage: async () => ({}),
   };
@@ -269,6 +271,13 @@ test("listener exposes acquisition routes independently of campaign routes", asy
   assert.equal((await tasks.json()).tasks[0].id, 5);
   const completed = await request("/acquisition/manual-tasks/5/complete", { method: "POST", body: "{}" });
   assert.equal((await completed.json()).task.status, "COMPLETED");
+  saveError = Object.assign(new Error("password=must-not-leak"), { code: "EREQUEST", number: 2812 });
+  const failedSave = await request("/acquisition/configurations", { method: "POST", body: "{}" });
+  assert.equal(failedSave.status, 500);
+  assert.deepEqual(await failedSave.json(), {
+    error: "Acquisition configuration could not be saved.",
+    diagnosticCode: "SQL_2812",
+  });
 });
 
 test("acquisition migration keeps Prospect storage independent and conversion inside the existing Lead lifecycle", () => {

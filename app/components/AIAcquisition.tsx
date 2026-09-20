@@ -81,8 +81,11 @@ function emptyConfiguration(providerId = 0): Omit<AcquisitionConfiguration, "id"
 
 async function api<T>(path: string, init?: RequestInit): Promise<T> {
   const response = await fetch(`/api/acquisition/${path}`, { cache: "no-store", ...init });
-  const body = await response.json().catch(() => ({})) as T & { error?: string; message?: string };
-  if (!response.ok) throw new Error(body.error || body.message || "AI Acquisition request failed.");
+  const body = await response.json().catch(() => ({})) as T & { error?: string; message?: string; diagnosticCode?: string };
+  if (!response.ok) {
+    const detail = body.diagnosticCode ? ` (diagnostic ${body.diagnosticCode})` : "";
+    throw new Error(`${body.error || body.message || "AI Acquisition request failed."}${detail}`);
+  }
   return body;
 }
 

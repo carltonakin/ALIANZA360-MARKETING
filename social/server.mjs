@@ -161,6 +161,13 @@ function safeMessage(error) {
     : "Unexpected listener error.";
 }
 
+function acquisitionSaveDiagnosticCode(error) {
+  const number = error?.number ?? error?.originalError?.number;
+  if (Number.isSafeInteger(number) && number > 0 && number < 100_000) return `SQL_${number}`;
+  const code = String(error?.code || "").toUpperCase();
+  return /^[A-Z][A-Z0-9_]{0,31}$/.test(code) ? code : "UNCLASSIFIED";
+}
+
 function publicAiProvider(configuration) {
   return {
     id: configuration.id,
@@ -4732,6 +4739,13 @@ export async function createSocialListenerApp({
         )
           ? error.statusCode
           : 500;
+
+      if (status >= 500 && request.method === "POST" && url.pathname === "/acquisition/configurations") {
+        return json({
+          error: "Acquisition configuration could not be saved.",
+          diagnosticCode: acquisitionSaveDiagnosticCode(error),
+        }, status);
+      }
 
       return json(
         {
