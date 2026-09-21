@@ -402,6 +402,11 @@ function mapAiCampaignConfiguration(row) {
     selectedBufferChannelIds: jsonValue(row.SelectedBufferChannelIdsJson, []),
     cta: row.CTA || "",
     destinationUrl: row.DestinationUrl || "",
+    sourceContentType: row.SourceContentType || "OBJECTIVE_ONLY",
+    sourceContent: row.SourceContent || "",
+    mediaStrategy: row.MediaStrategy || "TEXT_ONLY",
+    storedMediaAssetIds: jsonValue(row.StoredMediaAssetIdsJson, []),
+    imageProviderId: row.ImageProviderConfigurationId ? Number(row.ImageProviderConfigurationId) : null,
     publishingMode: row.PublishingMode || "DRAFT",
     status: row.Status || "DRAFT",
     lastGenerationDate: dateOnly(row.LastGenerationDate),
@@ -1881,6 +1886,11 @@ export class SqlServerRepository {
     request.input("SelectedBufferChannelIdsJson", this.sql.NVarChar(this.sql.MAX), JSON.stringify(input.selectedBufferChannelIds));
     request.input("CTA", this.sql.NVarChar(500), input.cta || null);
     request.input("DestinationUrl", this.sql.NVarChar(2048), input.destinationUrl || null);
+    request.input("SourceContentType", this.sql.NVarChar(40), input.sourceContentType || "OBJECTIVE_ONLY");
+    request.input("SourceContent", this.sql.NVarChar(this.sql.MAX), input.sourceContent || null);
+    request.input("MediaStrategy", this.sql.NVarChar(64), input.mediaStrategy || "TEXT_ONLY");
+    request.input("StoredMediaAssetIdsJson", this.sql.NVarChar(this.sql.MAX), JSON.stringify(input.storedMediaAssetIds || []));
+    request.input("ImageProviderConfigurationId", this.sql.BigInt, numericId(input.imageProviderId));
     request.input("PublishingMode", this.sql.NVarChar(16), input.publishingMode);
     request.input("Status", this.sql.NVarChar(16), input.status || "DRAFT");
     const response = await request.execute("dbo.AICampaignConfiguration_Save");

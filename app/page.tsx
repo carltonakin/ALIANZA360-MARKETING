@@ -1716,7 +1716,10 @@ function Campaigns({
         action="New Buffer campaign"
         click={onCreate}
       />
-      <AICampaignManager bufferChannels={bufferChannels} onCampaignsChanged={onRefresh} />
+      <AICampaignManager bufferChannels={bufferChannels} onCampaignsChanged={onRefresh} onEditCampaign={(campaignId) => {
+        const campaign = rows.find((item) => String(item.id) === String(campaignId));
+        if (campaign) onEdit(campaign);
+      }} />
       {!rows.length ? (
         <Empty
           icon="◎"

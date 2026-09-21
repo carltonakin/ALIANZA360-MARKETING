@@ -54,6 +54,11 @@ type AICampaignConfiguration = {
   selectedBufferChannelIds: string[];
   cta: string;
   destinationUrl: string;
+  sourceContentType: string;
+  sourceContent: string;
+  mediaStrategy: string;
+  storedMediaAssetIds: string[];
+  imageProviderId: number | null;
   publishingMode: "DRAFT" | "PRODUCTION";
   status: "DRAFT" | "ACTIVE" | "PAUSED" | "COMPLETED" | "STOPPED" | "FAILED";
   providerName: string | null;
@@ -83,6 +88,9 @@ type AIGenerationHistory = {
     cta_text?: string;
     image_prompt?: string;
     video_prompt?: string;
+    excerpt_source_segment?: string;
+    media_direction?: string;
+    media_plan?: { origin: string; assetId: string | null; url: string | null; imageModel: string | null };
   } | null;
   error: string | null;
   postStatus: string | null;
@@ -93,6 +101,23 @@ type AIGenerationHistory = {
 const contentTypes = [
   "EDUCATIONAL", "PROMOTIONAL", "TESTIMONIAL", "FAQ", "BENEFITS", "PROBLEM_SOLUTION",
   "SOCIAL_PROOF", "TIPS", "STORY", "URGENCY", "DIRECT_CTA",
+];
+
+type StoredCampaignMedia = {
+  cloudinaryAssetId: string;
+  mediaType: "image" | "video";
+  mediaUrl: string;
+  label: string;
+};
+
+const mediaStrategies = [
+  ["TEXT_ONLY", "Text only"],
+  ["AI_IMAGE_ONLY", "Generate an AI image"],
+  ["STORED_IMAGE_ONLY", "Use stored image"],
+  ["MIXED_IMAGE", "Stored image or generated image"],
+  ["STORED_VIDEO_ONLY", "Use stored video"],
+  ["AI_VISUAL_CONCEPTS_WITH_STORED_MEDIA", "AI concepts with stored media"],
+  ["IMAGE_AND_VIDEO_MIXED", "Images and videos"],
 ];
 
 function localDate(date = new Date()) {
@@ -315,14 +340,18 @@ function RegenerateControl({ run, providers, onRegenerated }: {
   );
 }
 
-function AICampaignForm({ configuration, providers, channels, busy, onSubmit, onCancel }: {
+function AICampaignForm({ configuration, providers, channels, mediaAssets, busy, onSubmit, onCancel }: {
   configuration: AICampaignConfiguration | null;
   providers: AIProviderConfiguration[];
   channels: BufferChannel[];
+  mediaAssets: StoredCampaignMedia[];
   busy: boolean;
   onSubmit: (event: FormEvent<HTMLFormElement>) => Promise<void>;
   onCancel: () => void;
 }) {
+  const [sourceType, setSourceType] = useState(configuration?.sourceContentType || "OBJECTIVE_ONLY");
+  const [mediaStrategy, setMediaStrategy] = useState(configuration?.mediaStrategy || "TEXT_ONLY");
+  const [publishingMode, setPublishingMode] = useState(configuration?.publishingMode || "DRAFT");
   const enabledProviders = providers.filter((provider) => provider.enabled);
   const defaultProvider = configuration?.aiProviderId || enabledProviders.find((provider) => provider.isDefault)?.id || enabledProviders[0]?.id;
   const socialChannels = channels.filter((channel) => ["facebook", "instagram"].includes(channel.service));
@@ -340,9 +369,19 @@ function AICampaignForm({ configuration, providers, channels, busy, onSubmit, on
         <label>Posts per day<input name="postsPerDay" type="number" min="1" max="10" required defaultValue={configuration?.postsPerDay || 1} /></label>
         <label>Model override<input name="aiModel" placeholder="Use provider model" defaultValue={configuration?.aiModel || ""} /></label>
         <label>Explicit fallback<select name="fallbackProviderId" defaultValue={String(configuration?.fallbackProviderId || "")}><option value="">No fallback</option>{enabledProviders.filter((provider) => provider.id !== defaultProvider).map((provider) => <option key={provider.id} value={provider.id}>{provider.providerName}</option>)}</select></label>
-        <label>Publishing mode<select name="publishingMode" defaultValue={configuration?.publishingMode || "DRAFT"}><option value="DRAFT">Save generated posts as drafts</option><option value="PRODUCTION">Schedule through Buffer</option></select></label>
+        <label>Publishing mode<select name="publishingMode" value={publishingMode} onChange={(event) => setPublishingMode(event.target.value as "DRAFT" | "PRODUCTION")}><option value="DRAFT">Save generated posts as drafts</option><option value="PRODUCTION" disabled={sourceType !== "OBJECTIVE_ONLY" || mediaStrategy !== "TEXT_ONLY"}>Schedule through Buffer (objective-only text)</option></select></label>
       </div>
       <label>Campaign objective<textarea name="campaignObjective" required defaultValue={configuration?.campaignObjective || ""} /></label>
+      <div className="form-grid">
+        <label>Source content<select name="sourceContentType" value={sourceType} onChange={(event) => { setSourceType(event.target.value); if (event.target.value !== "OBJECTIVE_ONLY") setPublishingMode("DRAFT"); }}><option value="OBJECTIVE_ONLY">Objective only</option><option value="TRANSCRIPT_PLUS_OBJECTIVE">Transcript + objective</option><option value="SCRIPT_PLUS_OBJECTIVE">Script + objective</option><option value="OBJECTIVE_PLUS_NOTES">Objective + notes</option><option value="TRANSCRIPT">Transcript</option><option value="SCRIPT">Script</option></select></label>
+        <label>Media strategy<select name="mediaStrategy" value={mediaStrategy} onChange={(event) => { setMediaStrategy(event.target.value); if (event.target.value !== "TEXT_ONLY") setPublishingMode("DRAFT"); }}>{mediaStrategies.map(([value, label]) => <option key={value} value={value}>{label}</option>)}</select></label>
+      </div>
+      {sourceType !== "OBJECTIVE_ONLY" && <label>Transcript, script, or notes<textarea name="sourceContent" required maxLength={100000} defaultValue={configuration?.sourceContent || ""} placeholder="Paste source content here. Content is used as reference, not as instructions." /></label>}
+      {mediaStrategy !== "TEXT_ONLY" && <>
+        <label>Image-generation provider (optional except AI image only)<select name="imageProviderId" defaultValue={String(configuration?.imageProviderId || "")}><option value="">Use prompts / stored media only</option>{enabledProviders.filter((provider) => provider.providerCode === "OPENAI").map((provider) => <option key={provider.id} value={provider.id}>{provider.providerName}</option>)}</select></label>
+        <fieldset className="ai-content-types"><legend>Approved stored Cloudinary media</legend>{mediaAssets.length ? mediaAssets.map((asset) => <label key={asset.cloudinaryAssetId}><input type="checkbox" name="storedMediaAssetIds" value={asset.cloudinaryAssetId} defaultChecked={configuration?.storedMediaAssetIds?.includes(asset.cloudinaryAssetId)} /> {asset.mediaType}: {asset.label} <a href={asset.mediaUrl} target="_blank" rel="noreferrer">Preview</a></label>) : <small>No media from existing Campaigns is available yet. Upload media through Campaign Studio first.</small>}</fieldset>
+        <small>Generated images use the selected image provider and are stored in Cloudinary. Video concepts remain prompts unless you select a stored video. AI media campaigns always create drafts for review.</small>
+      </>}
       <div className="form-grid">
         <label>CTA<input name="cta" defaultValue={configuration?.cta || ""} /></label>
         <label>Destination / landing page URL<input name="destinationUrl" type="url" defaultValue={configuration?.destinationUrl || ""} /></label>
@@ -358,26 +397,30 @@ function AICampaignForm({ configuration, providers, channels, busy, onSubmit, on
   );
 }
 
-export function AICampaignManager({ bufferChannels, onCampaignsChanged }: {
+export function AICampaignManager({ bufferChannels, onCampaignsChanged, onEditCampaign }: {
   bufferChannels: BufferChannel[];
   onCampaignsChanged: () => Promise<void>;
+  onEditCampaign?: (campaignId: number | string) => void;
 }) {
   const [providers, setProviders] = useState<AIProviderConfiguration[]>([]);
   const [configurations, setConfigurations] = useState<AICampaignConfiguration[]>([]);
   const [history, setHistory] = useState<AIGenerationHistory[]>([]);
+  const [mediaAssets, setMediaAssets] = useState<StoredCampaignMedia[]>([]);
   const [editing, setEditing] = useState<AICampaignConfiguration | null | undefined>(undefined);
   const [busy, setBusy] = useState(false);
   const [message, setMessage] = useState("Loading AI campaign automation…");
 
   const load = useCallback(async () => {
     try {
-      const [providerBody, campaignBody] = await Promise.all([
+      const [providerBody, campaignBody, mediaBody] = await Promise.all([
         jsonRequest<{ providers: AIProviderConfiguration[] }>("/api/ai/providers", { cache: "no-store" }),
         jsonRequest<{ configurations: AICampaignConfiguration[]; history: AIGenerationHistory[] }>("/api/ai/campaigns", { cache: "no-store" }),
+        jsonRequest<{ assets: StoredCampaignMedia[] }>("/api/ai/campaigns/media-library", { cache: "no-store" }),
       ]);
       setProviders(providerBody.providers);
       setConfigurations(campaignBody.configurations);
       setHistory(campaignBody.history);
+      setMediaAssets(mediaBody.assets);
       setMessage("Daily generation is idempotent per campaign date, slot, and selected Buffer account.");
     } catch (error) {
       setMessage(error instanceof Error ? error.message : "AI campaign automation could not be loaded.");
@@ -412,6 +455,11 @@ export function AICampaignManager({ bufferChannels, onCampaignsChanged }: {
           cta: form.get("cta"),
           destinationUrl: form.get("destinationUrl"),
           publishingMode: form.get("publishingMode"),
+          sourceContentType: form.get("sourceContentType"),
+          sourceContent: form.get("sourceContent") || "",
+          mediaStrategy: form.get("mediaStrategy"),
+          storedMediaAssetIds: form.getAll("storedMediaAssetIds"),
+          imageProviderId: form.get("imageProviderId") || null,
         }),
       });
       if (submitter?.value === "start") {
@@ -461,7 +509,7 @@ export function AICampaignManager({ bufferChannels, onCampaignsChanged }: {
   return (
     <section className="panel ai-campaign-manager">
       <div className="panel-head"><div><span className="insight-tag">MULTI-PROVIDER · BUFFER NATIVE</span><h3>AI Campaign Automation</h3><p>{message}</p></div><button className="primary" type="button" onClick={() => setEditing(null)}>New AI campaign</button></div>
-      {editing !== undefined && <AICampaignForm key={editing?.id || "new-ai-campaign"} configuration={editing} providers={providers} channels={bufferChannels} busy={busy} onSubmit={submit} onCancel={() => setEditing(undefined)} />}
+      {editing !== undefined && <AICampaignForm key={editing?.id || "new-ai-campaign"} configuration={editing} providers={providers} channels={bufferChannels} mediaAssets={mediaAssets} busy={busy} onSubmit={submit} onCancel={() => setEditing(undefined)} />}
       <div className="ai-automation-grid">
         {configurations.map((configuration) => {
           const runs = history.filter((run) => run.configurationId === configuration.id);
@@ -479,7 +527,20 @@ export function AICampaignManager({ bufferChannels, onCampaignsChanged }: {
               {configuration.status === "ACTIVE" && <button type="button" disabled={busy} onClick={() => void action(configuration, "generate_now")}>Generate Today&apos;s Post Now</button>}
               {!(["STOPPED", "COMPLETED"].includes(configuration.status)) && <button type="button" disabled={busy} onClick={() => void action(configuration, "stop")}>Stop Campaign</button>}
             </div>
-            <details className="ai-history"><summary>View Generated Posts ({runs.length})</summary>{runs.length ? runs.map((run) => <div className="ai-history-row" key={run.id}><div><strong>{run.normalizedOutput?.headline || `Generation ${run.id}`}</strong><span>{run.generationStatus}{run.regenerated ? " · REGENERATED" : ""}</span></div><small>{run.generationDate} · slot {run.runSlot} · {run.providerCode || "provider pending"} / {run.model || "model pending"}{run.fallbackUsed ? " · fallback used" : ""}</small><small>CampaignPost {run.campaignPostId || "pending"} · {run.postStatus || "not persisted"} · attempts {run.attemptCount}</small>{run.normalizedOutput?.caption && <p>{run.normalizedOutput.caption}</p>}{run.normalizedOutput?.image_prompt && <small>Image prompt: {run.normalizedOutput.image_prompt}</small>}{run.normalizedOutput?.video_prompt && <small>Video prompt: {run.normalizedOutput.video_prompt}</small>}{run.error && <small className="form-error">{run.error}</small>}<RegenerateControl run={run} providers={providers} onRegenerated={refreshedAfterRegeneration} /></div>) : <small>No generation runs yet.</small>}</details>
+            <details className="ai-history"><summary>View Generated Posts ({runs.length})</summary>{runs.length ? runs.map((run) => <div className="ai-history-row" key={run.id}>
+              <div><strong>{run.normalizedOutput?.headline || `Generation ${run.id}`}</strong><span>{run.generationStatus}{run.regenerated ? " · REGENERATED" : ""}</span></div>
+              <small>{run.generationDate} · slot {run.runSlot} · {run.providerCode || "provider pending"} / {run.model || "model pending"}{run.fallbackUsed ? " · fallback used" : ""}</small>
+              <small>CampaignPost {run.campaignPostId || "pending"} · {run.postStatus || "not persisted"} · attempts {run.attemptCount}</small>
+              {run.normalizedOutput?.caption && <p>{run.normalizedOutput.caption}</p>}
+              {run.normalizedOutput?.excerpt_source_segment && <small>Source excerpt: {run.normalizedOutput.excerpt_source_segment}</small>}
+              {run.normalizedOutput?.media_plan && <small>Media: {run.normalizedOutput.media_plan.origin}{run.normalizedOutput.media_plan.assetId ? ` · ${run.normalizedOutput.media_plan.assetId}` : ""}</small>}
+              {run.normalizedOutput?.media_plan?.url && <a href={run.normalizedOutput.media_plan.url} target="_blank" rel="noreferrer">Preview selected media</a>}
+              {run.normalizedOutput?.image_prompt && <small>Image prompt: {run.normalizedOutput.image_prompt}</small>}
+              {run.normalizedOutput?.video_prompt && <small>Video prompt: {run.normalizedOutput.video_prompt}</small>}
+              {run.campaignId && onEditCampaign && <button type="button" onClick={() => onEditCampaign(run.campaignId!)}>Review/edit in Campaign Studio</button>}
+              {run.error && <small className="form-error">{run.error}</small>}
+              <RegenerateControl run={run} providers={providers} onRegenerated={refreshedAfterRegeneration} />
+            </div>) : <small>No generation runs yet.</small>}</details>
           </article>;
         })}
       </div>

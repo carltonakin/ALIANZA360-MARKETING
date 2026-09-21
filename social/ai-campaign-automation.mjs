@@ -1,8 +1,11 @@
 import { randomUUID } from "node:crypto";
 import { AI_CAMPAIGN_CONTENT_TYPES, safeAiMessage } from "./ai-providers.mjs";
+import { AIImageService, campaignMediaLibrary, selectCampaignMedia } from "./ai-campaign-media.mjs";
 
 const CAMPAIGN_STATUSES = new Set(["DRAFT", "ACTIVE", "PAUSED", "COMPLETED", "STOPPED", "FAILED"]);
 const PUBLISHING_MODES = new Set(["DRAFT", "PRODUCTION"]);
+const SOURCE_TYPES = new Set(["OBJECTIVE_ONLY", "TRANSCRIPT", "SCRIPT", "TRANSCRIPT_PLUS_OBJECTIVE", "SCRIPT_PLUS_OBJECTIVE", "OBJECTIVE_PLUS_NOTES"]);
+const MEDIA_STRATEGIES = new Set(["TEXT_ONLY", "AI_IMAGE_ONLY", "STORED_IMAGE_ONLY", "MIXED_IMAGE", "STORED_VIDEO_ONLY", "AI_VISUAL_CONCEPTS_WITH_STORED_MEDIA", "IMAGE_AND_VIDEO_MIXED"]);
 
 function validationError(message, statusCode = 400) {
   return Object.assign(new Error(message), { statusCode });
@@ -64,6 +67,25 @@ export function normalizeAiCampaignInput(body = {}) {
   const providerId = positiveId(body.aiProviderId || body.providerId, "AI provider");
   const fallbackProviderId = positiveId(body.fallbackProviderId, "Fallback provider", { optional: true });
   if (fallbackProviderId === providerId) throw validationError("Fallback provider must differ from the primary provider.");
+  const sourceContentType = clean(body.sourceContentType || "OBJECTIVE_ONLY", 40).toUpperCase();
+  if (!SOURCE_TYPES.has(sourceContentType)) throw validationError("Source content type is invalid.");
+  const sourceContent = clean(body.sourceContent, 100_000);
+  if (sourceContentType !== "OBJECTIVE_ONLY" && !sourceContent) throw validationError("Add transcript, script, or notes content for the selected source type.");
+  const mediaStrategy = clean(body.mediaStrategy || "TEXT_ONLY", 64).toUpperCase();
+  if (!MEDIA_STRATEGIES.has(mediaStrategy)) throw validationError("Media strategy is invalid.");
+  const storedMediaAssetIds = [...new Set((Array.isArray(body.storedMediaAssetIds) ? body.storedMediaAssetIds : [body.storedMediaAssetIds])
+    .map((value) => clean(value, 255)).filter(Boolean))].slice(0, 50);
+  if (["STORED_IMAGE_ONLY", "STORED_VIDEO_ONLY", "AI_VISUAL_CONCEPTS_WITH_STORED_MEDIA"].includes(mediaStrategy) && !storedMediaAssetIds.length) {
+    throw validationError("Select at least one stored Cloudinary asset for this media strategy.");
+  }
+  const imageProviderId = positiveId(body.imageProviderId, "Image provider", { optional: true });
+  if (mediaStrategy === "AI_IMAGE_ONLY" && !imageProviderId) throw validationError("Select an image-generation provider.");
+  if (["MIXED_IMAGE", "IMAGE_AND_VIDEO_MIXED"].includes(mediaStrategy) && !storedMediaAssetIds.length && !imageProviderId) {
+    throw validationError("Select stored media or an image-generation provider.");
+  }
+  if (publishingMode === "PRODUCTION" && (sourceContentType !== "OBJECTIVE_ONLY" || mediaStrategy !== "TEXT_ONLY")) {
+    throw validationError("Transcript and media-rich AI campaigns must generate drafts for review before scheduling.");
+  }
   return {
     id: positiveId(body.id || body.aiCampaignConfigurationId, "AI campaign", { optional: true }),
     campaignName: clean(body.campaignName, 255),
@@ -80,6 +102,11 @@ export function normalizeAiCampaignInput(body = {}) {
     destinationUrl: httpsUrl(body.destinationUrl || body.destinationUrlOrLandingPage),
     publishingMode,
     status,
+    sourceContentType,
+    sourceContent,
+    mediaStrategy,
+    storedMediaAssetIds,
+    imageProviderId,
   };
 }
 
@@ -140,14 +167,40 @@ function priorOutputSummary(history) {
       cta: item.normalizedOutput.cta_text,
       imagePrompt: item.normalizedOutput.image_prompt,
       videoPrompt: item.normalizedOutput.video_prompt,
+      sourceSegmentId: item.normalizedOutput.source_segment_id,
+      mediaAssetId: item.normalizedOutput.media_plan?.assetId,
     }));
 }
 
+function sourceSegments(content) {
+  const blocks = String(content || "").split(/\n\s*\n|(?<=[.!?])\s+(?=[A-Z])/).map((part) => part.trim()).filter(Boolean);
+  const segments = [];
+  for (const block of blocks) {
+    for (let index = 0; index < block.length; index += 4500) {
+      segments.push(block.slice(index, index + 4500));
+    }
+  }
+  return segments;
+}
+
+function chooseSourceSegment(configuration, history, slot) {
+  const segments = sourceSegments(configuration.sourceContent);
+  if (!segments.length) return { id: null, text: "" };
+  const used = new Set(history.map((item) => item.normalizedOutput?.source_segment_id).filter(Boolean));
+  let index = (slot - 1) % segments.length;
+  for (let count = 0; count < segments.length; count += 1) {
+    const candidate = (index + count) % segments.length;
+    if (!used.has(`segment-${candidate + 1}`)) { index = candidate; break; }
+  }
+  return { id: `segment-${index + 1}`, text: segments[index] };
+}
+
 export class AICampaignAutomationEngine {
-  constructor({ repository, providerService, bufferCampaignService, clock = () => new Date(), logger = console } = {}) {
+  constructor({ repository, providerService, bufferCampaignService, imageService, clock = () => new Date(), logger = console } = {}) {
     this.repository = repository;
     this.providerService = providerService;
     this.bufferCampaignService = bufferCampaignService;
+    this.imageService = imageService || new AIImageService({ providerService });
     this.clock = clock;
     this.logger = logger;
   }
@@ -179,6 +232,31 @@ export class AICampaignAutomationEngine {
 
   async saveConfiguration(body) {
     const input = normalizeAiCampaignInput(body);
+    if (input.imageProviderId) {
+      const provider = await this.providerService.provider(input.imageProviderId);
+      if (provider.providerCode !== "OPENAI") throw validationError("Direct image generation is not configured for this provider.", 409);
+    }
+    if (input.storedMediaAssetIds.length) {
+      const library = campaignMediaLibrary((await this.repository.getContent()).campaigns);
+      const available = new Map(library.map((asset) => [asset.cloudinaryAssetId, asset]));
+      if (input.storedMediaAssetIds.some((id) => !available.has(id))) throw validationError("One or more selected Cloudinary assets are unavailable.");
+      const selected = input.storedMediaAssetIds.map((id) => available.get(id));
+      if (input.mediaStrategy === "STORED_VIDEO_ONLY" && !selected.some((asset) => asset.mediaType === "video")) {
+        throw validationError("Select a stored video for this strategy.");
+      }
+      if (input.mediaStrategy === "STORED_IMAGE_ONLY" && !selected.some((asset) => asset.mediaType === "image")) {
+        throw validationError("Select a stored image for this strategy.");
+      }
+      if (input.mediaStrategy === "IMAGE_AND_VIDEO_MIXED" && !selected.some((asset) => asset.mediaType === "video")) {
+        throw validationError("Select a stored video for the mixed image/video strategy.");
+      }
+      if (input.mediaStrategy === "IMAGE_AND_VIDEO_MIXED" && !input.imageProviderId && !selected.some((asset) => asset.mediaType === "image")) {
+        throw validationError("Select a stored image or image provider for the mixed image/video strategy.");
+      }
+    }
+    if (input.mediaStrategy === "IMAGE_AND_VIDEO_MIXED" && !input.storedMediaAssetIds.length) {
+      throw validationError("Select a stored video for the mixed image/video strategy.");
+    }
     return this.repository.saveAiCampaignConfiguration(input);
   }
 
@@ -234,7 +312,41 @@ export class AICampaignAutomationEngine {
       cta: configuration.cta || profile.preferredCTA || "",
       destinationUrl: configuration.destinationUrl || profile.website || "",
       previousPosts: priorOutputSummary(history),
+      sourceContentType: configuration.sourceContentType || "OBJECTIVE_ONLY",
+      sourceSegment: chooseSourceSegment(configuration, history, slot),
+      mediaStrategy: configuration.mediaStrategy || "TEXT_ONLY",
     };
+  }
+
+  async resolveMedia(configuration, output, channel, history) {
+    const strategy = configuration.mediaStrategy || "TEXT_ONLY";
+    if (strategy === "TEXT_ONLY") return { media: null, origin: "NONE", imageModel: null };
+    const content = await this.repository.getContent();
+    const allowed = new Set(configuration.storedMediaAssetIds || []);
+    const assets = campaignMediaLibrary(content.campaigns).filter((asset) => allowed.has(asset.cloudinaryAssetId));
+    const priorIds = history.map((item) => item.normalizedOutput?.media_plan?.assetId).filter(Boolean);
+    const preferredType = strategy === "IMAGE_AND_VIDEO_MIXED" ? (history.length % 2 ? "video" : "image") : null;
+    const selected = strategy === "AI_IMAGE_ONLY" ? null
+      : selectCampaignMedia(assets, { strategy, output, platform: channel.service, previousAssetIds: priorIds, preferredType });
+    if (selected) return { media: selected, origin: "STORED", imageModel: null };
+    if (["AI_IMAGE_ONLY", "MIXED_IMAGE", "IMAGE_AND_VIDEO_MIXED"].includes(strategy) && configuration.imageProviderId) {
+      const generated = await this.imageService.generate({
+        providerId: configuration.imageProviderId,
+        prompt: [output.image_prompt || output.media_direction || output.headline, configuration.campaignObjective, "No text or logos in image."].filter(Boolean).join(". "),
+        platform: channel.service,
+      });
+      return { media: {
+        ...generated.media,
+        cloudinaryAssetId: generated.media.assetId,
+        cloudinaryPublicId: generated.media.publicId,
+        cloudinaryResourceType: generated.media.resourceType,
+        cloudinaryFormat: generated.media.format,
+      }, origin: "AI_GENERATED", imageModel: generated.model };
+    }
+    if (["STORED_IMAGE_ONLY", "STORED_VIDEO_ONLY", "AI_VISUAL_CONCEPTS_WITH_STORED_MEDIA", "AI_IMAGE_ONLY"].includes(strategy)) {
+      throw validationError("No relevant approved media is available for this post; select another asset or strategy.", 409);
+    }
+    return { media: null, origin: "PROMPT_ONLY", imageModel: null };
   }
 
   async generateClaim(configuration, generationDate, slot, channel, profile, history, { retryFailed = false } = {}) {
@@ -257,12 +369,26 @@ export class AICampaignAutomationEngine {
         model: configuration.aiModel,
         context,
       });
-      const output = generated.output;
+      const mediaResult = await this.resolveMedia(configuration, generated.output, channel, history);
+      const media = mediaResult.media;
+      const output = {
+        ...generated.output,
+        source_content_type: configuration.sourceContentType || "OBJECTIVE_ONLY",
+        source_segment_id: context.sourceSegment.id,
+        excerpt_source_segment: generated.output.excerpt_source_segment && context.sourceSegment.text.includes(generated.output.excerpt_source_segment)
+          ? generated.output.excerpt_source_segment : context.sourceSegment.text.slice(0, 1000),
+        media_strategy: configuration.mediaStrategy || "TEXT_ONLY",
+        media_plan: { origin: mediaResult.origin, assetId: media?.cloudinaryAssetId || null, url: media?.mediaUrl || null, imageModel: mediaResult.imageModel },
+        stored_media_references: mediaResult.origin === "STORED" ? [media.cloudinaryAssetId] : [],
+        ai_generated_media_references: mediaResult.origin === "AI_GENERATED" ? [media.cloudinaryAssetId] : [],
+        generation_timestamp: this.clock().toISOString(),
+      };
       const delivery = await this.bufferCampaignService.scheduleCampaign({
         campaignName: `${configuration.campaignName} · ${generationDate} · ${slot} · ${channel.displayName}`.slice(0, 255),
         campaignObjective: configuration.campaignObjective,
         postText: postText(output),
-        postType: "POST",
+        postType: media?.mediaType === "video" && channel.service === "instagram" ? "REEL" : "POST",
+        ...(media || {}),
         targetSocialChannels: [channel.id],
         publishDateTime: publishDateTime(generationDate, output.recommended_publish_time, slot, this.clock()),
         campaignStatus: configuration.publishingMode,
@@ -333,6 +459,9 @@ export class AICampaignAutomationEngine {
     if (!channel) throw validationError("The generated post's Buffer channel is no longer selected.", 409);
     const history = await this.repository.getAiGenerationHistory({ configurationId: configuration.id, limit: 50 });
     const context = await this.generationContext(configuration, prior.generationDate, prior.runSlot, channel, profile, history);
+    const originalSegment = /^segment-(\d+)$/.exec(prior.normalizedOutput?.source_segment_id || "");
+    const originalText = originalSegment ? sourceSegments(configuration.sourceContent)[Number(originalSegment[1]) - 1] : null;
+    if (originalText) context.sourceSegment = { id: prior.normalizedOutput.source_segment_id, text: originalText };
     const run = await this.repository.claimAiGenerationRun({
       configurationId: configuration.id,
       generationDate: prior.generationDate,
@@ -350,10 +479,27 @@ export class AICampaignAutomationEngine {
       });
       const existing = await this.bufferCampaignService.campaignById(prior.campaignId);
       if (!existing) throw validationError("The normal Campaign record for this generated post was not found.", 404);
+      const output = {
+        ...generated.output,
+        source_content_type: configuration.sourceContentType || "OBJECTIVE_ONLY",
+        source_segment_id: context.sourceSegment.id,
+        excerpt_source_segment: generated.output.excerpt_source_segment && context.sourceSegment.text.includes(generated.output.excerpt_source_segment)
+          ? generated.output.excerpt_source_segment : context.sourceSegment.text.slice(0, 1000),
+        media_strategy: configuration.mediaStrategy || "TEXT_ONLY",
+        media_plan: {
+          origin: existing.mediaUrl ? prior.normalizedOutput?.media_plan?.origin || "PRESERVED" : "NONE",
+          assetId: existing.cloudinaryAssetId || null,
+          url: existing.mediaUrl || null,
+          imageModel: prior.normalizedOutput?.media_plan?.imageModel || null,
+        },
+        stored_media_references: existing.mediaUrl && prior.normalizedOutput?.media_plan?.origin === "STORED" ? [existing.cloudinaryAssetId] : [],
+        ai_generated_media_references: existing.mediaUrl && prior.normalizedOutput?.media_plan?.origin === "AI_GENERATED" ? [existing.cloudinaryAssetId] : [],
+        generation_timestamp: this.clock().toISOString(),
+      };
       const delivery = await this.bufferCampaignService.updateCampaign(existing.id, {
         campaignName: existing.name,
         campaignObjective: configuration.campaignObjective,
-        postText: postText(generated.output),
+        postText: postText(output),
         postType: existing.postType || "POST",
         targetSocialChannels: [channel.id],
         publishDateTime: publishDateTime(campaignDate(this.clock()), generated.output.recommended_publish_time, prior.runSlot, this.clock()),
@@ -389,9 +535,9 @@ export class AICampaignAutomationEngine {
         campaignPostId: campaignPost.id,
         fallbackUsed: generated.fallbackUsed,
         attemptCount: generated.attempts,
-        normalizedOutput: generated.output,
+        normalizedOutput: output,
       });
-      return { runId: run.id, campaign: delivery.campaign, campaignPost, output: generated.output };
+      return { runId: run.id, campaign: delivery.campaign, campaignPost, output };
     } catch (error) {
       await this.repository.failAiGenerationRun(run.id, {
         providerId: error?.providerId || null,

@@ -176,6 +176,17 @@ entered through the admin UI, encrypted in MSSQL, masked in all responses, and
 never passed to n8n. Existing n8n webhook URLs and comment/DM workflows are
 unchanged.
 
+For the transcript/media AI campaign extension, take a fresh production MSSQL
+backup before deployment. Apply `sql/027_ai_campaign_source_media.sql` after
+the existing migrations and before starting the new application build; the
+updated AI campaign save procedure requires its new parameters. The migration
+adds optional source/media configuration fields and does not change normal
+`Campaigns` or `CampaignPosts`. No new credential is required. To use direct
+AI-created images, select an enabled OpenAI provider in AI Campaign setup;
+`AI_CAMPAIGN_IMAGE_MODEL` is an optional GPT Image model override. Validate
+one transcript + stored-image draft, one script + stored-video draft, and one
+AI-image draft in Campaign Studio before scheduling any of them through Buffer.
+
 The CRM uses its own MSSQL-backed users and sessions. The listener creates the
 `next2thetop` ADMIN account only when absent and never resets it during later
 starts. Apply migration 011 before starting the new build; otherwise the

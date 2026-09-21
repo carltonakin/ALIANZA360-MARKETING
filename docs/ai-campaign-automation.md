@@ -79,3 +79,41 @@ creation/matching, the Unified Lead Timeline, lead scoring, follow-up automation
 Buffer credentials, Cloudinary credentials, or manual campaign creation.
 Generated posts therefore produce comments, DMs, and landing-page traffic that
 enter the same existing lead pipeline after publication.
+
+## Transcript/script and media-rich extension (migration 027)
+
+AI Campaign setup now accepts optional transcript, script, or notes text alongside
+the objective. The source text is kept on `AICampaignConfigurations` in MSSQL;
+each generation context receives a bounded source segment, the campaign
+objective, brand profile, selected platform, and recent posts. Segments are
+rotated across runs where possible. The provider's common structured output
+adds a source excerpt and media direction. Run history stores the segment ID,
+excerpt, provider/model, media origin, Cloudinary asset ID, and generation time.
+
+The media picker lists unique Cloudinary assets already referenced by normal
+Campaign records. It does not browse unreferenced Cloudinary assets. Users can
+select approved candidates in AI Campaign setup, then review and replace media
+in the existing Campaign Studio editor. Relevance matching compares the
+candidate's name/public ID with generated topic words, avoids recently used
+assets, and refuses a multi-asset selection when none matches. An explicitly
+selected single asset can still be used even if its filename is not descriptive.
+The current Campaign/Buffer model supports one media asset per CampaignPost,
+not a carousel; a series can use different assets across normal posts.
+
+For image-generation strategies, an explicitly selected, enabled OpenAI
+provider supplies its existing encrypted API key to the image-generation
+endpoint. `AI_CAMPAIGN_IMAGE_MODEL` optionally overrides the default
+`gpt-image-1` image model; it must name a GPT Image model. The returned image
+bytes are validated and uploaded through the existing Cloudinary campaign-media
+path before a normal Campaign/CampaignPost draft is saved. No new media key or
+storage service is required. Claude/Gemini remain supported for copy, but are
+not advertised as direct image generators. Direct AI video generation is not
+configured; video strategies use approved stored videos or retain video
+concepts/prompts for manual production.
+
+Transcript or media-rich configurations must use `DRAFT` publishing mode.
+Users review copy, CTA, and media in Campaign Studio and explicitly schedule
+through its existing Buffer flow. Legacy objective-only text campaigns may
+continue to use their existing production scheduling behavior. Migration 027
+must be applied before deploying this code. No new required environment
+variables are introduced; the optional image-model override is noted above.

@@ -38,6 +38,7 @@ import {
   AICampaignAutomationEngine,
   normalizeAiCampaignInput,
 } from "./ai-campaign-automation.mjs";
+import { AIImageService, campaignMediaLibrary } from "./ai-campaign-media.mjs";
 import { AuthService } from "./auth.mjs";
 import {
   AcquisitionService,
@@ -2000,6 +2001,7 @@ export async function createSocialListenerApp({
       repository: activeRepository,
       providerService: activeAiProviderService,
       bufferCampaignService: activeBufferCampaignService,
+      imageService: new AIImageService({ providerService: activeAiProviderService, fetchImpl, env }),
       logger,
     });
 
@@ -2712,6 +2714,11 @@ export async function createSocialListenerApp({
         const configurations = await activeRepository.getAiCampaignConfigurations(configurationId);
         const history = await activeRepository.getAiGenerationHistory({ configurationId, limit: 200 });
         return json({ ok: true, configurations, history });
+      }
+
+      if (request.method === "GET" && url.pathname === "/ai/campaigns/media-library") {
+        const content = await activeRepository.getContent();
+        return json({ ok: true, assets: campaignMediaLibrary(content.campaigns) });
       }
 
       if (request.method === "POST" && url.pathname === "/ai/campaigns") {
