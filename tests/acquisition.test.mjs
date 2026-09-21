@@ -3,6 +3,7 @@ import { readFileSync } from "node:fs";
 import test from "node:test";
 import {
   AcquisitionService,
+  ApolloOrganizationsProvider,
   CommunicationPolicyEngine,
   ProspectDiscoveryProvider,
   normalizeAcquisitionDecision,
@@ -65,6 +66,79 @@ test("provider normalization creates stable prospect identity and preserves cont
   assert.deepEqual(first.contacts.find((contact) => contact.type === "PHONE"), {
     type: "PHONE", value: "+1 305 555 0100", source: "GOOGLE_PLACES", sourceUrl: "https://maps.example/place-42", verified: false,
   });
+});
+
+test("Apollo.io organization discovery applies configured filters and preserves returned contact provenance", async () => {
+  const config = { ...configuration({
+    targetIndustry: "financial services",
+    targetLocation: "Miami, Florida",
+    keywords: "automation, advisory",
+  }), id: 8, dailyProspectLimit: 50 };
+  let captured;
+  const provider = new ApolloOrganizationsProvider({
+    apiKey: "apollo-test-key",
+    fetchImpl: async (url, init) => {
+      captured = { url: new URL(url), init };
+      return new Response(JSON.stringify({ organizations: [{
+        id: "apollo-org-42",
+        name: "Example Advisory",
+        website_url: "https://example.test",
+        primary_domain: "example.test",
+        primary_phone: { sanitized_number: "+13055550100", source: "Scraped" },
+        linkedin_url: "https://linkedin.example/company/example-advisory",
+        facebook_url: "https://facebook.example/example-advisory",
+        twitter_url: "https://x.example/example-advisory",
+        city: "Miami",
+        state: "Florida",
+        country: "United States",
+        industry: "Financial Services",
+        estimated_num_employees: 25,
+        founded_year: 2018,
+        languages: ["English", "Spanish"],
+      }] }), { status: 200, headers: { "content-type": "application/json" } });
+    },
+  });
+
+  const results = await provider.searchProspects({
+    configuration: config,
+    settings: { resultLimit: 10, employeeRanges: ["11,50"], technologyUids: ["salesforce"] },
+  });
+  assert.equal(captured.url.origin + captured.url.pathname, "https://api.apollo.io/api/v1/mixed_companies/search");
+  assert.deepEqual(captured.url.searchParams.getAll("organization_locations[]"), ["Miami, Florida"]);
+  assert.deepEqual(captured.url.searchParams.getAll("q_organization_keyword_tags[]"), ["financial services", "automation", "advisory"]);
+  assert.deepEqual(captured.url.searchParams.getAll("organization_num_employees_ranges[]"), ["11,50"]);
+  assert.deepEqual(captured.url.searchParams.getAll("currently_using_any_of_technology_uids[]"), ["salesforce"]);
+  assert.equal(captured.url.searchParams.get("per_page"), "10");
+  assert.equal(captured.init.headers["x-api-key"], "apollo-test-key");
+
+  const normalized = provider.normalizeProspect(results[0], { configuration: config });
+  assert.equal(normalized.source, "APOLLO_IO");
+  assert.equal(normalized.externalSourceId, "apollo-org-42");
+  assert.equal(normalized.companyName, "Example Advisory");
+  assert.equal(normalized.email, "", "the adapter must not derive an email address from the Apollo domain");
+  assert.equal(normalized.phone, "+13055550100");
+  assert.equal(normalized.status, "CONTACTABLE");
+  assert.deepEqual(normalized.contacts.find((contact) => contact.type === "PHONE"), {
+    type: "PHONE",
+    value: "+13055550100",
+    source: "APOLLO_IO",
+    sourceUrl: "https://linkedin.example/company/example-advisory",
+    verified: false,
+  });
+  assert.equal(normalized.metadata.primaryDomain, "example.test");
+});
+
+test("Apollo.io discovery stays disabled without a server-side API key and refuses an unfiltered search", async () => {
+  const config = { ...configuration({ targetIndustry: "", targetLocation: "", keywords: "", businessSize: "" }), id: 8 };
+  await assert.rejects(
+    () => new ApolloOrganizationsProvider().searchProspects({ configuration: config }),
+    /APOLLO_API_KEY is not configured/,
+  );
+  await assert.rejects(
+    () => new ApolloOrganizationsProvider({ apiKey: "test", fetchImpl: async () => { throw new Error("must not call"); } })
+      .searchProspects({ configuration: config }),
+    /requires a company name, keyword, location, domain, employee range, or technology filter/,
+  );
 });
 
 test("communication policy selects the highest-priority available allowed channel and stops escalation", () => {

@@ -103,6 +103,7 @@ AI_PROVIDER_ENCRYPTION_KEY=<strong-random-key>
 AI_CAMPAIGN_AUTOMATION_INTERVAL_MS=300000
 AI_ACQUISITION_INTERVAL_MS=900000
 GOOGLE_PLACES_API_KEY=<server-only-google-places-key>
+APOLLO_API_KEY=<server-only-apollo-api-key>
 BUFFER_API_KEY=<Buffer API key>
 BUFFER_ORGANIZATION_ID=<Buffer organization ID>
 BUFFER_API_URL=https://api.buffer.com

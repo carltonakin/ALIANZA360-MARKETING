@@ -35,6 +35,7 @@ type Analytics = { overview: Overview; sources: Record<string, unknown>[]; chann
 
 const SOURCE_NAMES: Record<string, string> = {
   GOOGLE_PLACES: "Google Places / business search",
+  APOLLO_IO: "Apollo.io organization search",
   EXISTING_CRM: "Existing Next2TheTop CRM data",
   INACTIVE_LEADS: "Existing cold/inactive Leads",
   LANDING_PAGE: "Landing Page registrations/activity",
@@ -54,8 +55,17 @@ const CHANNEL_CODES = Object.keys(CHANNEL_NAMES);
 
 function defaultSources(): SearchSource[] {
   return SOURCE_CODES.map((sourceCode, index) => ({
-    sourceCode, enabled: ["EXISTING_CRM", "INACTIVE_LEADS"].includes(sourceCode), priority: index + 1, settings: {},
+    sourceCode, enabled: ["EXISTING_CRM", "INACTIVE_LEADS"].includes(sourceCode), priority: index + 1,
+    settings: sourceCode === "APOLLO_IO" ? { resultLimit: 25 } : {},
   }));
+}
+
+function withAvailableSources(configuration: AcquisitionConfiguration): AcquisitionConfiguration {
+  const existing = new Set(configuration.searchSources.map((source) => source.sourceCode));
+  const nextPriority = Math.max(0, ...configuration.searchSources.map((source) => Number(source.priority) || 0));
+  const missing = defaultSources().filter((source) => !existing.has(source.sourceCode))
+    .map((source, index) => ({ ...source, priority: nextPriority + index + 1 }));
+  return missing.length ? { ...configuration, searchSources: [...configuration.searchSources, ...missing] } : configuration;
 }
 
 function defaultMethods(): CommunicationMethod[] {
@@ -180,7 +190,7 @@ export function AIAcquisition({ view }: { view: AcquisitionView }) {
     try {
       const failures = await Promise.all([
         loadPart("Configurations", api<{ configurations: AcquisitionConfiguration[] }>("configurations"), (data) => {
-          setConfigurations(data.configurations || []);
+          setConfigurations((data.configurations || []).map(withAvailableSources));
           setSelectedConfigurationId((current) => current || data.configurations?.[0]?.id || null);
         }),
         loadPart("Prospects", api<{ prospects: Prospect[] }>("prospects?limit=500"), (data) => setProspects(data.prospects || [])),
@@ -319,7 +329,7 @@ function ConfigurationView({ configurations, editing, setEditing, providers, bus
   return <div className="acquisition-config-layout">
     <section className="panel acquisition-list">
       <div className="panel-head"><div><h3>Configurations</h3><p>Multiple independent acquisition strategies can run side by side.</p></div><button className="primary" onClick={() => setEditing(emptyConfiguration(providers[0]?.id || 0))}>New Acquisition</button></div>
-      {configurations.map((configuration) => <button key={configuration.id} onClick={() => setEditing(structuredClone(configuration))}>
+      {configurations.map((configuration) => <button key={configuration.id} onClick={() => setEditing(structuredClone(withAvailableSources(configuration)))}>
         <span><strong>{configuration.acquisitionName}</strong><small>{configuration.productOrService} · {configuration.targetLocation || "Any location"}</small></span>
         <i className={`status ${statusClass(configuration.status)}`}>{humanize(configuration.status)}</i>
       </button>)}

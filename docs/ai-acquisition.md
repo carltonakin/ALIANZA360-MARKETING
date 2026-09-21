@@ -35,6 +35,8 @@ Installed adapters are Google Places, existing/inactive CRM Leads, Landing Page 
 
 Google Places uses the Text Search v1 API. It stores the Place ID as the external source ID and records Google Places as provenance for returned phone and website values. It does not invent email or social values.
 
+Apollo.io organization search is available as the optional `APOLLO_IO` source. It calls Apollo's Organization Search endpoint with the server-only `APOLLO_API_KEY`, stores the Apollo organization ID as the stable external source ID, and records Apollo provenance for returned website, phone, Facebook, and X values. It never derives or invents an email address from a company domain. The source is disabled by default and requires at least one company-name, keyword, location, domain, employee-range, or technology filter. Supported settings include `organizationName`, `keywordTags`, `locations`, `domains`, `excludedDomains`, `employeeRanges`, `technologyUids`, `page`, and `resultLimit` (maximum 100). Apollo may consume credits and restrict endpoint access according to the connected Apollo plan.
+
 Prospect identity is SHA-256 over `source + externalSourceId` when a stable external ID exists. Otherwise it uses normalized business name/domain/email/phone/location. MSSQL enforces uniqueness for both the configuration identity and non-null source/external ID.
 
 ## Communication and conversation policy
@@ -101,9 +103,10 @@ Server-only environment variables:
 AI_ACQUISITION_INTERVAL_MS=900000
 AI_ACQUISITION_OUTREACH_BATCH_SIZE=10
 GOOGLE_PLACES_API_KEY=<key with Places API access>
+APOLLO_API_KEY=<Apollo API key with organization-search access>
 ```
 
-Existing SQL, service-auth, channel-encryption, AI-provider-encryption, Meta, email, SMS, WhatsApp, Buffer, and Cloudinary variables remain unchanged. Never prefix the Google key with `NEXT_PUBLIC_`.
+Existing SQL, service-auth, channel-encryption, AI-provider-encryption, Meta, email, SMS, WhatsApp, Buffer, and Cloudinary variables remain unchanged. Never prefix the Google or Apollo key with `NEXT_PUBLIC_`.
 
 ## Validation
 

@@ -12,6 +12,7 @@ export const PROSPECT_STATUSES = Object.freeze([
 
 export const SEARCH_SOURCE_DEFINITIONS = Object.freeze([
   { code: "GOOGLE_PLACES", name: "Google Places / business search", implemented: true },
+  { code: "APOLLO_IO", name: "Apollo.io organization search", implemented: true },
   { code: "EXISTING_CRM", name: "Existing Next2TheTop CRM data", implemented: true },
   { code: "INACTIVE_LEADS", name: "Existing cold/inactive Leads", implemented: true },
   { code: "LANDING_PAGE", name: "Landing Page registrations/activity", implemented: true },
@@ -365,6 +366,110 @@ export class GooglePlacesProvider extends ProspectDiscoveryProvider {
   }
 }
 
+function sourceSettingList(value, fallback = []) {
+  const supplied = Array.isArray(value) ? value : value ? String(value).split(/[;\n]/) : fallback;
+  return [...new Set(supplied.map((item) => clean(item, 500)).filter(Boolean))];
+}
+
+function apolloWebsite(organization) {
+  const website = clean(organization?.website_url, 2048);
+  if (website) return website;
+  const domain = clean(organization?.primary_domain, 500).replace(/^https?:\/\//i, "").replace(/^www\./i, "").replace(/\/$/, "");
+  return domain ? `https://${domain}` : "";
+}
+
+export class ApolloOrganizationsProvider extends ProspectDiscoveryProvider {
+  constructor({ apiKey, fetchImpl = globalThis.fetch } = {}) {
+    super("APOLLO_IO");
+    this.apiKey = clean(apiKey, 10_000);
+    this.fetchImpl = fetchImpl;
+  }
+
+  async searchProspects({ configuration, settings = {} }) {
+    if (!this.apiKey) throw validationError("Apollo.io discovery is enabled but APOLLO_API_KEY is not configured.", 409);
+    const url = new URL("https://api.apollo.io/api/v1/mixed_companies/search");
+    const addList = (name, values) => values.forEach((value) => url.searchParams.append(name, value));
+    const locations = sourceSettingList(settings.locations || settings.organizationLocations,
+      configuration.targetLocation ? [configuration.targetLocation] : []);
+    const keywordFallback = [configuration.targetIndustry,
+      ...clean(configuration.keywords, 2000).split(/[,\n]/)].map((item) => clean(item, 500)).filter(Boolean);
+    const keywordTags = sourceSettingList(settings.keywordTags || settings.keywords, keywordFallback);
+    const employeeRanges = sourceSettingList(settings.employeeRanges || settings.organizationEmployeeRanges,
+      /^\s*\d+\s*,\s*\d+\s*$/.test(clean(configuration.businessSize, 255)) ? [configuration.businessSize] : [])
+      .map((range) => range.replace(/\s+/g, ""))
+      .filter((range) => /^\d+,\d+$/.test(range));
+    const domains = sourceSettingList(settings.domains || settings.organizationDomains);
+    const excludedDomains = sourceSettingList(settings.excludedDomains);
+    const technologyUids = sourceSettingList(settings.technologyUids);
+    const organizationName = clean(settings.organizationName, 500);
+
+    addList("organization_locations[]", locations);
+    addList("q_organization_keyword_tags[]", keywordTags);
+    addList("organization_num_employees_ranges[]", employeeRanges);
+    addList("q_organization_domains_list[]", domains);
+    addList("not_organization_websites_list[]", excludedDomains);
+    addList("currently_using_any_of_technology_uids[]", technologyUids);
+    if (organizationName) url.searchParams.set("q_organization_name", organizationName);
+    if (![locations, keywordTags, employeeRanges, domains, technologyUids].some((values) => values.length) && !organizationName) {
+      throw validationError("Apollo.io requires a company name, keyword, location, domain, employee range, or technology filter.");
+    }
+    url.searchParams.set("page", String(boundedInteger(settings.page, 1, 1, 500)));
+    url.searchParams.set("per_page", String(boundedInteger(settings.resultLimit, Math.min(configuration.dailyProspectLimit || 25, 100), 1, 100)));
+
+    const response = await this.fetchImpl(url, {
+      method: "POST",
+      headers: {
+        accept: "application/json",
+        "cache-control": "no-cache",
+        "content-type": "application/json",
+        "x-api-key": this.apiKey,
+      },
+      signal: AbortSignal.timeout(30_000),
+    });
+    const responseText = await response.text();
+    let body = {};
+    try { body = responseText ? JSON.parse(responseText) : {}; } catch { body = {}; }
+    if (!response.ok) {
+      const message = clean(body?.error_details?.message || body?.message || responseText, 1000);
+      throw validationError(message || `Apollo.io returned HTTP ${response.status}.`, response.status);
+    }
+    return arrayValue(body.organizations).map((organization) => {
+      const website = apolloWebsite(organization);
+      const sourceUrl = clean(organization?.linkedin_url || website, 2048);
+      const phone = clean(organization?.primary_phone?.sanitized_number || organization?.sanitized_phone ||
+        organization?.primary_phone?.number || organization?.phone, 80);
+      const location = [organization?.city, organization?.state, organization?.country]
+        .map((item) => clean(item, 255)).filter(Boolean).join(", ");
+      return {
+        companyName: clean(organization?.name, 255),
+        industry: clean(organization?.industry || arrayValue(organization?.keywords).join(", "), 500),
+        location,
+        website,
+        phone,
+        facebook: clean(organization?.facebook_url, 500),
+        x: clean(organization?.twitter_url, 500),
+        externalSourceId: clean(organization?.id, 255),
+        sourceUrl,
+        metadata: {
+          apolloOrganizationId: clean(organization?.id, 255),
+          primaryDomain: clean(organization?.primary_domain, 500),
+          employeeCount: Number(organization?.estimated_num_employees) || null,
+          foundedYear: Number(organization?.founded_year) || null,
+          linkedInUrl: clean(organization?.linkedin_url, 2048),
+          logoUrl: clean(organization?.logo_url, 2048),
+          languages: sourceSettingList(organization?.languages).slice(0, 50),
+        },
+        contactProvenance: {
+          PHONE: { source: "APOLLO_IO", sourceUrl, verified: false },
+          WEBSITE: { source: "APOLLO_IO", sourceUrl, verified: false },
+          FACEBOOK: { source: "APOLLO_IO", sourceUrl, verified: false },
+          X: { source: "APOLLO_IO", sourceUrl, verified: false },
+        },
+      };
+    }).filter((organization) => organization.companyName && organization.externalSourceId);
+  }
+}
+
 export class RepositoryDiscoveryProvider extends ProspectDiscoveryProvider {
   constructor(code, repository) { super(code); this.repository = repository; }
   async searchProspects(context) {
@@ -382,6 +487,7 @@ export class CSVImportProvider extends ProspectDiscoveryProvider {
 export function createDiscoveryProviders({ repository, env = process.env, fetchImpl = globalThis.fetch } = {}) {
   return new Map([
     ["GOOGLE_PLACES", new GooglePlacesProvider({ apiKey: env.GOOGLE_PLACES_API_KEY, fetchImpl })],
+    ["APOLLO_IO", new ApolloOrganizationsProvider({ apiKey: env.APOLLO_API_KEY, fetchImpl })],
     ["EXISTING_CRM", new RepositoryDiscoveryProvider("EXISTING_CRM", repository)],
     ["INACTIVE_LEADS", new RepositoryDiscoveryProvider("INACTIVE_LEADS", repository)],
     ["LANDING_PAGE", new RepositoryDiscoveryProvider("LANDING_PAGE", repository)],
