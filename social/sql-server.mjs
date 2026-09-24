@@ -559,6 +559,76 @@ function mapAcquisitionProspect(row) {
   };
 }
 
+function mapApolloProfile(row) {
+  return {
+    id: Number(row.AIAcquisitionApolloProfileId),
+    prospectId: Number(row.AIAcquisitionProspectId),
+    acquisitionConfigurationId: Number(row.AIAcquisitionConfigurationId),
+    apolloPersonId: row.ApolloPersonId,
+    apolloOrganizationId: row.ApolloOrganizationId || "",
+    firstName: row.FirstName || "",
+    lastName: row.LastName || "",
+    fullName: row.FullName || "",
+    jobTitle: row.JobTitle || "",
+    seniority: row.Seniority || "",
+    companyDomain: row.CompanyDomain || "",
+    linkedInUrl: row.LinkedInUrl || "",
+    email: row.Email || "",
+    emailStatus: row.EmailStatus || "",
+    emailSource: row.EmailSource || "",
+    emailEnrichedAt: iso(row.EmailEnrichedAt),
+    phone: row.Phone || "",
+    phoneType: row.PhoneType || "",
+    phoneStatus: row.PhoneStatus || "",
+    phoneSource: row.PhoneSource || "",
+    phoneEnrichedAt: iso(row.PhoneEnrichedAt),
+    matchConfidence: row.MatchConfidence || "",
+    enrichmentStatus: row.EnrichmentStatus,
+    standardEnrichmentUsed: Boolean(row.StandardEnrichmentUsed),
+    waterfallEmailUsed: Boolean(row.WaterfallEmailUsed),
+    phoneEnrichmentUsed: Boolean(row.PhoneEnrichmentUsed),
+    waterfallPhoneUsed: Boolean(row.WaterfallPhoneUsed),
+    pendingRequestKind: row.PendingRequestKind || "",
+    apolloRequestId: row.ApolloRequestId || "",
+    pendingUsageKey: row.PendingUsageKey || "",
+    nextPollAt: iso(row.NextPollAt),
+    lastError: row.LastError || null,
+    lastEnrichmentAt: iso(row.LastEnrichmentAt),
+    companyName: row.CompanyName || "",
+    contactName: row.ContactName || "",
+    website: row.Website || "",
+    prospectEmail: row.ProspectEmail || "",
+    prospectPhone: row.ProspectPhone || "",
+    whatsAppNumber: row.WhatsAppNumber || "",
+    fitScore: Number(row.FitScore || 0),
+    prospectStatus: row.ProspectStatus || "",
+    optedOut: Boolean(row.OptedOut),
+    consentStatus: row.ConsentStatus || "",
+    prospectSource: row.ProspectSource || "",
+    createdAt: iso(row.CreatedAt),
+    updatedAt: iso(row.UpdatedAt),
+  };
+}
+
+function mapApolloUsage(row) {
+  return {
+    id: Number(row.AIAcquisitionApolloUsageId),
+    acquisitionConfigurationId: Number(row.AIAcquisitionConfigurationId),
+    requestKey: row.RequestKey,
+    requestKind: row.RequestKind,
+    apolloRequestId: row.ApolloRequestId || "",
+    requestedCount: Number(row.RequestedCount || 0),
+    successCount: Number(row.SuccessCount || 0),
+    creditsConsumed: Number(row.CreditsConsumed || 0),
+    estimatedCredits: Number(row.EstimatedCredits || 0),
+    status: row.Status,
+    errorCode: row.ErrorCode || "",
+    errorMessage: row.ErrorMessage || "",
+    createdAt: iso(row.CreatedAt),
+    updatedAt: iso(row.UpdatedAt),
+  };
+}
+
 function mapAcquisitionConversation(row) {
   return {
     id: Number(row.AIAcquisitionConversationId),
@@ -2101,6 +2171,155 @@ export class SqlServerRepository {
     const response = await request.query(`SELECT COUNT_BIG(*) Total FROM dbo.AIAcquisitionProspects
       WHERE AIAcquisitionConfigurationId=@AIAcquisitionConfigurationId AND DiscoveredAt>=CONVERT(date,SYSUTCDATETIME())`);
     return Number(response.recordset?.[0]?.Total || 0);
+  }
+
+  async getAcquisitionProspectDomains(configurationId, limit = 1000) {
+    const request = this.request();
+    request.input("AIAcquisitionConfigurationId", this.sql.BigInt, numericId(configurationId));
+    request.input("Limit", this.sql.Int, Math.max(1, Math.min(1000, Number(limit) || 1000)));
+    const response = await request.query(`SELECT DISTINCT TOP (@Limit) Website FROM dbo.AIAcquisitionProspects
+      WHERE AIAcquisitionConfigurationId=@AIAcquisitionConfigurationId AND [Source]<>N'APOLLO_IO' AND NULLIF(Website,N'') IS NOT NULL
+      ORDER BY Website`);
+    return (response.recordset || []).map((row) => row.Website).filter(Boolean);
+  }
+
+  async findApolloProspectMatch(input) {
+    const request = this.request();
+    request.input("AIAcquisitionConfigurationId", this.sql.BigInt, numericId(input.acquisitionConfigurationId));
+    request.input("ApolloPersonId", this.sql.NVarChar(255), input.apolloPersonId || null);
+    request.input("LinkedInUrl", this.sql.NVarChar(2048), input.linkedInUrl || null);
+    request.input("FullName", this.sql.NVarChar(255), input.fullName || null);
+    request.input("CompanyDomain", this.sql.NVarChar(500), input.companyDomain || null);
+    const response = await request.query(`SELECT TOP (1) prospect.*,
+      (SELECT contact.ContactType [type],contact.ContactValue [value],contact.SourceName [source],contact.SourceUrl [sourceUrl],contact.Verified [verified]
+       FROM dbo.AIAcquisitionProspectContacts contact WHERE contact.AIAcquisitionProspectId=prospect.AIAcquisitionProspectId
+       ORDER BY contact.AIAcquisitionProspectContactId FOR JSON PATH) ContactsJson
+      FROM dbo.AIAcquisitionProspects prospect
+      LEFT JOIN dbo.AIAcquisitionApolloProfiles profile ON profile.AIAcquisitionProspectId=prospect.AIAcquisitionProspectId
+      WHERE prospect.AIAcquisitionConfigurationId=@AIAcquisitionConfigurationId AND
+       ((@ApolloPersonId IS NOT NULL AND profile.ApolloPersonId=@ApolloPersonId) OR
+        (@LinkedInUrl IS NOT NULL AND prospect.SourceUrl=@LinkedInUrl) OR
+        (@FullName IS NOT NULL AND @CompanyDomain IS NOT NULL AND LOWER(prospect.ContactName)=LOWER(@FullName)
+          AND LOWER(prospect.Website) LIKE N'%' + LOWER(@CompanyDomain) + N'%'))
+      ORDER BY CASE WHEN profile.ApolloPersonId=@ApolloPersonId THEN 0 WHEN prospect.SourceUrl=@LinkedInUrl THEN 1 ELSE 2 END,
+        prospect.AIAcquisitionProspectId`);
+    return response.recordset?.[0] ? mapAcquisitionProspect(response.recordset[0]) : null;
+  }
+
+  async upsertApolloProfileDiscovery(input) {
+    const request = this.request();
+    request.input("AIAcquisitionProspectId", this.sql.BigInt, numericId(input.prospectId));
+    request.input("AIAcquisitionConfigurationId", this.sql.BigInt, numericId(input.acquisitionConfigurationId));
+    request.input("ApolloPersonId", this.sql.NVarChar(255), input.apolloPersonId);
+    request.input("ApolloOrganizationId", this.sql.NVarChar(255), input.apolloOrganizationId || null);
+    request.input("FirstName", this.sql.NVarChar(255), input.firstName || null);
+    request.input("LastName", this.sql.NVarChar(255), input.lastName || null);
+    request.input("FullName", this.sql.NVarChar(255), input.fullName || null);
+    request.input("JobTitle", this.sql.NVarChar(500), input.jobTitle || null);
+    request.input("Seniority", this.sql.NVarChar(100), input.seniority || null);
+    request.input("CompanyDomain", this.sql.NVarChar(500), input.companyDomain || null);
+    request.input("LinkedInUrl", this.sql.NVarChar(2048), input.linkedInUrl || null);
+    const response = await request.execute("dbo.AIAcquisitionApolloProfile_UpsertDiscovery");
+    return response.recordset?.[0] ? mapApolloProfile(response.recordset[0]) : null;
+  }
+
+  async getApolloProfiles({ configurationId = null, prospectId = null, pendingOnly = false, limit = 100 } = {}) {
+    const request = this.request();
+    request.input("AIAcquisitionConfigurationId", this.sql.BigInt, numericId(configurationId));
+    request.input("AIAcquisitionProspectId", this.sql.BigInt, numericId(prospectId));
+    request.input("PendingOnly", this.sql.Bit, pendingOnly ? 1 : 0);
+    request.input("Limit", this.sql.Int, Math.max(1, Math.min(1000, Number(limit) || 100)));
+    const response = await request.execute("dbo.AIAcquisitionApolloProfile_Get");
+    return (response.recordset || []).map(mapApolloProfile);
+  }
+
+  async updateApolloProfile(input) {
+    const request = this.request();
+    request.input("AIAcquisitionProspectId", this.sql.BigInt, numericId(input.prospectId));
+    request.input("FirstName", this.sql.NVarChar(255), input.firstName || null);
+    request.input("LastName", this.sql.NVarChar(255), input.lastName || null);
+    request.input("FullName", this.sql.NVarChar(255), input.fullName || null);
+    request.input("JobTitle", this.sql.NVarChar(500), input.jobTitle || null);
+    request.input("Seniority", this.sql.NVarChar(100), input.seniority || null);
+    request.input("CompanyDomain", this.sql.NVarChar(500), input.companyDomain || null);
+    request.input("LinkedInUrl", this.sql.NVarChar(2048), input.linkedInUrl || null);
+    request.input("Email", this.sql.NVarChar(320), input.email || null);
+    request.input("EmailStatus", this.sql.NVarChar(64), input.emailStatus || null);
+    request.input("PersistEmail", this.sql.Bit, input.persistEmail ? 1 : 0);
+    request.input("Phone", this.sql.NVarChar(80), input.phone || null);
+    request.input("PhoneType", this.sql.NVarChar(64), input.phoneType || null);
+    request.input("PhoneStatus", this.sql.NVarChar(64), input.phoneStatus || null);
+    request.input("PersistPhone", this.sql.Bit, input.persistPhone ? 1 : 0);
+    request.input("MatchConfidence", this.sql.NVarChar(32), input.matchConfidence || null);
+    request.input("EnrichmentStatus", this.sql.NVarChar(32), input.enrichmentStatus);
+    request.input("PendingRequestKind", this.sql.NVarChar(32), input.pendingRequestKind || null);
+    request.input("ApolloRequestId", this.sql.NVarChar(64), input.apolloRequestId || null);
+    request.input("PendingUsageKey", this.sql.NVarChar(255), input.pendingUsageKey || null);
+    request.input("NextPollAt", this.sql.DateTime2, input.nextPollAt ? new Date(input.nextPollAt) : null);
+    request.input("LastError", this.sql.NVarChar(1000), input.lastError || null);
+    request.input("StandardEnrichmentUsed", this.sql.Bit, input.standardEnrichmentUsed == null ? null : input.standardEnrichmentUsed ? 1 : 0);
+    request.input("WaterfallEmailUsed", this.sql.Bit, input.waterfallEmailUsed == null ? null : input.waterfallEmailUsed ? 1 : 0);
+    request.input("PhoneEnrichmentUsed", this.sql.Bit, input.phoneEnrichmentUsed == null ? null : input.phoneEnrichmentUsed ? 1 : 0);
+    request.input("WaterfallPhoneUsed", this.sql.Bit, input.waterfallPhoneUsed == null ? null : input.waterfallPhoneUsed ? 1 : 0);
+    const response = await request.execute("dbo.AIAcquisitionApolloProfile_Update");
+    return response.recordset?.[0] ? mapApolloProfile(response.recordset[0]) : null;
+  }
+
+  async saveApolloUsage(input) {
+    const request = this.request();
+    request.input("AIAcquisitionConfigurationId", this.sql.BigInt, numericId(input.acquisitionConfigurationId));
+    request.input("RequestKey", this.sql.NVarChar(255), input.requestKey);
+    request.input("RequestKind", this.sql.NVarChar(32), input.requestKind);
+    request.input("ApolloRequestId", this.sql.NVarChar(64), input.apolloRequestId || null);
+    request.input("RequestedCount", this.sql.Int, Number(input.requestedCount || 0));
+    request.input("SuccessCount", this.sql.Int, Number(input.successCount || 0));
+    request.input("CreditsConsumed", this.sql.Decimal(18, 4), Number(input.creditsConsumed || 0));
+    request.input("EstimatedCredits", this.sql.Decimal(18, 4), Number(input.estimatedCredits || 0));
+    request.input("Status", this.sql.NVarChar(32), input.status);
+    request.input("ErrorCode", this.sql.NVarChar(255), input.errorCode || null);
+    request.input("ErrorMessage", this.sql.NVarChar(1000), input.errorMessage || null);
+    const response = await request.execute("dbo.AIAcquisitionApolloUsage_Save");
+    return response.recordset?.[0] ? mapApolloUsage(response.recordset[0]) : null;
+  }
+
+  async reserveApolloUsage(input) {
+    const request = this.request();
+    request.input("AIAcquisitionConfigurationId", this.sql.BigInt, numericId(input.acquisitionConfigurationId));
+    request.input("RequestKey", this.sql.NVarChar(255), input.requestKey);
+    request.input("RequestKind", this.sql.NVarChar(32), input.requestKind);
+    request.input("RequestedCount", this.sql.Int, Number(input.requestedCount || 0));
+    request.input("EstimatedCredits", this.sql.Decimal(18, 4), Number(input.estimatedCredits || 0));
+    request.input("DailyCreditLimit", this.sql.Decimal(18, 4), Number(input.dailyCreditLimit || 0));
+    request.input("MonthlyCreditLimit", this.sql.Decimal(18, 4), Number(input.monthlyCreditLimit || 0));
+    const response = await request.execute("dbo.AIAcquisitionApolloUsage_Reserve");
+    return {
+      allowed: Boolean(response.recordset?.[0]?.Allowed),
+      dailyCreditsReservedOrConsumed: Number(response.recordset?.[0]?.DailyCreditsReservedOrConsumed || 0),
+      monthlyCreditsReservedOrConsumed: Number(response.recordset?.[0]?.MonthlyCreditsReservedOrConsumed || 0),
+    };
+  }
+
+  async getApolloUsage(configurationId, limit = 100) {
+    const request = this.request();
+    request.input("AIAcquisitionConfigurationId", this.sql.BigInt, numericId(configurationId));
+    request.input("Limit", this.sql.Int, Math.max(1, Math.min(1000, Number(limit) || 100)));
+    const response = await request.execute("dbo.AIAcquisitionApolloUsage_Get");
+    const [summary = [], rows = []] = response.recordsets || [];
+    const value = summary[0] || {};
+    return {
+      summary: {
+        dailyCreditsConsumed: Number(value.DailyCreditsConsumed || 0),
+        monthlyCreditsConsumed: Number(value.MonthlyCreditsConsumed || 0),
+        dailyEstimatedCredits: Number(value.DailyEstimatedCredits || 0),
+        monthlyEstimatedCredits: Number(value.MonthlyEstimatedCredits || 0),
+        requestCount: Number(value.RequestCount || 0),
+        requestedCount: Number(value.RequestedCount || 0),
+        successCount: Number(value.SuccessCount || 0),
+        failedRequests: Number(value.FailedRequests || 0),
+        rateLimitedRequests: Number(value.RateLimitedRequests || 0),
+      },
+      requests: rows.map(mapApolloUsage),
+    };
   }
 
   async discoverAcquisitionCandidates(sourceCode, configuration, settings = {}) {

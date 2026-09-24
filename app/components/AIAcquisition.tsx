@@ -35,7 +35,7 @@ type Analytics = { overview: Overview; sources: Record<string, unknown>[]; chann
 
 const SOURCE_NAMES: Record<string, string> = {
   GOOGLE_PLACES: "Google Places / business search",
-  APOLLO_IO: "Apollo.io organization search",
+  APOLLO_IO: "Apollo.io decision-maker discovery",
   EXISTING_CRM: "Existing Next2TheTop CRM data",
   INACTIVE_LEADS: "Existing cold/inactive Leads",
   LANDING_PAGE: "Landing Page registrations/activity",
@@ -52,11 +52,28 @@ const CHANNEL_NAMES: Record<string, string> = {
 };
 const SOURCE_CODES = Object.keys(SOURCE_NAMES);
 const CHANNEL_CODES = Object.keys(CHANNEL_NAMES);
+const APOLLO_DEFAULT_SETTINGS: Record<string, unknown> = {
+  peopleSearchEnabled: true,
+  companySearchEnabled: false,
+  standardPeopleEnrichmentEnabled: false,
+  waterfallEmailEnabled: false,
+  phoneEnrichmentEnabled: false,
+  waterfallPhoneEnabled: false,
+  minimumFitScoreForStandardEnrichment: 60,
+  minimumFitScoreForWaterfallEmail: 80,
+  minimumFitScoreForPhone: 80,
+  dailyCreditLimit: 0,
+  monthlyCreditLimit: 0,
+  resultLimit: 25,
+  preferKnownDomains: true,
+  decisionMakerTitles: ["Owner", "Founder", "Co-Founder", "CEO", "President", "Managing Director", "Marketing Director", "Marketing Manager", "Business Development Director"],
+  seniorities: ["owner", "founder", "c_suite", "partner", "vp", "head", "director", "manager"],
+};
 
 function defaultSources(): SearchSource[] {
   return SOURCE_CODES.map((sourceCode, index) => ({
     sourceCode, enabled: ["EXISTING_CRM", "INACTIVE_LEADS"].includes(sourceCode), priority: index + 1,
-    settings: sourceCode === "APOLLO_IO" ? { resultLimit: 25 } : {},
+    settings: sourceCode === "APOLLO_IO" ? { ...APOLLO_DEFAULT_SETTINGS } : {},
   }));
 }
 
@@ -65,7 +82,9 @@ function withAvailableSources(configuration: AcquisitionConfiguration): Acquisit
   const nextPriority = Math.max(0, ...configuration.searchSources.map((source) => Number(source.priority) || 0));
   const missing = defaultSources().filter((source) => !existing.has(source.sourceCode))
     .map((source, index) => ({ ...source, priority: nextPriority + index + 1 }));
-  return missing.length ? { ...configuration, searchSources: [...configuration.searchSources, ...missing] } : configuration;
+  const searchSources = [...configuration.searchSources, ...missing].map((source) => source.sourceCode === "APOLLO_IO"
+    ? { ...source, settings: { ...APOLLO_DEFAULT_SETTINGS, ...source.settings } } : source);
+  return { ...configuration, searchSources };
 }
 
 function defaultMethods(): CommunicationMethod[] {
@@ -277,9 +296,10 @@ export function AIAcquisition({ view }: { view: AcquisitionView }) {
 
     {view === "Conversations" && <ConversationsView conversations={conversations.filter((item) => !selected || prospects.find((prospect) => prospect.id === item.prospectId)?.acquisitionConfigurationId === selected.id)} />}
 
-    {view === "Search Sources" && <SettingsView title="Search source priority" description="Only enabled sources run. Provider results normalize into the common Prospect model."
+    {view === "Search Sources" && <><SettingsView title="Search source priority" description="Only enabled sources run. Provider results normalize into the common Prospect model."
       rows={(selected?.searchSources || []).map((row) => ({ ...row, code: row.sourceCode, name: SOURCE_NAMES[row.sourceCode] || humanize(row.sourceCode) }))}
-      empty="Create an Acquisition Configuration to set search sources." />}
+      empty="Create an Acquisition Configuration to set search sources." />
+      <ApolloProviderPanel configuration={selected} busy={busy} onEnrich={() => selected && mutate("providers/apollo/enrich", { configurationId: selected.id }, "Apollo enrichment cycle completed.")} /></>}
 
     {view === "Communication Settings" && <SettingsView title="Communication priority and policy" description="Disabled or unavailable channels are filtered before the highest-priority allowed method is selected."
       rows={(selected?.communicationMethods || []).map((row) => ({ ...row, code: row.channel, name: CHANNEL_NAMES[row.channel] || humanize(row.channel) }))}
@@ -326,6 +346,10 @@ function ConfigurationView({ configurations, editing, setEditing, providers, bus
   setEditing: (value: ReturnType<typeof emptyConfiguration> | AcquisitionConfiguration | null) => void; providers: AIProvider[]; busy: boolean; save: () => void;
 }) {
   const update = (field: string, value: unknown) => setEditing(editing ? { ...editing, [field]: value } : editing);
+  const updateSourceSettings = (index: number, settings: Record<string, unknown>) => {
+    if (!editing) return;
+    update("searchSources", editing.searchSources.map((item, itemIndex) => itemIndex === index ? { ...item, settings } : item));
+  };
   return <div className="acquisition-config-layout">
     <section className="panel acquisition-list">
       <div className="panel-head"><div><h3>Configurations</h3><p>Multiple independent acquisition strategies can run side by side.</p></div><button className="primary" onClick={() => setEditing(emptyConfiguration(providers[0]?.id || 0))}>New Acquisition</button></div>
@@ -360,13 +384,13 @@ function ConfigurationView({ configurations, editing, setEditing, providers, bus
           <label>Conversion criteria<select value={editing.conversionCriteria?.requireEngagement === false ? "MANUAL" : "ENGAGED"} onChange={(event) => update("conversionCriteria", { ...editing.conversionCriteria, requireEngagement: event.target.value === "ENGAGED" })}><option value="ENGAGED">Engaged or registered</option><option value="MANUAL">Manual conversion after fit threshold</option></select></label>
         </div>
         <details className="acquisition-inline-settings"><summary>Search sources ({editing.searchSources.filter((source) => source.enabled).length} enabled)</summary>
-          {editing.searchSources.map((source, index) => <div className="acquisition-source-setting" key={source.sourceCode}><label><input type="checkbox" checked={source.enabled} onChange={(event) => update("searchSources", editing.searchSources.map((item, itemIndex) => itemIndex === index ? { ...item, enabled: event.target.checked } : item))} /><span>{SOURCE_NAMES[source.sourceCode]}</span><input aria-label={`${source.sourceCode} priority`} type="number" min="1" max="100" value={source.priority} onChange={(event) => update("searchSources", editing.searchSources.map((item, itemIndex) => itemIndex === index ? { ...item, priority: Number(event.target.value) } : item))} /></label><textarea aria-label={`${source.sourceCode} provider settings JSON`} defaultValue={JSON.stringify(source.settings, null, 2)} onBlur={(event) => {
+          {editing.searchSources.map((source, index) => <div className="acquisition-source-setting" key={source.sourceCode}><label><input type="checkbox" checked={source.enabled} onChange={(event) => update("searchSources", editing.searchSources.map((item, itemIndex) => itemIndex === index ? { ...item, enabled: event.target.checked } : item))} /><span>{SOURCE_NAMES[source.sourceCode]}</span><input aria-label={`${source.sourceCode} priority`} type="number" min="1" max="100" value={source.priority} onChange={(event) => update("searchSources", editing.searchSources.map((item, itemIndex) => itemIndex === index ? { ...item, priority: Number(event.target.value) } : item))} /></label>{source.sourceCode === "APOLLO_IO" ? <ApolloSettingsEditor settings={source.settings} onChange={(settings) => updateSourceSettings(index, settings)} /> : <textarea aria-label={`${source.sourceCode} provider settings JSON`} defaultValue={JSON.stringify(source.settings, null, 2)} onBlur={(event) => {
             try {
               const settings = JSON.parse(event.currentTarget.value || "{}");
               event.currentTarget.setCustomValidity("");
               update("searchSources", editing.searchSources.map((item, itemIndex) => itemIndex === index ? { ...item, settings } : item));
             } catch { event.currentTarget.setCustomValidity("Enter valid JSON provider settings."); event.currentTarget.reportValidity(); }
-          }} /></div>)}</details>
+          }} />}</div>)}</details>
         <details className="acquisition-inline-settings"><summary>Communication methods ({editing.communicationMethods.filter((method) => method.enabled).length} enabled)</summary>
           {editing.communicationMethods.map((method, index) => <div className="acquisition-method-setting" key={method.channel}><label><input type="checkbox" checked={method.enabled} onChange={(event) => update("communicationMethods", editing.communicationMethods.map((item, itemIndex) => itemIndex === index ? { ...item, enabled: event.target.checked } : item))} /><span>{CHANNEL_NAMES[method.channel]}</span><input aria-label={`${method.channel} priority`} title="Priority" type="number" min="1" max="100" value={method.priority} onChange={(event) => update("communicationMethods", editing.communicationMethods.map((item, itemIndex) => itemIndex === index ? { ...item, priority: Number(event.target.value) } : item))} /></label><div><label>Max attempts<input type="number" min="1" max="20" value={method.maximumAttempts} onChange={(event) => update("communicationMethods", editing.communicationMethods.map((item, itemIndex) => itemIndex === index ? { ...item, maximumAttempts: Number(event.target.value) } : item))} /></label><label>Retry delay (min)<input type="number" min="1" value={method.retryDelayMinutes} onChange={(event) => update("communicationMethods", editing.communicationMethods.map((item, itemIndex) => itemIndex === index ? { ...item, retryDelayMinutes: Number(event.target.value) } : item))} /></label><label>Next channel delay (min)<input type="number" min="0" value={method.delayBeforeNextChannelMinutes} onChange={(event) => update("communicationMethods", editing.communicationMethods.map((item, itemIndex) => itemIndex === index ? { ...item, delayBeforeNextChannelMinutes: Number(event.target.value) } : item))} /></label><label className="acquisition-checkbox"><input type="checkbox" checked={method.stopOnResponse} onChange={(event) => update("communicationMethods", editing.communicationMethods.map((item, itemIndex) => itemIndex === index ? { ...item, stopOnResponse: event.target.checked } : item))} /> Stop on response</label></div></div>)}</details>
         <details className="acquisition-inline-settings"><summary>Handoff and follow-up rules</summary>
@@ -383,6 +407,77 @@ function ConfigurationView({ configurations, editing, setEditing, providers, bus
       </div>}
     </section>
   </div>;
+}
+
+function ApolloSettingsEditor({ settings, onChange }: { settings: Record<string, unknown>; onChange: (settings: Record<string, unknown>) => void }) {
+  const set = (name: string, value: unknown) => onChange({ ...settings, [name]: value });
+  const list = (name: string) => Array.isArray(settings[name]) ? (settings[name] as unknown[]).map(String).join("\n") : String(settings[name] || "");
+  const toggle = (name: string, label: string) => <label className="acquisition-checkbox"><input type="checkbox" checked={settings[name] === true} onChange={(event) => set(name, event.target.checked)} /> {label}</label>;
+  const number = (name: string, label: string, maximum = 100) => <label>{label}<input type="number" min="0" max={maximum} value={Number(settings[name] || 0)} onChange={(event) => set(name, Number(event.target.value))} /></label>;
+  return <div className="apollo-settings-grid">
+    <p className="wide"><strong>Credential reference:</strong> server-side <code>APOLLO_API_KEY</code>. The key is never returned to this screen.</p>
+    {toggle("peopleSearchEnabled", "People Search")}
+    {toggle("companySearchEnabled", "Company Search (optional)")}
+    {toggle("standardPeopleEnrichmentEnabled", "Standard People Enrichment")}
+    {toggle("waterfallEmailEnabled", "Selective Waterfall Email")}
+    {toggle("phoneEnrichmentEnabled", "Selective Phone Enrichment")}
+    {toggle("waterfallPhoneEnabled", "Selective Waterfall Phone")}
+    {toggle("preferKnownDomains", "Prefer domains from existing directory prospects")}
+    {number("minimumFitScoreForStandardEnrichment", "Minimum fit for standard enrichment")}
+    {number("minimumFitScoreForWaterfallEmail", "Minimum fit for waterfall email")}
+    {number("minimumFitScoreForPhone", "Minimum fit for phone")}
+    {number("dailyCreditLimit", "Daily credit limit", 1_000_000)}
+    {number("monthlyCreditLimit", "Monthly credit limit", 10_000_000)}
+    {number("resultLimit", "People Search result limit", 100)}
+    <label className="wide">Decision-maker titles<textarea value={list("decisionMakerTitles")} onChange={(event) => set("decisionMakerTitles", event.target.value.split("\n").map((value) => value.trim()).filter(Boolean))} /></label>
+    <label className="wide">Seniorities<textarea value={list("seniorities")} onChange={(event) => set("seniorities", event.target.value.split("\n").map((value) => value.trim()).filter(Boolean))} /></label>
+    <p className="wide">A limit of 0 keeps all paid enrichment off. Apollo phone results are stored as Phone only and never become WhatsApp consent.</p>
+  </div>;
+}
+
+type ApolloStatus = { configured?: boolean; enabled?: boolean; connected?: boolean; account?: string; polling?: boolean; standardEnrichmentEnabled?: boolean };
+type ApolloUsage = { limits?: { dailyCreditLimit?: number; monthlyCreditLimit?: number }; summary?: Record<string, number>;
+  requests?: Array<{ id: number; requestKind: string; status: string; requestedCount: number; successCount: number; creditsConsumed: number; errorMessage: string; createdAt: string }> };
+
+function ApolloProviderPanel({ configuration, busy, onEnrich }: { configuration: AcquisitionConfiguration | null; busy: boolean; onEnrich: () => void }) {
+  const [status, setStatus] = useState<ApolloStatus>({});
+  const [usage, setUsage] = useState<ApolloUsage>({});
+  const [detail, setDetail] = useState("");
+  const [loading, setLoading] = useState(false);
+  const load = useCallback(async () => {
+    if (!configuration) return;
+    try {
+      const [statusBody, usageBody] = await Promise.all([
+        api<{ status: ApolloStatus }>(`providers/apollo/status?configurationId=${configuration.id}`),
+        api<{ usage: ApolloUsage }>(`providers/apollo/usage?configurationId=${configuration.id}`),
+      ]);
+      setStatus(statusBody.status || {}); setUsage(usageBody.usage || {}); setDetail("");
+    } catch (error) { setDetail(error instanceof Error ? error.message : "Apollo status could not be loaded."); }
+  }, [configuration]);
+  useEffect(() => { const timer = window.setTimeout(() => void load(), 0); return () => window.clearTimeout(timer); }, [load]);
+  if (!configuration) return <section className="panel"><p className="acquisition-empty-copy">Select an acquisition configuration to view Apollo status and usage.</p></section>;
+  const test = async () => {
+    setLoading(true); setDetail("");
+    try {
+      const body = await api<{ status: ApolloStatus }>("providers/apollo/test", { method: "POST", headers: { "content-type": "application/json" }, body: JSON.stringify({ configurationId: configuration.id }) });
+      setStatus(body.status || {}); setDetail("Apollo connection succeeded.");
+    } catch (error) { setDetail(error instanceof Error ? error.message : "Apollo connection failed."); }
+    finally { setLoading(false); }
+  };
+  const summary = usage.summary || {};
+  return <section className="panel acquisition-apollo-panel">
+    <div className="panel-head"><div><h3>Apollo provider</h3><p>People Search → Prospect Fit Score → standard enrichment → selective waterfall/phone. Polling handles async results.</p></div><span className={`status ${status.configured ? "registered" : "hot"}`}>{status.configured ? "Credential configured" : "Credential missing"}</span></div>
+    <div className="acquisition-metric-grid">
+      <article><p>Daily credits</p><h3>{numberMetric(summary.dailyCreditsConsumed)} / {numberMetric(usage.limits?.dailyCreditLimit)}</h3></article>
+      <article><p>Monthly credits</p><h3>{numberMetric(summary.monthlyCreditsConsumed)} / {numberMetric(usage.limits?.monthlyCreditLimit)}</h3></article>
+      <article><p>Enrichment requests</p><h3>{numberMetric(summary.requestedCount)}</h3></article>
+      <article><p>Successful records</p><h3>{numberMetric(summary.successCount)}</h3></article>
+      <article><p>Failures / rate limits</p><h3>{numberMetric(Number(summary.failedRequests || 0) + Number(summary.rateLimitedRequests || 0))}</h3></article>
+    </div>
+    <div className="card-actions"><button disabled={busy || loading} onClick={test}>Test Connection</button><button disabled={busy || loading || !status.configured} onClick={onEnrich}>Run Eligible Enrichment</button><button disabled={loading} onClick={() => void load()}>Refresh Usage</button></div>
+    {detail && <p className={`acquisition-alert ${detail.includes("succeeded") ? "success" : "error"}`}>{detail}</p>}
+    <details><summary>Recent Apollo requests and errors</summary>{(usage.requests || []).slice(0, 20).map((request) => <p key={request.id}><strong>{humanize(request.requestKind)}</strong> · {humanize(request.status)} · {request.successCount}/{request.requestedCount} records · {request.creditsConsumed} credits{request.errorMessage ? ` · ${request.errorMessage}` : ""}</p>)}</details>
+  </section>;
 }
 
 function ProspectsView({ prospects, busy, onContact, onConvert, onDiscover, onImport }: { prospects: Prospect[]; busy: boolean; onContact: (id: number) => void; onConvert: (id: number) => void; onDiscover: () => void; onImport: (file: File) => Promise<void> }) {

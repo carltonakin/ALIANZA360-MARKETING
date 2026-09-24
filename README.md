@@ -145,6 +145,11 @@ prospect discovery, contact provenance, communication policy queue, prospect
 conversation history, conversion through the existing Lead matcher/scorer, and
 authoritative acquisition analytics. Outbound delivery requires a separate
 approved channel worker; migration 026 is not applied by a code build alone.
+Migration 028 adds optional Apollo decision-maker identity, selective People
+Enrichment and waterfall/phone polling state, plus per-acquisition credit audit
+records. Paid Apollo calls require explicit enrichment switches and positive
+daily/monthly limits. Apollo supplies contact data only; it does not send
+outreach, modify LeadScore, or classify a returned phone as WhatsApp-enabled.
 See `docs/ai-acquisition.md`.
 
 OpenAI, Anthropic Claude, and Google Gemini keys are entered in the admin

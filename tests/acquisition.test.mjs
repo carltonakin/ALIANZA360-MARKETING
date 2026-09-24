@@ -3,6 +3,7 @@ import { readFileSync } from "node:fs";
 import test from "node:test";
 import {
   AcquisitionService,
+  ApolloProvider,
   ApolloOrganizationsProvider,
   CommunicationPolicyEngine,
   ProspectDiscoveryProvider,
@@ -139,6 +140,193 @@ test("Apollo.io discovery stays disabled without a server-side API key and refus
       .searchProspects({ configuration: config }),
     /requires a company name, keyword, location, domain, employee range, or technology filter/,
   );
+});
+
+test("Apollo People Search discovers decision-makers without triggering paid enrichment", async () => {
+  const config = { ...configuration(), id: 8, dailyProspectLimit: 50 };
+  const calls = [];
+  const provider = new ApolloProvider({
+    apiKey: "apollo-test-key",
+    fetchImpl: async (url, init) => {
+      calls.push({ url: new URL(url), init });
+      return new Response(JSON.stringify({ people: [{
+        id: "person-42", first_name: "Ana", last_name_obfuscated: "G.", title: "Marketing Director",
+        seniority: "director", linkedin_url: "https://linkedin.example/in/ana-g",
+        has_email: true, has_direct_phone: false, organization_id: "org-8",
+        organization: { id: "org-8", name: "Example Advisory", primary_domain: "example.test", industry: "Advisory" },
+        city: "Miami", state: "Florida", country: "United States",
+      }] }), { status: 200, headers: { "content-type": "application/json" } });
+    },
+  });
+  const people = await provider.searchProspects({ configuration: config, settings: {
+    decisionMakerTitles: ["Marketing Director"], seniorities: ["director"], domains: ["https://www.example.test"], resultLimit: 10,
+  } });
+  assert.equal(calls.length, 1, "People Search does not call an enrichment endpoint");
+  assert.equal(calls[0].url.pathname, "/api/v1/mixed_people/api_search");
+  assert.deepEqual(calls[0].url.searchParams.getAll("person_titles[]"), ["Marketing Director"]);
+  assert.deepEqual(calls[0].url.searchParams.getAll("person_seniorities[]"), ["director"]);
+  assert.deepEqual(calls[0].url.searchParams.getAll("q_organization_domains_list[]"), ["example.test"]);
+  assert.equal(people[0].externalSourceId, "person-42");
+  assert.equal(people[0].metadata.apolloPersonId, "person-42");
+  assert.equal(people[0].metadata.apolloOrganizationId, "org-8");
+  assert.equal(people[0].email, undefined);
+  assert.equal(people[0].phone, undefined);
+});
+
+test("Apollo bulk enrichment keeps standard, waterfall email, and phone requests explicitly separate", async () => {
+  const calls = [];
+  const provider = new ApolloProvider({ apiKey: "test", fetchImpl: async (url, init) => {
+    calls.push({ url: new URL(url), body: JSON.parse(init.body) });
+    return new Response(JSON.stringify({ status: "success", matches: [] }), { status: 200 });
+  } });
+  const profiles = Array.from({ length: 12 }, (_, index) => ({ apolloPersonId: `person-${index}` }));
+  await provider.enrichPeople(profiles, "STANDARD");
+  await provider.enrichPeople(profiles.slice(0, 2), "WATERFALL_EMAIL");
+  await provider.enrichPeople(profiles.slice(0, 2), "PHONE");
+  assert.equal(calls[0].body.details.length, 10, "Apollo bulk requests never exceed ten people");
+  assert.equal(calls[0].url.searchParams.get("run_waterfall_email"), null);
+  assert.equal(calls[0].url.searchParams.get("reveal_phone_number"), "false");
+  assert.equal(calls[1].url.searchParams.get("run_waterfall_email"), "true");
+  assert.equal(calls[1].url.searchParams.get("poll_only"), "true");
+  assert.equal(calls[2].url.searchParams.get("reveal_phone_number"), "true");
+  assert.equal(calls[2].url.searchParams.get("poll_only"), "true");
+});
+
+function apolloConfiguration(settings = {}, methods = null) {
+  const config = { ...configuration(), id: 8, status: "ACTIVE" };
+  config.searchSources.push({ sourceCode: "APOLLO_IO", enabled: true, priority: 2, settings: {
+    peopleSearchEnabled: true, standardPeopleEnrichmentEnabled: true,
+    minimumFitScoreForStandardEnrichment: 60, dailyCreditLimit: 100, monthlyCreditLimit: 1000, ...settings,
+  } });
+  if (methods) config.communicationMethods = methods;
+  return config;
+}
+
+function apolloRepository(config, profiles) {
+  const usage = [];
+  return {
+    usage,
+    getAcquisitionConfigurations: async () => [config],
+    getApolloProfiles: async ({ pendingOnly } = {}) => profiles.filter((profile) => !pendingOnly || profile.apolloRequestId),
+    getApolloUsage: async () => ({ summary: { dailyCreditsConsumed: 0, monthlyCreditsConsumed: 0, dailyEstimatedCredits: 0, monthlyEstimatedCredits: 0 }, requests: usage }),
+    saveApolloUsage: async (entry) => { usage.push(entry); return entry; },
+    updateApolloProfile: async (update) => {
+      const profile = profiles.find((item) => item.prospectId === update.prospectId);
+      Object.assign(profile, update);
+      if (update.persistEmail) profile.prospectEmail = update.email;
+      if (update.persistPhone) profile.prospectPhone = update.phone;
+      return profile;
+    },
+  };
+}
+
+test("selective Apollo enrichment applies the fit gate and a usable standard email prevents waterfall", async () => {
+  const config = apolloConfiguration({ waterfallEmailEnabled: true, minimumFitScoreForWaterfallEmail: 80 });
+  const profiles = [
+    { prospectId: 1, apolloPersonId: "high", fitScore: 90, prospectStatus: "DISCOVERED", optedOut: false, standardEnrichmentUsed: false },
+    { prospectId: 2, apolloPersonId: "low", fitScore: 59, prospectStatus: "DISCOVERED", optedOut: false, standardEnrichmentUsed: false },
+  ];
+  const repository = apolloRepository(config, profiles);
+  const kinds = [];
+  const provider = { apiKey: "test", enrichPeople: async (batch, kind) => {
+    kinds.push({ ids: batch.map((item) => item.apolloPersonId), kind });
+    return { unique_enriched_records: 1, credits_consumed: 1, matches: [{ id: "high", email: "ana@example.test", email_status: "verified", match_confidence: "high" }] };
+  }, pollEnrichment: async () => ({ pending: true }) };
+  const service = new AcquisitionService({ repository, aiProviderService: {}, discoveryProviders: new Map([["APOLLO_IO", provider]]) });
+  await service.enrichApollo(8);
+  assert.deepEqual(kinds, [{ ids: ["high"], kind: "STANDARD" }]);
+  assert.equal(profiles[0].prospectEmail, "ana@example.test");
+  assert.equal(profiles[1].standardEnrichmentUsed, false, "a prospect below the fit gate is not enriched");
+  assert.equal(profiles[0].waterfallEmailUsed, undefined, "standard email stops waterfall email");
+});
+
+test("missing standard email starts selective waterfall while disabled phone channels prevent phone enrichment", async () => {
+  const config = apolloConfiguration({ waterfallEmailEnabled: true, phoneEnrichmentEnabled: true,
+    minimumFitScoreForWaterfallEmail: 80, minimumFitScoreForPhone: 80 });
+  config.communicationMethods = config.communicationMethods.map((method) => ({ ...method,
+    enabled: method.channel === "EMAIL" || method.channel === "MANUAL_HUMAN_FOLLOW_UP" }));
+  const profiles = [{ prospectId: 3, apolloPersonId: "missing", fitScore: 90, prospectStatus: "DISCOVERED", optedOut: false, standardEnrichmentUsed: false }];
+  const repository = apolloRepository(config, profiles);
+  const kinds = [];
+  const provider = { apiKey: "test", enrichPeople: async (_batch, kind) => {
+    kinds.push(kind);
+    return kind === "STANDARD"
+      ? { unique_enriched_records: 1, credits_consumed: 1, matches: [{ id: "missing", match_confidence: "high", email_status: "unavailable" }] }
+      : { request_id: "-922337203685477000", waterfall: { status: "processing" } };
+  }, pollEnrichment: async () => ({ pending: true }) };
+  const service = new AcquisitionService({ repository, aiProviderService: {}, discoveryProviders: new Map([["APOLLO_IO", provider]]) });
+  await service.enrichApollo(8);
+  assert.deepEqual(kinds, ["STANDARD", "WATERFALL_EMAIL"]);
+  assert.equal(profiles[0].apolloRequestId, "-922337203685477000", "signed 64-bit request IDs stay strings");
+  assert.equal(profiles[0].phoneEnrichmentUsed, undefined, "phone is not requested when phone channels are disabled");
+});
+
+test("Apollo polling correlates people by stable ID and never marks a returned phone as WhatsApp", async () => {
+  const config = apolloConfiguration({ phoneEnrichmentEnabled: true }, [
+    { channel: "SMS", enabled: true, priority: 1, maximumAttempts: 1 },
+    { channel: "WHATSAPP_BUSINESS", enabled: true, priority: 2, maximumAttempts: 1 },
+  ]);
+  const profiles = [
+    { prospectId: 10, apolloPersonId: "person-a", fitScore: 90, prospectStatus: "DISCOVERED", optedOut: false, apolloRequestId: "55", pendingRequestKind: "PHONE", pendingUsageKey: "usage-55", enrichmentStatus: "PENDING" },
+    { prospectId: 11, apolloPersonId: "person-b", fitScore: 90, prospectStatus: "DISCOVERED", optedOut: false, apolloRequestId: "55", pendingRequestKind: "PHONE", pendingUsageKey: "usage-55", enrichmentStatus: "PENDING" },
+  ];
+  const repository = apolloRepository(config, profiles);
+  const provider = { apiKey: "test", pollEnrichment: async () => ({ pending: false, body: { webhook_result: { credits_consumed: 8, matches: [
+    { id: "person-b", phone_numbers: [{ sanitized_number: "+13055550111", type: "mobile" }], match_confidence: "high" },
+    { id: "person-a", phone_numbers: [{ sanitized_number: "+13055550110", type: "mobile" }], match_confidence: "high" },
+  ] } } }), enrichPeople: async () => ({ matches: [] }) };
+  const service = new AcquisitionService({ repository, aiProviderService: {}, discoveryProviders: new Map([["APOLLO_IO", provider]]) });
+  const result = await service.pollApolloEnrichments(config);
+  assert.equal(result.completed, 2);
+  assert.equal(profiles[0].prospectPhone, "+13055550110");
+  assert.equal(profiles[1].prospectPhone, "+13055550111");
+  assert.equal(profiles[0].whatsAppNumber, undefined, "Apollo phone never becomes a WhatsApp number");
+});
+
+test("Apollo discovery prefers known provider domains and links a matching Prospect instead of duplicating it", async () => {
+  const config = { ...configuration({ minimumProspectFitScore: 0, searchSources: [{ sourceCode: "APOLLO_IO", enabled: true, priority: 1,
+    settings: { peopleSearchEnabled: true, preferKnownDomains: true } }] }), id: 8 };
+  let receivedSettings;
+  let coreUpserts = 0;
+  let linkedProfile;
+  const repository = {
+    getAcquisitionConfigurations: async () => [config],
+    getAcquisitionDiscoveryCountToday: async () => 0,
+    getAcquisitionProspectDomains: async () => ["https://www.known.test/services"],
+    saveApolloUsage: async (entry) => entry,
+    findApolloProspectMatch: async () => ({ id: 77, inserted: false, companyName: "Known Company" }),
+    upsertAcquisitionProspect: async () => { coreUpserts += 1; },
+    upsertApolloProfileDiscovery: async (profile) => { linkedProfile = profile; return profile; },
+  };
+  const provider = new class extends ProspectDiscoveryProvider {
+    constructor() { super("APOLLO_IO"); }
+    async searchProspects({ settings }) {
+      receivedSettings = settings;
+      return [{ companyName: "Known Company", contactName: "Ana G", jobTitle: "Owner", website: "https://known.test",
+        externalSourceId: "person-known", sourceUrl: "https://linkedin.example/in/ana-g",
+        metadata: { apolloPersonId: "person-known", apolloOrganizationId: "org-known", fullName: "Ana G",
+          jobTitle: "Owner", companyDomain: "known.test", linkedInUrl: "https://linkedin.example/in/ana-g" } }];
+    }
+  }();
+  const service = new AcquisitionService({ repository, aiProviderService: {}, discoveryProviders: new Map([["APOLLO_IO", provider]]) });
+  await service.discover(8);
+  assert.deepEqual(receivedSettings.domains, ["known.test"]);
+  assert.equal(coreUpserts, 0, "the cross-provider Prospect match is reused");
+  assert.equal(linkedProfile.prospectId, 77);
+  assert.equal(linkedProfile.apolloPersonId, "person-known");
+});
+
+test("Apollo credit limits block paid calls before the provider is invoked", async () => {
+  const config = apolloConfiguration({ dailyCreditLimit: 0, monthlyCreditLimit: 0 });
+  const profiles = [{ prospectId: 90, apolloPersonId: "blocked", fitScore: 95, prospectStatus: "DISCOVERED", optedOut: false, standardEnrichmentUsed: false }];
+  const repository = apolloRepository(config, profiles);
+  let calls = 0;
+  const provider = { apiKey: "test", enrichPeople: async () => { calls += 1; }, pollEnrichment: async () => ({ pending: true }) };
+  const service = new AcquisitionService({ repository, aiProviderService: {}, discoveryProviders: new Map([["APOLLO_IO", provider]]) });
+  const result = await service.enrichApollo(8);
+  assert.equal(calls, 0);
+  assert.equal(result.stages.standard.budgetBlocked, 1);
+  assert.equal(profiles[0].enrichmentStatus, "BUDGET_LIMIT_REACHED");
 });
 
 test("communication policy selects the highest-priority available allowed channel and stops escalation", () => {
@@ -318,6 +506,9 @@ test("listener exposes acquisition routes independently of campaign routes", asy
     prospects: async () => [], conversations: async () => [], analytics: async () => ({ overview: {}, sources: [], channels: [], configurations: [] }),
     manualTasks: async () => [{ id: 5, prospectId: 9, channel: "MANUAL_HUMAN_FOLLOW_UP" }],
     completeManualTask: async (id) => ({ id, status: "COMPLETED" }),
+    apolloStatus: async (_id, options = {}) => ({ configured: true, connected: Boolean(options.test) }),
+    apolloUsage: async () => ({ summary: { dailyCreditsConsumed: 1 }, requests: [] }),
+    enrichApollo: async () => ({ stages: { standard: { completed: 1 } } }),
     saveConfiguration: async (body) => { if (saveError) throw saveError; return { ...body, id: 3 }; },
     setStatus: async () => ({ id: 3, status: "ACTIVE" }),
     discover: async (id) => { calls.push(id); return { configurationId: Number(id), results: [] }; },
@@ -345,6 +536,14 @@ test("listener exposes acquisition routes independently of campaign routes", asy
   assert.equal((await tasks.json()).tasks[0].id, 5);
   const completed = await request("/acquisition/manual-tasks/5/complete", { method: "POST", body: "{}" });
   assert.equal((await completed.json()).task.status, "COMPLETED");
+  const apolloStatus = await request("/acquisition/providers/apollo/status?configurationId=3");
+  assert.equal((await apolloStatus.json()).status.configured, true);
+  const apolloTest = await request("/acquisition/providers/apollo/test", { method: "POST", body: JSON.stringify({ configurationId: 3 }) });
+  assert.equal((await apolloTest.json()).status.connected, true);
+  const apolloUsage = await request("/acquisition/providers/apollo/usage?configurationId=3");
+  assert.equal((await apolloUsage.json()).usage.summary.dailyCreditsConsumed, 1);
+  const apolloEnrichment = await request("/acquisition/providers/apollo/enrich", { method: "POST", body: JSON.stringify({ configurationId: 3 }) });
+  assert.equal((await apolloEnrichment.json()).enrichment.stages.standard.completed, 1);
   saveError = Object.assign(new Error("password=must-not-leak"), { code: "EREQUEST", number: 2812 });
   const failedSave = await request("/acquisition/configurations", { method: "POST", body: "{}" });
   assert.equal(failedSave.status, 500);
@@ -371,4 +570,17 @@ test("acquisition migration keeps Prospect storage independent and conversion in
   assert.match(sql, /ReplyRatePercent/);
   assert.match(sql, /AverageLeadScore/);
   assert.doesNotMatch(sql, /CREATE\s+TABLE\s+dbo\.Leads\b/i);
+});
+
+test("Apollo migration adds provider-specific enrichment and usage state without replacing CRM scoring", () => {
+  const sql = readFileSync(new URL("../sql/028_apollo_selective_enrichment.sql", import.meta.url), "utf8");
+  assert.match(sql, /CREATE TABLE dbo\.AIAcquisitionApolloProfiles/);
+  assert.match(sql, /CREATE TABLE dbo\.AIAcquisitionApolloUsage/);
+  assert.match(sql, /UNIQUE \(AIAcquisitionConfigurationId, ApolloPersonId\)/);
+  assert.match(sql, /ApolloRequestId NVARCHAR\(64\)/);
+  assert.match(sql, /PendingUsageKey/);
+  assert.match(sql, /AIAcquisitionProspectContacts/);
+  assert.doesNotMatch(sql, /CREATE\s+TABLE\s+dbo\.(?:AIAcquisitionProspects|Leads)\b/i);
+  assert.doesNotMatch(sql, /LeadScore_Recalculate|CRMLead_UpsertFromRoutine/);
+  assert.doesNotMatch(sql, /WhatsAppNumber\s*=/i, "Apollo phone is never promoted to WhatsApp");
 });

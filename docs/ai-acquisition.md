@@ -23,7 +23,7 @@ The configured MSSQL target was checked read-only before implementation. It cont
 
 The dashboard has an independent **AI Acquisition** navigation category with Overview, Acquisition Configurations, Prospects, Conversations, Search Sources, Communication Settings, and Analytics.
 
-Files changed for this module: `.env.example`, `.env.production.example`, `README.md`, `app/api/acquisition/[...path]/route.ts`, `app/components/AIAcquisition.tsx`, `app/globals.css`, `app/page.tsx`, `docs/ai-acquisition.md`, `package.json`, `proxy.ts`, `social/acquisition.mjs`, `social/ai-providers.mjs`, `social/server.mjs`, `social/sql-server.mjs`, `sql/026_ai_acquisition.sql`, `tests/acquisition.test.mjs`, and `tests/rendered-html.test.mjs`.
+Files changed for this module include `.env.example`, `.env.production.example`, `README.md`, `app/api/acquisition/[...path]/route.ts`, `app/components/AIAcquisition.tsx`, `app/globals.css`, `app/page.tsx`, `docs/ai-acquisition.md`, `package.json`, `proxy.ts`, `social/acquisition.mjs`, `social/ai-providers.mjs`, `social/server.mjs`, `social/sql-server.mjs`, `sql/026_ai_acquisition.sql`, `sql/028_apollo_selective_enrichment.sql`, `tests/acquisition.test.mjs`, and `tests/rendered-html.test.mjs`.
 
 Configurations select an existing AI provider, reuse Company Profile ID 1, and store their own targets, sources, qualification fields, handoff policy, follow-up policy, and communication ordering. Active configurations run discovery on the acquisition timer and can also be run manually. Repeated runs are bounded by the daily prospect limit and unique prospect identities. Automatic outreach is disabled by default and requires an explicit per-configuration opt-in; its timer queues at most the configured batch size of consented, policy-allowed prospects, then follows the configured delay, maximum follow-ups, and channel ordering. Queueing does not itself deliver a message.
 
@@ -35,7 +35,13 @@ Installed adapters are Google Places, existing/inactive CRM Leads, Landing Page 
 
 Google Places uses the Text Search v1 API. It stores the Place ID as the external source ID and records Google Places as provenance for returned phone and website values. It does not invent email or social values.
 
-Apollo.io organization search is available as the optional `APOLLO_IO` source. It calls Apollo's Organization Search endpoint with the server-only `APOLLO_API_KEY`, stores the Apollo organization ID as the stable external source ID, and records Apollo provenance for returned website, phone, Facebook, and X values. It never derives or invents an email address from a company domain. The source is disabled by default and requires at least one company-name, keyword, location, domain, employee-range, or technology filter. Supported settings include `organizationName`, `keywordTags`, `locations`, `domains`, `excludedDomains`, `employeeRanges`, `technologyUids`, `page`, and `resultLimit` (maximum 100). Apollo may consume credits and restrict endpoint access according to the connected Apollo plan.
+Apollo.io decision-maker discovery is available as the optional `APOLLO_IO` source. Its primary path calls People Search and stores Apollo person and organization IDs, name, job title, seniority, company/domain, location, and LinkedIn URL without requesting email or phone. Titles and seniorities are editable per acquisition; the defaults target owners, founders, executives, directors, and managers. Filters support organization/person locations, organization domains and IDs, employee ranges, technologies, exclusions, keywords, paging, and up to 100 results. When Google Places or another existing source has a reliable website, Apollo prefers a domain-scoped search unless that behavior is disabled. Company Search remains an explicitly enabled compatibility option.
+
+Apollo enrichment is a separate timer/manual stage after the existing Prospect Fit Score. Production batches contain at most ten people and use stable Apollo person IDs. Standard People Enrichment is off until explicitly enabled. A standard result with an acceptable business email stops email enrichment. Waterfall Email runs only when enabled, the configured higher fit threshold passes, standard enrichment produced no acceptable email, the Prospect is not suppressed, and both credit limits allow it. Native phone and Waterfall Phone have their own switches and high-fit threshold, run only when SMS or WhatsApp is relevant to configured communication priority, and can be deferred when a higher-priority usable email exists. An Apollo phone is stored only as `Phone`; it is never copied into `WhatsAppNumber` or treated as WhatsApp consent.
+
+Async phone and waterfall results use Apollo polling rather than a public webhook. The signed 64-bit Apollo request ID is stored as text, the acquisition timer honors provider retry timing, and completion maps records by Apollo person ID. Retries and duplicate results update the provider profile and the existing contact record idempotently. Apollo never sends outreach: the existing Communication Priority Engine, consent checks, opt-out/`DO_NOT_CONTACT` rules, and n8n delivery worker remain authoritative.
+
+Paid enrichment requires a positive daily and monthly credit limit. A zero limit is an intentional hard stop. Usage records include People Search, standard enrichment, waterfall email, native phone, waterfall phone, attempts, successes, provider-reported credits, temporary reservations, failures, and rate limits. The Search Sources screen provides connection testing, local usage/error history, and a manual eligible-enrichment action without exposing the API key.
 
 Prospect identity is SHA-256 over `source + externalSourceId` when a stable external ID exists. Otherwise it uses normalized business name/domain/email/phone/location. MSSQL enforces uniqueness for both the configuration identity and non-null source/external ID.
 
@@ -83,6 +89,8 @@ Migration `sql/026_ai_acquisition.sql` adds:
 
 It also adds unique deduplication/message/idempotency indexes, status/query indexes, and configuration, prospect, conversation, contact-attempt, overview, analytics, and conversion procedures. Analytics reads persisted acquisition records and authoritative Lead score bands; it does not recalculate scores. The `LeadsCreated` database metric counts Prospects linked to a Lead, whether the existing matcher created a new Lead or matched an existing one; the UI labels this “Leads created/matched.”
 
+Migration `sql/028_apollo_selective_enrichment.sql` adds `AIAcquisitionApolloProfiles` and `AIAcquisitionApolloUsage`. These are provider-specific state/audit tables linked to the existing Prospect and configuration tables. They enforce one Apollo person per acquisition, track enrichment fields and async polling, and write accepted contact data through the existing Prospect/contact model. They do not create a second Prospect or Lead model, call Lead scoring, alter Lead 360, or change conversion.
+
 ## API and deployment
 
 Authenticated Next.js requests under `/api/acquisition/*` proxy to matching listener routes for configurations/action, discovery, prospects/import/contact/convert, overview, source/channel settings, and analytics. Worker claim/complete and `POST /api/acquisition/conversations/incoming` require the service Bearer token at the public Next.js boundary; a CRM browser session alone is not accepted for these integration routes.
@@ -103,11 +111,25 @@ Server-only environment variables:
 AI_ACQUISITION_INTERVAL_MS=900000
 AI_ACQUISITION_OUTREACH_BATCH_SIZE=10
 GOOGLE_PLACES_API_KEY=<key with Places API access>
-APOLLO_API_KEY=<Apollo API key with organization-search access>
+APOLLO_API_KEY=<Apollo API key with People Search, People Enrichment, and profile access>
 ```
 
 Existing SQL, service-auth, channel-encryption, AI-provider-encryption, Meta, email, SMS, WhatsApp, Buffer, and Cloudinary variables remain unchanged. Never prefix the Google or Apollo key with `NEXT_PUBLIC_`.
 
+### Apollo production deployment
+
+1. Take and verify a fresh backup of the production MSSQL database.
+2. Set `APOLLO_API_KEY` as a server-side SmarterASP application variable; do not send it through chat, store it in source control, or prefix it with `NEXT_PUBLIC_`.
+3. Publish the application files.
+4. Run `npm run db:setup:mssql` so migration 028 is applied after the existing numbered migrations.
+5. Restart the application and use **AI Acquisition -> Search Sources -> Apollo -> Test Connection**.
+6. Enable Apollo People Search in the acquisition configuration. Configure target filters/titles, enable only the desired enrichment stages, and set explicit non-zero daily/monthly credit limits.
+7. Run a controlled discovery. Confirm decision-maker names and Apollo IDs exist before running **Run Eligible Enrichment**.
+8. Verify one accepted business email, one intentionally eligible async result, usage totals, no duplicate contact records, and that any phone remains separate from WhatsApp.
+9. Confirm the existing n8n queue still claims outreach only after the Communication Priority Engine and consent policy allow it.
+
+Rollback is operationally safe: disable the Apollo source or all enrichment switches first, then redeploy the prior application build if needed. Migration 028 is additive; keep its audit tables unless a separately reviewed data-retention change is approved.
+
 ## Validation
 
-The acquisition tests cover configuration validation, stable normalization and contact provenance, channel priority/policy enforcement, daily-limit discovery and deduplication, consent-gated automatic scheduling, conversion criteria, opt-out handling, structured AI fallback, and independent listener routes. The normal full regression suite remains the release gate for Campaigns, AI Campaigns, Buffer, Landing Page Studio, social listener, Lead scoring, and Lead 360. Migration 026 was applied to the configured production MSSQL database on 2026-09-19 after a user-confirmed backup. Read-only smoke checks verified all seven acquisition tables, 16 stored procedures, and the configuration, prospect, overview, and analytics reads. No acquisition configuration or prospect existed at verification time; a delivery worker and inbound channel integration are still required before messaging can run.
+The acquisition tests cover configuration validation, stable normalization and contact provenance, People Search without paid enrichment, configurable filters, stable Apollo IDs, bulk limits, fit gating, acceptable standard email stopping waterfall, selective waterfall, disabled phone-channel behavior, async correlation, WhatsApp separation, channel priority/policy enforcement, daily-limit discovery and deduplication, consent-gated automatic scheduling, conversion criteria, opt-out handling, structured AI fallback, and independent listener routes. The normal full regression suite remains the release gate for Campaigns, AI Campaigns, Buffer, Landing Page Studio, social listener, Lead scoring, and Lead 360. Migration 026 was applied to the configured production MSSQL database on 2026-09-19 after a user-confirmed backup. Migration 028 must not be applied until a fresh production backup is confirmed for this Apollo change.

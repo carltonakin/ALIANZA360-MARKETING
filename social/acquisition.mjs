@@ -12,7 +12,7 @@ export const PROSPECT_STATUSES = Object.freeze([
 
 export const SEARCH_SOURCE_DEFINITIONS = Object.freeze([
   { code: "GOOGLE_PLACES", name: "Google Places / business search", implemented: true },
-  { code: "APOLLO_IO", name: "Apollo.io organization search", implemented: true },
+  { code: "APOLLO_IO", name: "Apollo.io decision-maker discovery", implemented: true },
   { code: "EXISTING_CRM", name: "Existing Next2TheTop CRM data", implemented: true },
   { code: "INACTIVE_LEADS", name: "Existing cold/inactive Leads", implemented: true },
   { code: "LANDING_PAGE", name: "Landing Page registrations/activity", implemented: true },
@@ -260,7 +260,8 @@ function prospectIdentity(raw, sourceCode) {
 }
 
 export function calculateProspectFit(raw, configuration) {
-  const haystack = [raw.companyName, raw.industry, raw.location, raw.description, raw.categories, raw.website]
+  const haystack = [raw.companyName, raw.contactName, raw.firstName, raw.lastName, raw.jobTitle, raw.title,
+    raw.seniority, raw.industry, raw.location, raw.description, raw.categories, raw.website, raw.companyDomain]
     .flat().map((item) => clean(item, 2000).toLowerCase()).join(" ");
   const criteria = [configuration.targetIndustry, configuration.targetLocation, configuration.targetCustomerType,
     configuration.businessSize, ...clean(configuration.keywords, 2000).split(/[,\n]/)]
@@ -378,15 +379,159 @@ function apolloWebsite(organization) {
   return domain ? `https://${domain}` : "";
 }
 
-export class ApolloOrganizationsProvider extends ProspectDiscoveryProvider {
+const APOLLO_DEFAULT_TITLES = Object.freeze([
+  "Owner", "Founder", "Co-Founder", "CEO", "President", "Managing Director",
+  "Marketing Director", "Marketing Manager", "Business Development Director",
+]);
+
+const APOLLO_DEFAULT_SENIORITIES = Object.freeze([
+  "owner", "founder", "c_suite", "partner", "vp", "head", "director", "manager",
+]);
+
+function apolloHeaders(apiKey) {
+  return {
+    accept: "application/json",
+    "cache-control": "no-cache",
+    "content-type": "application/json",
+    "x-api-key": apiKey,
+  };
+}
+
+function apolloError(body, responseText, status) {
+  return clean(body?.error_details?.message || body?.error_message || body?.message || body?.error || responseText, 1000) ||
+    `Apollo.io returned HTTP ${status}.`;
+}
+
+function apolloLocation(value) {
+  return [value?.city, value?.state, value?.country].map((item) => clean(item, 255)).filter(Boolean).join(", ");
+}
+
+function apolloPersonDetails(person) {
+  const organization = objectValue(person?.organization);
+  const firstName = clean(person?.first_name, 255);
+  const lastName = clean(person?.last_name || person?.last_name_obfuscated, 255);
+  const fullName = clean(person?.name || [firstName, lastName].filter(Boolean).join(" "), 255);
+  const companyDomain = normalizedDomain(organization?.primary_domain || organization?.website_url);
+  return {
+    companyName: clean(organization?.name || person?.organization_name, 255),
+    contactName: fullName,
+    firstName,
+    lastName,
+    jobTitle: clean(person?.title, 500),
+    seniority: clean(person?.seniority, 100),
+    industry: clean(organization?.industry, 500),
+    location: apolloLocation(person),
+    website: apolloWebsite(organization),
+    companyDomain,
+    externalSourceId: clean(person?.id, 255),
+    sourceUrl: clean(person?.linkedin_url || apolloWebsite(organization), 2048),
+    metadata: {
+      apolloPersonId: clean(person?.id, 255),
+      apolloOrganizationId: clean(person?.organization_id || organization?.id, 255),
+      firstName,
+      lastName,
+      fullName,
+      jobTitle: clean(person?.title, 500),
+      seniority: clean(person?.seniority, 100),
+      companyDomain,
+      linkedInUrl: clean(person?.linkedin_url, 2048),
+      hasEmail: Boolean(person?.has_email),
+      hasDirectPhone: Boolean(person?.has_direct_phone),
+      discoveryTimestamp: new Date().toISOString(),
+    },
+    contactProvenance: {
+      WEBSITE: { source: "APOLLO_IO", sourceUrl: clean(person?.linkedin_url, 2048), verified: false },
+    },
+  };
+}
+
+export class ApolloProvider extends ProspectDiscoveryProvider {
   constructor({ apiKey, fetchImpl = globalThis.fetch } = {}) {
     super("APOLLO_IO");
     this.apiKey = clean(apiKey, 10_000);
     this.fetchImpl = fetchImpl;
   }
 
-  async searchProspects({ configuration, settings = {} }) {
+  requireApiKey() {
     if (!this.apiKey) throw validationError("Apollo.io discovery is enabled but APOLLO_API_KEY is not configured.", 409);
+  }
+
+  async request(url, init = {}, { attempts = 3 } = {}) {
+    this.requireApiKey();
+    let lastError;
+    for (let attempt = 1; attempt <= attempts; attempt += 1) {
+      try {
+        const response = await this.fetchImpl(url, {
+          ...init,
+          headers: { ...apolloHeaders(this.apiKey), ...(init.headers || {}) },
+          signal: init.signal || AbortSignal.timeout(30_000),
+        });
+        const responseText = await response.text();
+        let body = {};
+        try { body = responseText ? JSON.parse(responseText) : {}; } catch { body = {}; }
+        if (response.ok) return { body, response };
+        const error = validationError(apolloError(body, responseText, response.status), response.status);
+        error.apolloCode = clean(body?.error_details?.code || body?.error_code, 255);
+        error.retryAfterSeconds = Number(body?.retry_after_seconds || response.headers?.get?.("retry-after") || 0);
+        if (![429, 500, 502, 503, 504].includes(response.status) || attempt >= attempts) throw error;
+        lastError = error;
+        await new Promise((resolve) => setTimeout(resolve, Math.min(2000, Math.max(100, error.retryAfterSeconds * 1000 || attempt * 250))));
+      } catch (error) {
+        if (error?.statusCode || attempt >= attempts) throw error;
+        lastError = error;
+        await new Promise((resolve) => setTimeout(resolve, attempt * 250));
+      }
+    }
+    throw lastError || validationError("Apollo.io request failed.", 502);
+  }
+
+  async searchProspects({ configuration, settings = {} }) {
+    if (settings.peopleSearchEnabled === false && settings.companySearchEnabled === true) {
+      return this.searchOrganizations({ configuration, settings });
+    }
+    this.requireApiKey();
+    const url = new URL("https://api.apollo.io/api/v1/mixed_people/api_search");
+    const addList = (name, values) => values.forEach((value) => url.searchParams.append(name, value));
+    const titles = sourceSettingList(settings.decisionMakerTitles || settings.personTitles, APOLLO_DEFAULT_TITLES);
+    const seniorities = sourceSettingList(settings.seniorities || settings.personSeniorities, APOLLO_DEFAULT_SENIORITIES)
+      .map((item) => item.toLowerCase().replace(/[ -]+/g, "_"));
+    const organizationLocations = sourceSettingList(settings.organizationLocations || settings.locations,
+      configuration.targetLocation ? [configuration.targetLocation] : []);
+    const personLocations = sourceSettingList(settings.personLocations);
+    const domains = sourceSettingList(settings.domains || settings.organizationDomains).map(normalizedDomain).filter(Boolean);
+    const organizationIds = sourceSettingList(settings.organizationIds);
+    const excludedDomains = sourceSettingList(settings.excludedDomains).map(normalizedDomain).filter(Boolean);
+    const employeeRanges = sourceSettingList(settings.employeeRanges || settings.organizationEmployeeRanges,
+      /^\s*\d+\s*,\s*\d+\s*$/.test(clean(configuration.businessSize, 255)) ? [configuration.businessSize] : [])
+      .map((range) => range.replace(/\s+/g, "")).filter((range) => /^\d+,\d+$/.test(range));
+    const technologyUids = sourceSettingList(settings.technologyUids);
+    const keywords = clean(settings.keywords || [configuration.targetIndustry, configuration.keywords]
+      .filter(Boolean).join(" "), 1000);
+
+    addList("person_titles[]", titles);
+    addList("person_seniorities[]", seniorities);
+    addList("organization_locations[]", organizationLocations);
+    addList("person_locations[]", personLocations);
+    addList("q_organization_domains_list[]", domains);
+    addList("organization_ids[]", organizationIds);
+    addList("not_organization_websites_list[]", excludedDomains);
+    addList("organization_num_employees_ranges[]", employeeRanges);
+    addList("currently_using_any_of_technology_uids[]", technologyUids);
+    if (keywords) url.searchParams.set("q_keywords", keywords);
+    if (settings.includeSimilarTitles === false) url.searchParams.set("include_similar_titles", "false");
+    if (![organizationLocations, personLocations, domains, organizationIds, employeeRanges, technologyUids].some((values) => values.length) && !keywords) {
+      throw validationError("Apollo.io People Search requires a keyword, location, domain, organization ID, employee range, or technology filter.");
+    }
+    url.searchParams.set("page", String(boundedInteger(settings.page, 1, 1, 500)));
+    url.searchParams.set("per_page", String(boundedInteger(settings.resultLimit,
+      Math.min(configuration.dailyProspectLimit || 25, 100), 1, 100)));
+    const { body } = await this.request(url, { method: "POST" });
+    return arrayValue(body.people).map(apolloPersonDetails)
+      .filter((person) => person.companyName && person.externalSourceId);
+  }
+
+  async searchOrganizations({ configuration, settings = {} }) {
+    this.requireApiKey();
     const url = new URL("https://api.apollo.io/api/v1/mixed_companies/search");
     const addList = (name, values) => values.forEach((value) => url.searchParams.append(name, value));
     const locations = sourceSettingList(settings.locations || settings.organizationLocations,
@@ -416,23 +561,7 @@ export class ApolloOrganizationsProvider extends ProspectDiscoveryProvider {
     url.searchParams.set("page", String(boundedInteger(settings.page, 1, 1, 500)));
     url.searchParams.set("per_page", String(boundedInteger(settings.resultLimit, Math.min(configuration.dailyProspectLimit || 25, 100), 1, 100)));
 
-    const response = await this.fetchImpl(url, {
-      method: "POST",
-      headers: {
-        accept: "application/json",
-        "cache-control": "no-cache",
-        "content-type": "application/json",
-        "x-api-key": this.apiKey,
-      },
-      signal: AbortSignal.timeout(30_000),
-    });
-    const responseText = await response.text();
-    let body = {};
-    try { body = responseText ? JSON.parse(responseText) : {}; } catch { body = {}; }
-    if (!response.ok) {
-      const message = clean(body?.error_details?.message || body?.message || responseText, 1000);
-      throw validationError(message || `Apollo.io returned HTTP ${response.status}.`, response.status);
-    }
+    const { body } = await this.request(url, { method: "POST" });
     return arrayValue(body.organizations).map((organization) => {
       const website = apolloWebsite(organization);
       const sourceUrl = clean(organization?.linkedin_url || website, 2048);
@@ -468,6 +597,57 @@ export class ApolloOrganizationsProvider extends ProspectDiscoveryProvider {
       };
     }).filter((organization) => organization.companyName && organization.externalSourceId);
   }
+
+  async enrichPeople(profiles, kind = "STANDARD") {
+    const batch = arrayValue(profiles).slice(0, 10);
+    if (!batch.length) return { matches: [], total_requested_enrichments: 0, credits_consumed: 0 };
+    const url = new URL("https://api.apollo.io/api/v1/people/bulk_match");
+    url.searchParams.set("reveal_personal_emails", "false");
+    url.searchParams.set("reveal_phone_number", kind === "PHONE" ? "true" : "false");
+    if (kind === "WATERFALL_EMAIL") url.searchParams.set("run_waterfall_email", "true");
+    if (kind === "WATERFALL_PHONE") url.searchParams.set("run_waterfall_phone", "true");
+    if (kind !== "STANDARD") url.searchParams.set("poll_only", "true");
+    const details = batch.map((profile) => {
+      if (profile.apolloPersonId) return { id: profile.apolloPersonId };
+      return {
+        name: profile.fullName || profile.contactName || undefined,
+        domain: profile.companyDomain || normalizedDomain(profile.website) || undefined,
+        organization_name: profile.companyName || undefined,
+        linkedin_url: profile.linkedInUrl || undefined,
+      };
+    });
+    const { body } = await this.request(url, { method: "POST", body: JSON.stringify({ details }) });
+    return body;
+  }
+
+  async pollEnrichment(requestId) {
+    const id = clean(requestId, 64);
+    if (!/^-?\d+$/.test(id)) throw validationError("Apollo request ID is invalid.");
+    try {
+      const { body } = await this.request(`https://api.apollo.io/api/v1/webhook_result/${id}`, { method: "GET" }, { attempts: 1 });
+      return { pending: false, body };
+    } catch (error) {
+      if (error?.statusCode === 404 && error?.apolloCode === "result_pending") {
+        return { pending: true, retryAfterSeconds: Number(error.retryAfterSeconds || 10) };
+      }
+      throw error;
+    }
+  }
+
+  async testConnection() {
+    const { body } = await this.request("https://api.apollo.io/api/v1/users/api_profile?include_credit_usage=true", { method: "GET" }, { attempts: 1 });
+    const profile = objectValue(body?.user || body?.profile || body);
+    return {
+      connected: true,
+      account: clean(profile?.email || profile?.name, 320) || "Apollo API",
+      creditUsageAvailable: Boolean(body?.credit_usage || profile?.credit_usage || body?.team_credit_usage),
+    };
+  }
+}
+
+// Backwards-compatible adapter for callers that explicitly depend on company search.
+export class ApolloOrganizationsProvider extends ApolloProvider {
+  async searchProspects(context) { return this.searchOrganizations(context); }
 }
 
 export class RepositoryDiscoveryProvider extends ProspectDiscoveryProvider {
@@ -487,7 +667,7 @@ export class CSVImportProvider extends ProspectDiscoveryProvider {
 export function createDiscoveryProviders({ repository, env = process.env, fetchImpl = globalThis.fetch } = {}) {
   return new Map([
     ["GOOGLE_PLACES", new GooglePlacesProvider({ apiKey: env.GOOGLE_PLACES_API_KEY, fetchImpl })],
-    ["APOLLO_IO", new ApolloOrganizationsProvider({ apiKey: env.APOLLO_API_KEY, fetchImpl })],
+    ["APOLLO_IO", new ApolloProvider({ apiKey: env.APOLLO_API_KEY, fetchImpl })],
     ["EXISTING_CRM", new RepositoryDiscoveryProvider("EXISTING_CRM", repository)],
     ["INACTIVE_LEADS", new RepositoryDiscoveryProvider("INACTIVE_LEADS", repository)],
     ["LANDING_PAGE", new RepositoryDiscoveryProvider("LANDING_PAGE", repository)],
@@ -568,6 +748,86 @@ function conversationPrompt(context) {
   ].join("\n\n");
 }
 
+function apolloSource(configuration) {
+  return arrayValue(configuration?.searchSources).find((source) => source.sourceCode === "APOLLO_IO") || null;
+}
+
+function apolloResponseMatches(value) {
+  const body = objectValue(value);
+  const root = objectValue(body.webhook_result || body.result || body.data || body);
+  if (Array.isArray(root.matches)) return root.matches;
+  if (Array.isArray(root.people)) return root.people;
+  if (Array.isArray(root.contacts)) return root.contacts;
+  if (root.person && typeof root.person === "object") return [root.person];
+  if (root.data && root.data !== root) return apolloResponseMatches(root.data);
+  return [];
+}
+
+function apolloResponseRequestId(value) {
+  const body = objectValue(value);
+  const requestId = body.request_id ?? body.waterfall?.request_id ?? body.webhook_request_id;
+  return requestId == null ? "" : clean(requestId, 64);
+}
+
+function apolloMatchId(match) {
+  return clean(match?.id || match?.person_id || match?.apollo_person_id, 255);
+}
+
+function apolloPhone(match) {
+  const phone = arrayValue(match?.phone_numbers)[0] || objectValue(match?.phone_number);
+  if (typeof phone === "string") return { number: clean(phone, 80), type: "", status: "" };
+  return {
+    number: clean(phone?.sanitized_number || phone?.raw_number || phone?.number || match?.phone, 80),
+    type: clean(phone?.type || phone?.type_cd, 64),
+    status: clean(phone?.status || phone?.confidence, 64),
+  };
+}
+
+function apolloMatchFields(matchValue) {
+  const match = objectValue(matchValue);
+  const organization = objectValue(match.organization);
+  const phone = apolloPhone(match);
+  return {
+    firstName: clean(match.first_name, 255),
+    lastName: clean(match.last_name, 255),
+    fullName: clean(match.name || [match.first_name, match.last_name].filter(Boolean).join(" "), 255),
+    jobTitle: clean(match.title, 500),
+    seniority: clean(match.seniority, 100),
+    companyDomain: normalizedDomain(organization.primary_domain || organization.website_url),
+    linkedInUrl: clean(match.linkedin_url, 2048),
+    email: clean(match.email, 320),
+    emailStatus: clean(match.email_status, 64),
+    phone: phone.number,
+    phoneType: phone.type,
+    phoneStatus: phone.status,
+    matchConfidence: clean(match.match_confidence || (apolloMatchId(match) ? "high" : "none"), 32).toLowerCase(),
+  };
+}
+
+function acceptableApolloConfidence(confidence, settings) {
+  const value = clean(confidence, 32).toLowerCase();
+  return value === "high" || (value === "medium" && settings.acceptMediumConfidence === true) ||
+    (value === "low" && settings.allowLowConfidenceContact === true);
+}
+
+function acceptableApolloEmail(fields, settings) {
+  const accepted = sourceSettingList(settings.acceptedEmailStatuses, ["verified", "likely to engage"])
+    .map((item) => item.toLowerCase().replaceAll("_", " "));
+  return Boolean(fields.email && acceptableApolloConfidence(fields.matchConfidence, settings) &&
+    accepted.includes(fields.emailStatus.toLowerCase().replaceAll("_", " ")));
+}
+
+function apolloPhoneNeeded(configuration, profile, settings) {
+  const phoneMethods = arrayValue(configuration.communicationMethods)
+    .filter((method) => method.enabled && ["SMS", "WHATSAPP_BUSINESS"].includes(method.channel));
+  if (!phoneMethods.length || profile.prospectPhone || profile.phone) return false;
+  const email = profile.prospectEmail || (acceptableApolloEmail(profile, settings) ? profile.email : "");
+  const emailMethod = arrayValue(configuration.communicationMethods).find((method) => method.enabled && method.channel === "EMAIL");
+  if (email && emailMethod && settings.enrichPhoneEvenWhenEmailAvailable !== true &&
+      phoneMethods.every((method) => Number(emailMethod.priority) < Number(method.priority))) return false;
+  return true;
+}
+
 export class AcquisitionService {
   constructor({ repository, aiProviderService, discoveryProviders, policyEngine, env = process.env, fetchImpl } = {}) {
     this.repository = repository;
@@ -634,16 +894,67 @@ export class AcquisitionService {
         continue;
       }
       try {
-        const found = await provider.searchProspects({ configuration, settings: source.settings, rows });
+        let providerSettings = source.settings || {};
+        if (source.sourceCode === "APOLLO_IO" && providerSettings.preferKnownDomains !== false &&
+            !sourceSettingList(providerSettings.domains || providerSettings.organizationDomains).length &&
+            typeof this.repository.getAcquisitionProspectDomains === "function") {
+          const knownDomains = (await this.repository.getAcquisitionProspectDomains(configuration.id,
+            boundedInteger(providerSettings.domainScopeLimit, 100, 1, 1000))).map(normalizedDomain).filter(Boolean);
+          if (knownDomains.length) providerSettings = { ...providerSettings, domains: [...new Set(knownDomains)] };
+        }
+        const apolloSearchKey = source.sourceCode === "APOLLO_IO" ? `apollo-search:${configuration.id}:${randomUUID()}` : "";
+        if (apolloSearchKey && typeof this.repository.saveApolloUsage === "function") {
+          await this.repository.saveApolloUsage({ acquisitionConfigurationId: configuration.id, requestKey: apolloSearchKey,
+            requestKind: "PEOPLE_SEARCH", requestedCount: 1, status: "REQUESTED" });
+        }
+        let found;
+        try {
+          found = await provider.searchProspects({ configuration, settings: providerSettings, rows });
+          if (apolloSearchKey && typeof this.repository.saveApolloUsage === "function") {
+            await this.repository.saveApolloUsage({ acquisitionConfigurationId: configuration.id, requestKey: apolloSearchKey,
+              requestKind: "PEOPLE_SEARCH", requestedCount: 1, successCount: 1, status: "COMPLETED" });
+          }
+        } catch (error) {
+          if (apolloSearchKey && typeof this.repository.saveApolloUsage === "function") {
+            await this.repository.saveApolloUsage({ acquisitionConfigurationId: configuration.id, requestKey: apolloSearchKey,
+              requestKind: "PEOPLE_SEARCH", requestedCount: 1, status: error?.statusCode === 429 ? "RATE_LIMITED" : "FAILED",
+              errorCode: error?.apolloCode || "", errorMessage: clean(error?.message || error, 1000) });
+          }
+          throw error;
+        }
         let persisted = 0;
         let belowMinimum = 0;
         for (const candidate of found) {
-          const detailed = await provider.getProspectDetails(candidate, { configuration, settings: source.settings });
-          const enriched = await provider.enrichProspect(detailed, { configuration, settings: source.settings });
+          const detailed = await provider.getProspectDetails(candidate, { configuration, settings: providerSettings });
+          const enriched = await provider.enrichProspect(detailed, { configuration, settings: providerSettings });
           const prospect = provider.normalizeProspect(enriched, { configuration });
           if (!provider.validateProspect(prospect)) continue;
           if (prospect.fitScore < minimumFit) { belowMinimum += 1; continue; }
-          const saved = await this.repository.upsertAcquisitionProspect(prospect);
+          const apolloMetadata = source.sourceCode === "APOLLO_IO" ? objectValue(prospect.metadata) : null;
+          const existing = apolloMetadata && typeof this.repository.findApolloProspectMatch === "function"
+            ? await this.repository.findApolloProspectMatch({
+              acquisitionConfigurationId: configuration.id,
+              apolloPersonId: apolloMetadata.apolloPersonId,
+              linkedInUrl: apolloMetadata.linkedInUrl,
+              fullName: apolloMetadata.fullName,
+              companyDomain: apolloMetadata.companyDomain,
+            }) : null;
+          const saved = existing || await this.repository.upsertAcquisitionProspect(prospect);
+          if (saved && apolloMetadata?.apolloPersonId && typeof this.repository.upsertApolloProfileDiscovery === "function") {
+            await this.repository.upsertApolloProfileDiscovery({
+              prospectId: saved.id,
+              acquisitionConfigurationId: configuration.id,
+              apolloPersonId: apolloMetadata.apolloPersonId,
+              apolloOrganizationId: apolloMetadata.apolloOrganizationId,
+              firstName: apolloMetadata.firstName,
+              lastName: apolloMetadata.lastName,
+              fullName: apolloMetadata.fullName,
+              jobTitle: apolloMetadata.jobTitle,
+              seniority: apolloMetadata.seniority,
+              companyDomain: apolloMetadata.companyDomain,
+              linkedInUrl: apolloMetadata.linkedInUrl,
+            });
+          }
           if (saved?.inserted !== false) {
             persisted += 1;
             remaining -= 1;
@@ -656,6 +967,239 @@ export class AcquisitionService {
       }
     }
     return { configurationId, remainingDailyLimit: remaining, results };
+  }
+
+  async apolloUsage(configurationIdValue) {
+    const configurationId = optionalPositiveId(configurationIdValue);
+    if (!configurationId) throw validationError("An acquisition configuration ID is required.");
+    const configuration = (await this.configurations(configurationId))[0];
+    if (!configuration) throw validationError("Acquisition configuration was not found.", 404);
+    const source = apolloSource(configuration);
+    const usage = typeof this.repository.getApolloUsage === "function"
+      ? await this.repository.getApolloUsage(configurationId) : { summary: {}, requests: [] };
+    return { ...usage, limits: {
+      dailyCreditLimit: boundedInteger(source?.settings?.dailyCreditLimit, 0, 0, 1_000_000),
+      monthlyCreditLimit: boundedInteger(source?.settings?.monthlyCreditLimit, 0, 0, 10_000_000),
+    } };
+  }
+
+  async apolloStatus(configurationIdValue, { test = false } = {}) {
+    const configurationId = optionalPositiveId(configurationIdValue);
+    const configuration = configurationId ? (await this.configurations(configurationId))[0] : null;
+    if (configurationId && !configuration) throw validationError("Acquisition configuration was not found.", 404);
+    const source = configuration ? apolloSource(configuration) : null;
+    const provider = this.discoveryProviders.get("APOLLO_IO");
+    const status = {
+      configured: Boolean(provider?.apiKey),
+      enabled: Boolean(source?.enabled),
+      peopleSearchEnabled: source?.settings?.peopleSearchEnabled !== false,
+      standardEnrichmentEnabled: source?.settings?.standardPeopleEnrichmentEnabled === true,
+      polling: true,
+    };
+    if (test) return { ...status, ...(await provider.testConnection()) };
+    return status;
+  }
+
+  async apolloBudgetAllows(configuration, estimatedCredits) {
+    const settings = apolloSource(configuration)?.settings || {};
+    const dailyLimit = boundedInteger(settings.dailyCreditLimit, 0, 0, 1_000_000);
+    const monthlyLimit = boundedInteger(settings.monthlyCreditLimit, 0, 0, 10_000_000);
+    if (!dailyLimit || !monthlyLimit) return false;
+    const usage = typeof this.repository.getApolloUsage === "function"
+      ? await this.repository.getApolloUsage(configuration.id, 1) : { summary: {} };
+    const daily = Number(usage.summary?.dailyCreditsConsumed || 0) + Number(usage.summary?.dailyEstimatedCredits || 0);
+    const monthly = Number(usage.summary?.monthlyCreditsConsumed || 0) + Number(usage.summary?.monthlyEstimatedCredits || 0);
+    return daily + estimatedCredits <= dailyLimit && monthly + estimatedCredits <= monthlyLimit;
+  }
+
+  async applyApolloMatch(configuration, profile, match, kind) {
+    const settings = apolloSource(configuration)?.settings || {};
+    const fields = apolloMatchFields(match);
+    const matched = acceptableApolloConfidence(fields.matchConfidence, settings);
+    const acceptedEmail = acceptableApolloEmail(fields, settings);
+    const acceptedPhone = Boolean(fields.phone && matched);
+    return this.repository.updateApolloProfile({
+      prospectId: profile.prospectId,
+      ...fields,
+      persistEmail: acceptedEmail,
+      persistPhone: acceptedPhone,
+      enrichmentStatus: kind.startsWith("WATERFALL") ? "WATERFALL_COMPLETED" : matched ? "STANDARD_COMPLETED" : "NO_DATA",
+      pendingRequestKind: null,
+      apolloRequestId: null,
+      pendingUsageKey: null,
+      lastError: null,
+      standardEnrichmentUsed: kind === "STANDARD" ? true : undefined,
+      waterfallEmailUsed: kind === "WATERFALL_EMAIL" ? true : undefined,
+      phoneEnrichmentUsed: kind === "PHONE" ? true : undefined,
+      waterfallPhoneUsed: kind === "WATERFALL_PHONE" ? true : undefined,
+    });
+  }
+
+  async runApolloBatch(configuration, profiles, kind, estimatedPerPerson) {
+    if (!profiles.length) return { requested: 0, pending: 0, completed: 0, budgetBlocked: 0 };
+    const provider = this.discoveryProviders.get("APOLLO_IO");
+    const batch = profiles.slice(0, 10);
+    const estimatedCredits = batch.length * estimatedPerPerson;
+    const settings = apolloSource(configuration)?.settings || {};
+    const requestKey = `apollo-enrichment:${configuration.id}:${kind}:${randomUUID()}`;
+    const reservation = typeof this.repository.reserveApolloUsage === "function"
+      ? await this.repository.reserveApolloUsage({
+        acquisitionConfigurationId: configuration.id, requestKey, requestKind: kind,
+        requestedCount: batch.length, estimatedCredits,
+        dailyCreditLimit: boundedInteger(settings.dailyCreditLimit, 0, 0, 1_000_000),
+        monthlyCreditLimit: boundedInteger(settings.monthlyCreditLimit, 0, 0, 10_000_000),
+      })
+      : { allowed: await this.apolloBudgetAllows(configuration, estimatedCredits) };
+    if (!reservation.allowed) {
+      for (const profile of batch) await this.repository.updateApolloProfile({
+        prospectId: profile.prospectId, enrichmentStatus: "BUDGET_LIMIT_REACHED",
+        lastError: "Apollo daily or monthly credit limit would be exceeded.",
+      });
+      return { requested: 0, pending: 0, completed: 0, budgetBlocked: batch.length };
+    }
+    if (typeof this.repository.reserveApolloUsage !== "function") {
+      await this.repository.saveApolloUsage({ acquisitionConfigurationId: configuration.id, requestKey, requestKind: kind,
+        requestedCount: batch.length, estimatedCredits, status: "REQUESTED" });
+    }
+    try {
+      const response = await provider.enrichPeople(batch, kind);
+      const requestId = apolloResponseRequestId(response);
+      if (kind !== "STANDARD" && requestId) {
+        const nextPollAt = new Date(Date.now() + 10_000).toISOString();
+        for (const profile of batch) await this.repository.updateApolloProfile({
+          prospectId: profile.prospectId,
+          enrichmentStatus: kind.startsWith("WATERFALL") ? "WATERFALL_PENDING" : "PENDING",
+          pendingRequestKind: kind,
+          apolloRequestId: requestId,
+          pendingUsageKey: requestKey,
+          nextPollAt,
+          standardEnrichmentUsed: kind === "STANDARD" ? true : undefined,
+          waterfallEmailUsed: kind === "WATERFALL_EMAIL" ? true : undefined,
+          phoneEnrichmentUsed: kind === "PHONE" ? true : undefined,
+          waterfallPhoneUsed: kind === "WATERFALL_PHONE" ? true : undefined,
+        });
+        await this.repository.saveApolloUsage({ acquisitionConfigurationId: configuration.id, requestKey, requestKind: kind,
+          apolloRequestId: requestId, requestedCount: batch.length, estimatedCredits, status: "PENDING" });
+        return { requested: batch.length, pending: batch.length, completed: 0, budgetBlocked: 0 };
+      }
+      const matches = apolloResponseMatches(response);
+      for (let index = 0; index < batch.length; index += 1) {
+        const profile = batch[index];
+        const match = matches.find((item) => apolloMatchId(item) === profile.apolloPersonId) ?? matches[index] ?? null;
+        await this.applyApolloMatch(configuration, profile, match, kind);
+      }
+      const credits = Number(response.credits_consumed || 0);
+      await this.repository.saveApolloUsage({ acquisitionConfigurationId: configuration.id, requestKey, requestKind: kind,
+        requestedCount: batch.length, successCount: Number(response.unique_enriched_records || matches.filter(Boolean).length),
+        creditsConsumed: credits, estimatedCredits: 0, status: "COMPLETED" });
+      return { requested: batch.length, pending: 0, completed: batch.length, budgetBlocked: 0 };
+    } catch (error) {
+      const status = error?.statusCode === 429 ? "RATE_LIMITED" : "FAILED";
+      await this.repository.saveApolloUsage({ acquisitionConfigurationId: configuration.id, requestKey, requestKind: kind,
+        requestedCount: batch.length, estimatedCredits: 0, status, errorCode: error?.apolloCode || "",
+        errorMessage: clean(error?.message || error, 1000) });
+      for (const profile of batch) await this.repository.updateApolloProfile({
+        prospectId: profile.prospectId, enrichmentStatus: status, lastError: clean(error?.message || error, 1000),
+        standardEnrichmentUsed: kind === "STANDARD" ? true : undefined,
+        waterfallEmailUsed: kind === "WATERFALL_EMAIL" ? true : undefined,
+        phoneEnrichmentUsed: kind === "PHONE" ? true : undefined,
+        waterfallPhoneUsed: kind === "WATERFALL_PHONE" ? true : undefined,
+      });
+      return { requested: batch.length, pending: 0, completed: 0, budgetBlocked: 0, error: clean(error?.message || error, 1000) };
+    }
+  }
+
+  async pollApolloEnrichments(configuration) {
+    const provider = this.discoveryProviders.get("APOLLO_IO");
+    const pending = await this.repository.getApolloProfiles({ configurationId: configuration.id, pendingOnly: true, limit: 100 });
+    const groups = new Map();
+    for (const profile of pending) {
+      const key = `${profile.apolloRequestId}:${profile.pendingRequestKind}`;
+      if (!groups.has(key)) groups.set(key, []);
+      groups.get(key).push(profile);
+    }
+    const result = { polled: 0, completed: 0, pending: 0, errors: [] };
+    for (const profiles of groups.values()) {
+      const first = profiles[0];
+      result.polled += 1;
+      try {
+        const response = await provider.pollEnrichment(first.apolloRequestId);
+        if (response.pending) {
+          const nextPollAt = new Date(Date.now() + Math.max(5, response.retryAfterSeconds || 10) * 1000).toISOString();
+          for (const profile of profiles) await this.repository.updateApolloProfile({
+            prospectId: profile.prospectId, enrichmentStatus: profile.enrichmentStatus,
+            pendingRequestKind: profile.pendingRequestKind, apolloRequestId: profile.apolloRequestId,
+            pendingUsageKey: profile.pendingUsageKey, nextPollAt,
+          });
+          result.pending += profiles.length;
+          continue;
+        }
+        const matches = apolloResponseMatches(response.body);
+        for (let index = 0; index < profiles.length; index += 1) {
+          const profile = profiles[index];
+          const match = matches.find((item) => apolloMatchId(item) === profile.apolloPersonId) ?? matches[index] ?? null;
+          await this.applyApolloMatch(configuration, profile, match, profile.pendingRequestKind);
+        }
+        const root = objectValue(response.body.webhook_result || response.body);
+        await this.repository.saveApolloUsage({ acquisitionConfigurationId: configuration.id,
+          requestKey: first.pendingUsageKey || `apollo-poll:${first.apolloRequestId}`,
+          requestKind: first.pendingRequestKind, apolloRequestId: first.apolloRequestId,
+          requestedCount: profiles.length, successCount: Number(root.unique_enriched_records || matches.filter(Boolean).length),
+          creditsConsumed: Number(root.credits_consumed || 0), estimatedCredits: 0, status: "COMPLETED" });
+        result.completed += profiles.length;
+      } catch (error) {
+        result.errors.push({ requestId: first.apolloRequestId, error: clean(error?.message || error, 500) });
+        for (const profile of profiles) await this.repository.updateApolloProfile({ prospectId: profile.prospectId,
+          enrichmentStatus: error?.statusCode === 429 ? "RATE_LIMITED" : "FAILED", lastError: clean(error?.message || error, 1000) });
+      }
+    }
+    return result;
+  }
+
+  async enrichApollo(configurationIdValue) {
+    const configurationId = optionalPositiveId(configurationIdValue);
+    const configuration = (await this.configurations(configurationId))[0];
+    if (!configuration) throw validationError("Acquisition configuration was not found.", 404);
+    const source = apolloSource(configuration);
+    if (!source?.enabled) return { skipped: "Apollo is disabled for this acquisition configuration." };
+    if (typeof this.repository.getApolloProfiles !== "function") return { skipped: "Apollo enrichment schema is not installed." };
+    const settings = source.settings || {};
+    const result = { polling: await this.pollApolloEnrichments(configuration), stages: {} };
+    let profiles = await this.repository.getApolloProfiles({ configurationId, limit: 1000 });
+    const safe = (profile) => !profile.optedOut && profile.prospectStatus !== "DO_NOT_CONTACT";
+    if (settings.standardPeopleEnrichmentEnabled === true) {
+      const threshold = boundedInteger(settings.minimumFitScoreForStandardEnrichment, 60, 0, 100);
+      const candidates = profiles.filter((profile) => safe(profile) && !profile.standardEnrichmentUsed &&
+        profile.fitScore >= threshold && !profile.apolloRequestId).slice(0, 10);
+      result.stages.standard = await this.runApolloBatch(configuration, candidates, "STANDARD", 1);
+    }
+    profiles = await this.repository.getApolloProfiles({ configurationId, limit: 1000 });
+    if (settings.waterfallEmailEnabled === true) {
+      const threshold = boundedInteger(settings.minimumFitScoreForWaterfallEmail, 80, 0, 100);
+      const candidates = profiles.filter((profile) => safe(profile) && profile.standardEnrichmentUsed &&
+        !profile.waterfallEmailUsed && !profile.prospectEmail && !acceptableApolloEmail(profile, settings) &&
+        profile.fitScore >= threshold && !profile.apolloRequestId).slice(0, 10);
+      result.stages.waterfallEmail = await this.runApolloBatch(configuration, candidates, "WATERFALL_EMAIL",
+        Math.max(1, Number(settings.estimatedWaterfallEmailCredits || 1)));
+    }
+    profiles = await this.repository.getApolloProfiles({ configurationId, limit: 1000 });
+    if (settings.phoneEnrichmentEnabled === true) {
+      const threshold = boundedInteger(settings.minimumFitScoreForPhone, 80, 0, 100);
+      const candidates = profiles.filter((profile) => safe(profile) && profile.standardEnrichmentUsed &&
+        !profile.phoneEnrichmentUsed && profile.fitScore >= threshold && !profile.apolloRequestId &&
+        apolloPhoneNeeded(configuration, profile, settings)).slice(0, 10);
+      result.stages.phone = await this.runApolloBatch(configuration, candidates, "PHONE", 9);
+    }
+    profiles = await this.repository.getApolloProfiles({ configurationId, limit: 1000 });
+    if (settings.waterfallPhoneEnabled === true) {
+      const threshold = boundedInteger(settings.minimumFitScoreForPhone, 80, 0, 100);
+      const candidates = profiles.filter((profile) => safe(profile) && profile.phoneEnrichmentUsed &&
+        !profile.waterfallPhoneUsed && !profile.prospectPhone && !profile.phone && profile.fitScore >= threshold &&
+        !profile.apolloRequestId && apolloPhoneNeeded(configuration, profile, settings)).slice(0, 10);
+      result.stages.waterfallPhone = await this.runApolloBatch(configuration, candidates, "WATERFALL_PHONE",
+        Math.max(1, Number(settings.estimatedWaterfallPhoneCredits || 9)));
+    }
+    return result;
   }
 
   async communicationSelection(prospectIdValue) {
@@ -962,6 +1506,8 @@ export class AcquisitionService {
       } catch (error) {
         result.discoveryError = clean(error?.message || error, 1000);
       }
+      try { result.apolloEnrichment = await this.enrichApollo(configuration.id); }
+      catch (error) { result.apolloEnrichmentError = clean(error?.message || error, 1000); }
       try { result.outreach = await this.scheduleOutreach(configuration, { now }); }
       catch (error) { result.outreachError = clean(error?.message || error, 1000); }
       results.push(result);

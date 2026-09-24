@@ -2803,6 +2803,30 @@ export async function createSocialListenerApp({
         return json({ ok: true, definitions: SEARCH_SOURCE_DEFINITIONS, sources: configuration?.searchSources || [] });
       }
 
+      if (request.method === "GET" && url.pathname === "/acquisition/providers/apollo/status") {
+        return json({ ok: true, status: await activeAcquisitionService.apolloStatus(
+          optionalId(url.searchParams.get("configurationId")),
+        ) });
+      }
+
+      if (request.method === "POST" && url.pathname === "/acquisition/providers/apollo/test") {
+        const body = await readJson(request);
+        return json({ ok: true, status: await activeAcquisitionService.apolloStatus(
+          body.configurationId || body.id, { test: true },
+        ) });
+      }
+
+      if (request.method === "GET" && url.pathname === "/acquisition/providers/apollo/usage") {
+        return json({ ok: true, usage: await activeAcquisitionService.apolloUsage(
+          optionalId(url.searchParams.get("configurationId")),
+        ) });
+      }
+
+      if (request.method === "POST" && url.pathname === "/acquisition/providers/apollo/enrich") {
+        const body = await readJson(request);
+        return json({ ok: true, enrichment: await activeAcquisitionService.enrichApollo(body.configurationId || body.id) });
+      }
+
       if (request.method === "GET" && url.pathname === "/acquisition/communication-settings") {
         const configurationId = optionalId(url.searchParams.get("configurationId"));
         const configuration = configurationId ? (await activeAcquisitionService.configurations(configurationId))[0] : null;
