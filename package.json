@@ -21,6 +21,7 @@
     "validate:smarterasp": "node scripts/validate-smarterasp.mjs",
     "security:scan": "node scripts/scan-tracked-secrets.mjs",
     "db:setup:mssql": "node --env-file-if-exists=.env scripts/setup-mssql.mjs",
+    "db:migrate:mssql": "node --env-file-if-exists=.env scripts/apply-mssql-migration.mjs",
     "test:mssql": "node --test tests/mssql-conversion.test.mjs tests/social-sql.test.mjs",
     "lint": "eslint . --ignore-pattern .next",
     "db:test:mssql": "node --env-file-if-exists=.env scripts/test-mssql.mjs"

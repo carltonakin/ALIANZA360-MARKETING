@@ -173,6 +173,73 @@ test("Apollo People Search discovers decision-makers without triggering paid enr
   assert.equal(people[0].phone, undefined);
 });
 
+test("Apollo connection testing reports endpoint authorization separately from valid credentials", async () => {
+  const calls = [];
+  const provider = new ApolloProvider({
+    apiKey: "valid-but-restricted",
+    fetchImpl: async (url) => {
+      const parsed = new URL(url);
+      calls.push(parsed.pathname);
+      if (parsed.pathname === "/api/v1/users/api_profile") {
+        return new Response(JSON.stringify({ user: { email: "owner@example.test" } }), { status: 200 });
+      }
+      return new Response(JSON.stringify({ error: "Your team is not permitted to call this endpoint." }), { status: 403 });
+    },
+  });
+  const status = await provider.testConnection({ settings: { peopleSearchEnabled: true } });
+  assert.equal(status.connected, true);
+  assert.equal(status.searchCapability, "PEOPLE_SEARCH");
+  assert.equal(status.searchAccessAuthorized, false);
+  assert.match(status.searchAccessMessage, /not permitted/i);
+  assert.deepEqual(calls, ["/api/v1/users/api_profile", "/api/v1/mixed_people/api_search"]);
+});
+
+test("Apollo access denial opens a persistent circuit breaker until a successful manual access check", async () => {
+  const config = apolloConfiguration({ peopleSearchEnabled: true });
+  const usage = [];
+  let permitSearch = false;
+  let searchCalls = 0;
+  let sequence = 0;
+  const repository = {
+    getAcquisitionConfigurations: async () => [config],
+    getAcquisitionDiscoveryCountToday: async () => 0,
+    getAcquisitionProspectDomains: async () => [],
+    getApolloUsage: async () => ({ summary: {}, requests: usage }),
+    saveApolloUsage: async (entry) => {
+      const timestamp = new Date(Date.UTC(2026, 8, 25, 0, 0, sequence++)).toISOString();
+      const existing = usage.find((item) => item.requestKey === entry.requestKey);
+      if (existing) Object.assign(existing, entry, { updatedAt: timestamp });
+      else usage.push({ id: sequence, ...entry, createdAt: timestamp, updatedAt: timestamp });
+      return existing || usage.at(-1);
+    },
+  };
+  const provider = new ApolloProvider({ apiKey: "test", fetchImpl: async (url) => {
+    const path = new URL(url).pathname;
+    if (path === "/api/v1/users/api_profile") {
+      return new Response(JSON.stringify({ user: { email: "owner@example.test" } }), { status: 200 });
+    }
+    searchCalls += 1;
+    return permitSearch
+      ? new Response(JSON.stringify({ people: [] }), { status: 200 })
+      : new Response(JSON.stringify({ error: "Your team is not permitted to call this endpoint." }), { status: 403 });
+  } });
+  const service = new AcquisitionService({ repository, aiProviderService: {}, discoveryProviders: new Map([["APOLLO_IO", provider]]) });
+
+  const first = await service.discover(8);
+  assert.match(first.results.find((result) => result.sourceCode === "APOLLO_IO").error, /not permitted/i);
+  assert.equal(usage.find((request) => request.requestKind === "PEOPLE_SEARCH").status, "ACCESS_DENIED");
+
+  const second = await service.discover(8);
+  assert.equal(second.results.find((result) => result.sourceCode === "APOLLO_IO").skipped, true);
+  assert.equal(searchCalls, 1, "scheduled discovery does not retry a permanently denied endpoint");
+
+  permitSearch = true;
+  const retest = await service.apolloStatus(8, { test: true });
+  assert.equal(retest.searchAccessAuthorized, true);
+  await service.discover(8);
+  assert.equal(searchCalls, 3, "one manual access check and the later discovery call are allowed after access is granted");
+});
+
 test("Apollo bulk enrichment keeps standard, waterfall email, and phone requests explicitly separate", async () => {
   const calls = [];
   const provider = new ApolloProvider({ apiKey: "test", fetchImpl: async (url, init) => {
@@ -585,4 +652,13 @@ test("Apollo migration adds provider-specific enrichment and usage state without
   assert.doesNotMatch(sql, /CREATE\s+TABLE\s+dbo\.(?:AIAcquisitionProspects|Leads)\b/i);
   assert.doesNotMatch(sql, /LeadScore_Recalculate|CRMLead_UpsertFromRoutine/);
   assert.doesNotMatch(sql, /WhatsAppNumber\s*=/i, "Apollo phone is never promoted to WhatsApp");
+});
+
+test("Apollo compliance migration classifies endpoint denial and keeps it separate from rate limits", () => {
+  const sql = readFileSync(new URL("../sql/029_apollo_access_compliance.sql", import.meta.url), "utf8");
+  assert.match(sql, /ACCESS_DENIED/);
+  assert.match(sql, /not permitted/);
+  assert.match(sql, /AccessDeniedRequests/);
+  assert.match(sql, /CREATE OR ALTER PROCEDURE dbo\.AIAcquisitionApolloUsage_Get/);
+  assert.doesNotMatch(sql, /LeadScore_Recalculate|WhatsAppNumber\s*=/i);
 });

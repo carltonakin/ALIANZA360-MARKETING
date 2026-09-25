@@ -444,7 +444,8 @@ function ApolloSettingsEditor({ settings, onChange }: { settings: Record<string,
   </div>;
 }
 
-type ApolloStatus = { configured?: boolean; enabled?: boolean; connected?: boolean; account?: string; polling?: boolean; standardEnrichmentEnabled?: boolean };
+type ApolloStatus = { configured?: boolean; enabled?: boolean; connected?: boolean; account?: string; polling?: boolean;
+  standardEnrichmentEnabled?: boolean; searchCapability?: string; searchAccessAuthorized?: boolean | null; searchAccessMessage?: string };
 type ApolloUsage = { limits?: { dailyCreditLimit?: number; monthlyCreditLimit?: number }; summary?: Record<string, number>;
   requests?: Array<{ id: number; requestKind: string; status: string; requestedCount: number; successCount: number; creditsConsumed: number; errorMessage: string; createdAt: string }> };
 
@@ -469,22 +470,25 @@ function ApolloProviderPanel({ configuration, busy, onEnrich }: { configuration:
     setLoading(true); setDetail("");
     try {
       const body = await api<{ status: ApolloStatus }>("providers/apollo/test", { method: "POST", headers: { "content-type": "application/json" }, body: JSON.stringify({ configurationId: configuration.id }) });
-      setStatus(body.status || {}); setDetail("Apollo connection succeeded.");
+      setStatus(body.status || {});
+      setDetail(body.status?.searchAccessAuthorized === false
+        ? body.status.searchAccessMessage || "Apollo credentials are valid, but the configured search endpoint is not permitted for this team."
+        : "Apollo connection and configured search access succeeded.");
     } catch (error) { setDetail(error instanceof Error ? error.message : "Apollo connection failed."); }
     finally { setLoading(false); }
   };
   const summary = usage.summary || {};
   return <section className="panel acquisition-apollo-panel">
-    <div className="panel-head"><div><h3>Apollo provider</h3><p>People Search → Prospect Fit Score → standard enrichment → selective waterfall/phone. Polling handles async results.</p></div><span className={`status ${status.configured ? "registered" : "hot"}`}>{status.configured ? "Credential configured" : "Credential missing"}</span></div>
+    <div className="panel-head"><div><h3>Apollo provider</h3><p>People Search → Prospect Fit Score → standard enrichment → selective waterfall/phone. Polling handles async results.</p></div><span className={`status ${status.configured && status.searchAccessAuthorized !== false ? "registered" : "hot"}`}>{!status.configured ? "Credential missing" : status.searchAccessAuthorized === false ? "Search access denied" : "Credential configured"}</span></div>
     <div className="acquisition-metric-grid">
       <article><p>Daily credits</p><h3>{numberMetric(summary.dailyCreditsConsumed)} / {numberMetric(usage.limits?.dailyCreditLimit)}</h3></article>
       <article><p>Monthly credits</p><h3>{numberMetric(summary.monthlyCreditsConsumed)} / {numberMetric(usage.limits?.monthlyCreditLimit)}</h3></article>
       <article><p>Enrichment requests</p><h3>{numberMetric(summary.requestedCount)}</h3></article>
       <article><p>Successful records</p><h3>{numberMetric(summary.successCount)}</h3></article>
-      <article><p>Failures / rate limits</p><h3>{numberMetric(Number(summary.failedRequests || 0) + Number(summary.rateLimitedRequests || 0))}</h3></article>
+      <article><p>Failures / access / rate limits</p><h3>{numberMetric(Number(summary.failedRequests || 0) + Number(summary.accessDeniedRequests || 0) + Number(summary.rateLimitedRequests || 0))}</h3></article>
     </div>
     <div className="card-actions"><button disabled={busy || loading} onClick={test}>Test Connection</button><button disabled={busy || loading || !status.configured} onClick={onEnrich}>Run Eligible Enrichment</button><button disabled={loading} onClick={() => void load()}>Refresh Usage</button></div>
-    {detail && <p className={`acquisition-alert ${detail.includes("succeeded") ? "success" : "error"}`}>{detail}</p>}
+    {(detail || status.searchAccessMessage) && <p className={`acquisition-alert ${status.searchAccessAuthorized === false || !(detail || "").includes("succeeded") ? "error" : "success"}`}>{detail || status.searchAccessMessage}</p>}
     <details><summary>Recent Apollo requests and errors</summary>{(usage.requests || []).slice(0, 20).map((request) => <p key={request.id}><strong>{humanize(request.requestKind)}</strong> · {humanize(request.status)} · {request.successCount}/{request.requestedCount} records · {request.creditsConsumed} credits{request.errorMessage ? ` · ${request.errorMessage}` : ""}</p>)}</details>
   </section>;
 }

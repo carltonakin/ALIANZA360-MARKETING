@@ -402,6 +402,32 @@ function apolloError(body, responseText, status) {
     `Apollo.io returned HTTP ${status}.`;
 }
 
+function apolloSearchCapability(settings = {}) {
+  return settings.peopleSearchEnabled === false && settings.companySearchEnabled === true
+    ? { code: "COMPANY_SEARCH", label: "Company Search" }
+    : { code: "PEOPLE_SEARCH", label: "People Search" };
+}
+
+function apolloAccessDenied(error) {
+  return error?.statusCode === 401 || error?.statusCode === 403;
+}
+
+function latestApolloAccessResult(requests, capabilityCode) {
+  const kinds = new Set([capabilityCode, `${capabilityCode}_ACCESS_CHECK`]);
+  const relevant = arrayValue(requests).map((request, index) => ({
+    request,
+    index,
+    timestamp: Math.max(
+      Number(new Date(request?.updatedAt || 0)) || 0,
+      Number(new Date(request?.createdAt || 0)) || 0,
+    ),
+    id: Number(request?.id || 0),
+  })).filter(({ request }) => kinds.has(clean(request?.requestKind, 32)) &&
+    ["ACCESS_DENIED", "COMPLETED"].includes(clean(request?.status, 32)));
+  relevant.sort((left, right) => left.timestamp - right.timestamp || left.id - right.id || left.index - right.index);
+  return relevant.at(-1)?.request || null;
+}
+
 function apolloLocation(value) {
   return [value?.city, value?.state, value?.country].map((item) => clean(item, 255)).filter(Boolean).join(", ");
 }
@@ -634,13 +660,36 @@ export class ApolloProvider extends ProspectDiscoveryProvider {
     }
   }
 
-  async testConnection() {
+  async testSearchAccess(settings = {}) {
+    const capability = apolloSearchCapability(settings);
+    const url = new URL(capability.code === "COMPANY_SEARCH"
+      ? "https://api.apollo.io/api/v1/mixed_companies/search"
+      : "https://api.apollo.io/api/v1/mixed_people/api_search");
+    url.searchParams.append("q_organization_domains_list[]", "example.invalid");
+    url.searchParams.set("page", "1");
+    url.searchParams.set("per_page", "1");
+    try {
+      await this.request(url, { method: "POST" }, { attempts: 1 });
+      return { searchCapability: capability.code, searchAccessAuthorized: true, searchAccessMessage: "" };
+    } catch (error) {
+      if (!apolloAccessDenied(error)) throw error;
+      return {
+        searchCapability: capability.code,
+        searchAccessAuthorized: false,
+        searchAccessMessage: `${capability.label} is not permitted for this Apollo team/API key. Keep this source disabled until Apollo grants endpoint access.`,
+      };
+    }
+  }
+
+  async testConnection({ settings = {} } = {}) {
     const { body } = await this.request("https://api.apollo.io/api/v1/users/api_profile?include_credit_usage=true", { method: "GET" }, { attempts: 1 });
     const profile = objectValue(body?.user || body?.profile || body);
+    const access = await this.testSearchAccess(settings);
     return {
       connected: true,
       account: clean(profile?.email || profile?.name, 320) || "Apollo API",
       creditUsageAvailable: Boolean(body?.credit_usage || profile?.credit_usage || body?.team_credit_usage),
+      ...access,
     };
   }
 }
@@ -903,22 +952,38 @@ export class AcquisitionService {
             boundedInteger(providerSettings.domainScopeLimit, 100, 1, 1000))).map(normalizedDomain).filter(Boolean);
           if (knownDomains.length) providerSettings = { ...providerSettings, domains: [...new Set(knownDomains)] };
         }
-        const apolloSearchKey = source.sourceCode === "APOLLO_IO" ? `apollo-search:${configuration.id}:${randomUUID()}` : "";
+        const apolloCapability = source.sourceCode === "APOLLO_IO" ? apolloSearchCapability(providerSettings) : null;
+        if (apolloCapability && typeof this.repository.getApolloUsage === "function") {
+          const usage = await this.repository.getApolloUsage(configuration.id, 100);
+          const access = latestApolloAccessResult(usage.requests, apolloCapability.code);
+          if (access?.status === "ACCESS_DENIED") {
+            results.push({
+              sourceCode: source.sourceCode,
+              discovered: 0,
+              skipped: true,
+              reason: `Apollo ${apolloCapability.label} access is blocked for this team/API key. Use Test Connection only after Apollo grants access.`,
+            });
+            continue;
+          }
+        }
+        const apolloSearchKey = apolloCapability ? `apollo-search:${configuration.id}:${randomUUID()}` : "";
+        const apolloRequestKind = apolloCapability?.code || "";
         if (apolloSearchKey && typeof this.repository.saveApolloUsage === "function") {
           await this.repository.saveApolloUsage({ acquisitionConfigurationId: configuration.id, requestKey: apolloSearchKey,
-            requestKind: "PEOPLE_SEARCH", requestedCount: 1, status: "REQUESTED" });
+            requestKind: apolloRequestKind, requestedCount: 1, status: "REQUESTED" });
         }
         let found;
         try {
           found = await provider.searchProspects({ configuration, settings: providerSettings, rows });
           if (apolloSearchKey && typeof this.repository.saveApolloUsage === "function") {
             await this.repository.saveApolloUsage({ acquisitionConfigurationId: configuration.id, requestKey: apolloSearchKey,
-              requestKind: "PEOPLE_SEARCH", requestedCount: 1, successCount: 1, status: "COMPLETED" });
+              requestKind: apolloRequestKind, requestedCount: 1, successCount: 1, status: "COMPLETED" });
           }
         } catch (error) {
           if (apolloSearchKey && typeof this.repository.saveApolloUsage === "function") {
             await this.repository.saveApolloUsage({ acquisitionConfigurationId: configuration.id, requestKey: apolloSearchKey,
-              requestKind: "PEOPLE_SEARCH", requestedCount: 1, status: error?.statusCode === 429 ? "RATE_LIMITED" : "FAILED",
+              requestKind: apolloRequestKind, requestedCount: 1,
+              status: apolloAccessDenied(error) ? "ACCESS_DENIED" : error?.statusCode === 429 ? "RATE_LIMITED" : "FAILED",
               errorCode: error?.apolloCode || "", errorMessage: clean(error?.message || error, 1000) });
           }
           throw error;
@@ -990,14 +1055,37 @@ export class AcquisitionService {
     if (configurationId && !configuration) throw validationError("Acquisition configuration was not found.", 404);
     const source = configuration ? apolloSource(configuration) : null;
     const provider = this.discoveryProviders.get("APOLLO_IO");
+    const capability = apolloSearchCapability(source?.settings || {});
+    const usage = configurationId && typeof this.repository.getApolloUsage === "function"
+      ? await this.repository.getApolloUsage(configurationId, 100) : { requests: [] };
+    const latestAccess = latestApolloAccessResult(usage.requests, capability.code);
     const status = {
       configured: Boolean(provider?.apiKey),
       enabled: Boolean(source?.enabled),
       peopleSearchEnabled: source?.settings?.peopleSearchEnabled !== false,
       standardEnrichmentEnabled: source?.settings?.standardPeopleEnrichmentEnabled === true,
       polling: true,
+      searchCapability: capability.code,
+      searchAccessAuthorized: latestAccess ? latestAccess.status === "COMPLETED" : null,
+      searchAccessMessage: latestAccess?.status === "ACCESS_DENIED"
+        ? `${capability.label} is not permitted for this Apollo team/API key. Keep this source disabled until Apollo grants endpoint access.` : "",
     };
-    if (test) return { ...status, ...(await provider.testConnection()) };
+    if (test) {
+      const tested = await provider.testConnection({ settings: source?.settings || {} });
+      if (configurationId && typeof this.repository.saveApolloUsage === "function") {
+        await this.repository.saveApolloUsage({
+          acquisitionConfigurationId: configurationId,
+          requestKey: `apollo-access-check:${configurationId}:${randomUUID()}`,
+          requestKind: `${tested.searchCapability || capability.code}_ACCESS_CHECK`,
+          requestedCount: 1,
+          successCount: tested.searchAccessAuthorized ? 1 : 0,
+          status: tested.searchAccessAuthorized ? "COMPLETED" : "ACCESS_DENIED",
+          errorCode: tested.searchAccessAuthorized ? "" : "ENDPOINT_NOT_PERMITTED",
+          errorMessage: tested.searchAccessMessage || "",
+        });
+      }
+      return { ...status, ...tested };
+    }
     return status;
   }
 

@@ -2317,6 +2317,7 @@ export class SqlServerRepository {
         successCount: Number(value.SuccessCount || 0),
         failedRequests: Number(value.FailedRequests || 0),
         rateLimitedRequests: Number(value.RateLimitedRequests || 0),
+        accessDeniedRequests: Number(value.AccessDeniedRequests || 0),
       },
       requests: rows.map(mapApolloUsage),
     };

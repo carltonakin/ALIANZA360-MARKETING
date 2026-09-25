@@ -43,6 +43,8 @@ Async phone and waterfall results use Apollo polling rather than a public webhoo
 
 Paid enrichment requires a positive daily and monthly credit limit. A zero limit is an intentional hard stop. Usage records include People Search, standard enrichment, waterfall email, native phone, waterfall phone, attempts, successes, provider-reported credits, temporary reservations, failures, and rate limits. The Search Sources screen provides connection testing, local usage/error history, and a manual eligible-enrichment action without exposing the API key.
 
+Apollo endpoint authorization is treated as a separate, permanent condition rather than a transient failure. A `401` or `403` from People Search or Company Search is recorded as `ACCESS_DENIED`; later scheduled acquisition ticks skip that endpoint instead of retrying it. **Test Connection** validates both the API credential and the configured search endpoint with a one-result, zero-credit access check. A successful manual test after Apollo grants access clears the circuit breaker. The CRM never falls back to a different Apollo endpoint to bypass a denied permission.
+
 Prospect identity is SHA-256 over `source + externalSourceId` when a stable external ID exists. Otherwise it uses normalized business name/domain/email/phone/location. MSSQL enforces uniqueness for both the configuration identity and non-null source/external ID.
 
 ## Communication and conversation policy
