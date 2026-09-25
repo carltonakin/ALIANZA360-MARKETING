@@ -207,6 +207,8 @@ BEGIN
       PhoneSource=CASE WHEN @Phone IS NOT NULL THEN N'APOLLO_IO' ELSE PhoneSource END,
       PhoneEnrichedAt=CASE WHEN @Phone IS NOT NULL THEN SYSUTCDATETIME() ELSE PhoneEnrichedAt END,
       MatchConfidence=COALESCE(@MatchConfidence,MatchConfidence),EnrichmentStatus=@EnrichmentStatus,
+      EnrichmentSource=CASE WHEN @Email IS NOT NULL OR @Phone IS NOT NULL OR @StandardEnrichmentUsed=1 OR
+        @WaterfallEmailUsed=1 OR @PhoneEnrichmentUsed=1 OR @WaterfallPhoneUsed=1 THEN N'APOLLO_IO' ELSE EnrichmentSource END,
       PendingRequestKind=@PendingRequestKind,ApolloRequestId=@ApolloRequestId,PendingUsageKey=@PendingUsageKey,
       NextPollAt=@NextPollAt,LastError=@LastError,
       StandardEnrichmentUsed=COALESCE(@StandardEnrichmentUsed,StandardEnrichmentUsed),

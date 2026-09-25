@@ -579,6 +579,8 @@ test("Apollo migration adds provider-specific enrichment and usage state without
   assert.match(sql, /UNIQUE \(AIAcquisitionConfigurationId, ApolloPersonId\)/);
   assert.match(sql, /ApolloRequestId NVARCHAR\(64\)/);
   assert.match(sql, /PendingUsageKey/);
+  assert.match(sql, /AIAcquisitionApolloUsage_Reserve/);
+  assert.match(sql, /WITH \(UPDLOCK,HOLDLOCK\)/);
   assert.match(sql, /AIAcquisitionProspectContacts/);
   assert.doesNotMatch(sql, /CREATE\s+TABLE\s+dbo\.(?:AIAcquisitionProspects|Leads)\b/i);
   assert.doesNotMatch(sql, /LeadScore_Recalculate|CRMLead_UpsertFromRoutine/);

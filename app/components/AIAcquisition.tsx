@@ -412,6 +412,7 @@ function ConfigurationView({ configurations, editing, setEditing, providers, bus
 function ApolloSettingsEditor({ settings, onChange }: { settings: Record<string, unknown>; onChange: (settings: Record<string, unknown>) => void }) {
   const set = (name: string, value: unknown) => onChange({ ...settings, [name]: value });
   const list = (name: string) => Array.isArray(settings[name]) ? (settings[name] as unknown[]).map(String).join("\n") : String(settings[name] || "");
+  const setList = (name: string, value: string) => set(name, value.split("\n").map((item) => item.trim()).filter(Boolean));
   const toggle = (name: string, label: string) => <label className="acquisition-checkbox"><input type="checkbox" checked={settings[name] === true} onChange={(event) => set(name, event.target.checked)} /> {label}</label>;
   const number = (name: string, label: string, maximum = 100) => <label>{label}<input type="number" min="0" max={maximum} value={Number(settings[name] || 0)} onChange={(event) => set(name, Number(event.target.value))} /></label>;
   return <div className="apollo-settings-grid">
@@ -423,14 +424,22 @@ function ApolloSettingsEditor({ settings, onChange }: { settings: Record<string,
     {toggle("phoneEnrichmentEnabled", "Selective Phone Enrichment")}
     {toggle("waterfallPhoneEnabled", "Selective Waterfall Phone")}
     {toggle("preferKnownDomains", "Prefer domains from existing directory prospects")}
+    {toggle("acceptMediumConfidence", "Accept medium-confidence matches")}
     {number("minimumFitScoreForStandardEnrichment", "Minimum fit for standard enrichment")}
     {number("minimumFitScoreForWaterfallEmail", "Minimum fit for waterfall email")}
     {number("minimumFitScoreForPhone", "Minimum fit for phone")}
     {number("dailyCreditLimit", "Daily credit limit", 1_000_000)}
     {number("monthlyCreditLimit", "Monthly credit limit", 10_000_000)}
     {number("resultLimit", "People Search result limit", 100)}
-    <label className="wide">Decision-maker titles<textarea value={list("decisionMakerTitles")} onChange={(event) => set("decisionMakerTitles", event.target.value.split("\n").map((value) => value.trim()).filter(Boolean))} /></label>
-    <label className="wide">Seniorities<textarea value={list("seniorities")} onChange={(event) => set("seniorities", event.target.value.split("\n").map((value) => value.trim()).filter(Boolean))} /></label>
+    <label className="wide">Decision-maker titles<textarea value={list("decisionMakerTitles")} onChange={(event) => setList("decisionMakerTitles", event.target.value)} /></label>
+    <label className="wide">Seniorities<textarea value={list("seniorities")} onChange={(event) => setList("seniorities", event.target.value)} /></label>
+    <label>Organization domains<textarea value={list("organizationDomains")} placeholder="example.com" onChange={(event) => setList("organizationDomains", event.target.value)} /></label>
+    <label>Organization locations<textarea value={list("organizationLocations")} placeholder="Miami, Florida" onChange={(event) => setList("organizationLocations", event.target.value)} /></label>
+    <label>Person locations<textarea value={list("personLocations")} placeholder="Florida" onChange={(event) => setList("personLocations", event.target.value)} /></label>
+    <label>Employee ranges<textarea value={list("employeeRanges")} placeholder="1,10" onChange={(event) => setList("employeeRanges", event.target.value)} /></label>
+    <label>Organization IDs<textarea value={list("organizationIds")} onChange={(event) => setList("organizationIds", event.target.value)} /></label>
+    <label>Technology UIDs<textarea value={list("technologyUids")} placeholder="salesforce" onChange={(event) => setList("technologyUids", event.target.value)} /></label>
+    <label className="wide">Excluded domains<textarea value={list("excludedDomains")} onChange={(event) => setList("excludedDomains", event.target.value)} /></label>
     <p className="wide">A limit of 0 keeps all paid enrichment off. Apollo phone results are stored as Phone only and never become WhatsApp consent.</p>
   </div>;
 }

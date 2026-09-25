@@ -120,9 +120,9 @@ Existing SQL, service-auth, channel-encryption, AI-provider-encryption, Meta, em
 
 1. Take and verify a fresh backup of the production MSSQL database.
 2. Set `APOLLO_API_KEY` as a server-side SmarterASP application variable; do not send it through chat, store it in source control, or prefix it with `NEXT_PUBLIC_`.
-3. Publish the application files.
+3. Stop the application/acquisition timer, then publish the application files without starting the new build yet.
 4. Run `npm run db:setup:mssql` so migration 028 is applied after the existing numbered migrations.
-5. Restart the application and use **AI Acquisition -> Search Sources -> Apollo -> Test Connection**.
+5. Start the application and use **AI Acquisition -> Search Sources -> Apollo -> Test Connection**.
 6. Enable Apollo People Search in the acquisition configuration. Configure target filters/titles, enable only the desired enrichment stages, and set explicit non-zero daily/monthly credit limits.
 7. Run a controlled discovery. Confirm decision-maker names and Apollo IDs exist before running **Run Eligible Enrichment**.
 8. Verify one accepted business email, one intentionally eligible async result, usage totals, no duplicate contact records, and that any phone remains separate from WhatsApp.

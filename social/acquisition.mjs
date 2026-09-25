@@ -753,6 +753,7 @@ function apolloSource(configuration) {
 }
 
 function apolloResponseMatches(value) {
+  if (Array.isArray(value)) return value;
   const body = objectValue(value);
   const root = objectValue(body.webhook_result || body.result || body.data || body);
   if (Array.isArray(root.matches)) return root.matches;
