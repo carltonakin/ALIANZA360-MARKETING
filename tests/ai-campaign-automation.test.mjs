@@ -13,6 +13,7 @@ import {
   campaignDate,
   normalizeAiCampaignInput,
 } from "../social/ai-campaign-automation.mjs";
+import { normalizeBufferCampaignInput } from "../social/buffer-campaigns.mjs";
 import { createSocialListenerApp } from "../social/server.mjs";
 import { AIImageService, campaignMediaLibrary, selectCampaignMedia } from "../social/ai-campaign-media.mjs";
 
@@ -40,6 +41,70 @@ function generatedValue(platform = "instagram") {
     video_prompt: "A concise product walkthrough with clean transitions",
     platform,
     recommended_publish_time: "17:30",
+  };
+}
+
+const publishingModes = ["DRAFT", "PRODUCTION"];
+const mediaStrategyCases = [
+  { value: "TEXT_ONLY", storedMediaAssetIds: [], imageProviderId: null, mediaType: null, postType: "POST" },
+  { value: "AI_IMAGE_ONLY", storedMediaAssetIds: [], imageProviderId: 1, mediaType: "image", postType: "POST" },
+  { value: "STORED_IMAGE_ONLY", storedMediaAssetIds: ["asset-image"], imageProviderId: null, mediaType: "image", postType: "POST" },
+  { value: "MIXED_IMAGE", storedMediaAssetIds: ["asset-image"], imageProviderId: null, mediaType: "image", postType: "POST" },
+  { value: "STORED_VIDEO_ONLY", storedMediaAssetIds: ["asset-video"], imageProviderId: null, mediaType: "video", postType: "REEL" },
+  { value: "AI_VISUAL_CONCEPTS_WITH_STORED_MEDIA", storedMediaAssetIds: ["asset-image"], imageProviderId: null, mediaType: "image", postType: "POST" },
+  { value: "IMAGE_AND_VIDEO_MIXED", storedMediaAssetIds: ["asset-image", "asset-video"], imageProviderId: null, mediaType: "image", postType: "POST" },
+];
+
+const matrixMediaAssets = [
+  {
+    cloudinaryAssetId: "asset-image",
+    cloudinaryPublicId: "campaigns/fresh-lesson",
+    cloudinaryResourceType: "image",
+    cloudinaryFormat: "png",
+    mediaType: "image",
+    mediaUrl: "https://res.cloudinary.com/example/image/upload/campaigns/fresh-lesson.png",
+    mediaOriginalName: "fresh lesson.png",
+    mediaMimeType: "image/png",
+    mediaSizeBytes: 1000,
+    mediaWidth: 1080,
+    mediaHeight: 1080,
+  },
+  {
+    cloudinaryAssetId: "asset-video",
+    cloudinaryPublicId: "campaigns/fresh-lesson-video",
+    cloudinaryResourceType: "video",
+    cloudinaryFormat: "mp4",
+    mediaType: "video",
+    mediaUrl: "https://res.cloudinary.com/example/video/upload/campaigns/fresh-lesson-video.mp4",
+    mediaOriginalName: "fresh lesson video.mp4",
+    mediaMimeType: "video/mp4",
+    mediaSizeBytes: 2000,
+    mediaWidth: 1080,
+    mediaHeight: 1920,
+    mediaDurationSeconds: 20,
+  },
+];
+
+function matrixCampaignBody(strategyCase, publishingMode, overrides = {}) {
+  return {
+    campaignName: `${strategyCase.value} ${publishingMode}`,
+    campaignObjective: "Explain the campaign source clearly",
+    startDate: "2026-09-20",
+    endDate: "2026-09-21",
+    postsPerDay: 1,
+    contentTypes: ["EDUCATIONAL"],
+    aiProviderId: 1,
+    fallbackProviderId: null,
+    selectedBufferChannelIds: ["ig-1"],
+    cta: "Learn more",
+    destinationUrl: "https://example.com/guide",
+    sourceContentType: "TRANSCRIPT_PLUS_OBJECTIVE",
+    sourceContent: "A source lesson for the generated campaign post.",
+    mediaStrategy: strategyCase.value,
+    storedMediaAssetIds: strategyCase.storedMediaAssetIds,
+    imageProviderId: strategyCase.imageProviderId,
+    publishingMode,
+    ...overrides,
   };
 }
 
@@ -135,19 +200,419 @@ test("AI campaign validation stores only supported content types and selected Bu
   assert.throws(() => normalizeAiCampaignInput({ ...input, fallbackProviderId: 1 }), /differ/);
 });
 
-test("transcript and media-rich campaigns require reviewable drafts", () => {
-  const base = {
-    campaignName: "Source series", campaignObjective: "Explain our process",
-    startDate: "2026-09-20", endDate: "2026-09-21", postsPerDay: 2,
-    contentTypes: ["EDUCATIONAL"], aiProviderId: 1, selectedBufferChannelIds: ["ig-1"],
-    sourceContentType: "TRANSCRIPT_PLUS_OBJECTIVE", sourceContent: "First lesson. Second lesson.",
-    mediaStrategy: "STORED_IMAGE_ONLY", storedMediaAssetIds: ["asset-1"], publishingMode: "DRAFT",
+test("both publishing modes validate independently for every media strategy", async (t) => {
+  for (const strategyCase of mediaStrategyCases) {
+    for (const publishingMode of publishingModes) {
+      await t.test(`${publishingMode} x ${strategyCase.value}`, () => {
+        const input = normalizeAiCampaignInput(matrixCampaignBody(strategyCase, publishingMode));
+        assert.equal(input.publishingMode, publishingMode);
+        assert.equal(input.mediaStrategy, strategyCase.value);
+        assert.equal(input.sourceContentType, "TRANSCRIPT_PLUS_OBJECTIVE");
+        assert.deepEqual(input.storedMediaAssetIds, strategyCase.storedMediaAssetIds);
+      });
+    }
+  }
+
+  const storedImage = mediaStrategyCases.find((item) => item.value === "STORED_IMAGE_ONLY");
+  assert.throws(() => normalizeAiCampaignInput(matrixCampaignBody(storedImage, "INVALID")), /Publishing mode/);
+  assert.throws(() => normalizeAiCampaignInput(matrixCampaignBody(storedImage, "DRAFT", { sourceContent: "" })), /Add transcript/);
+});
+
+test("AI campaign API saves, reloads, edits, and resubmits every publishing-mode/media-strategy combination", async (t) => {
+  const configurations = new Map();
+  let sequence = 0;
+  const repository = {
+    getAiCampaignConfigurations: async (id = null) => id == null
+      ? [...configurations.values()]
+      : [configurations.get(Number(id))].filter(Boolean),
+    getAiGenerationHistory: async () => [],
+    getContent: async () => ({ campaigns: matrixMediaAssets }),
+    saveAiCampaignConfiguration: async (input) => {
+      const id = input.id || ++sequence;
+      const configuration = { ...input, id };
+      configurations.set(id, configuration);
+      return configuration;
+    },
   };
-  const input = normalizeAiCampaignInput(base);
-  assert.equal(input.sourceContentType, "TRANSCRIPT_PLUS_OBJECTIVE");
-  assert.deepEqual(input.storedMediaAssetIds, ["asset-1"]);
-  assert.throws(() => normalizeAiCampaignInput({ ...base, publishingMode: "PRODUCTION" }), /drafts for review/);
-  assert.throws(() => normalizeAiCampaignInput({ ...base, sourceContent: "" }), /Add transcript/);
+  const providerService = { provider: async () => providerRows[0] };
+  const engine = new AICampaignAutomationEngine({ repository, providerService, bufferCampaignService: {} });
+  const app = await createSocialListenerApp({
+    env: { SERVICE_AUTH_TOKEN: "service-token" },
+    repository,
+    adapters: {},
+    bufferCampaignService: {},
+    aiProviderService: providerService,
+    aiCampaignAutomationEngine: engine,
+    logger: { error() {}, info() {} },
+  });
+  const headers = { authorization: "Bearer service-token", "content-type": "application/json" };
+
+  for (let strategyIndex = 0; strategyIndex < mediaStrategyCases.length; strategyIndex += 1) {
+    const strategyCase = mediaStrategyCases[strategyIndex];
+    const changedStrategy = mediaStrategyCases[(strategyIndex + 1) % mediaStrategyCases.length];
+    for (const publishingMode of publishingModes) {
+      await t.test(`${publishingMode} x ${strategyCase.value}`, async () => {
+        const createResponse = await app.handle(new Request("http://localhost/ai/campaigns", {
+          method: "POST",
+          headers,
+          body: JSON.stringify(matrixCampaignBody(strategyCase, publishingMode)),
+        }));
+        assert.equal(createResponse.status, 201);
+        const created = (await createResponse.json()).configuration;
+        assert.equal(created.publishingMode, publishingMode);
+        assert.equal(created.mediaStrategy, strategyCase.value);
+
+        const reloadResponse = await app.handle(new Request(`http://localhost/ai/campaigns?configurationId=${created.id}`, {
+          headers: { authorization: "Bearer service-token" },
+        }));
+        assert.equal(reloadResponse.status, 200);
+        const reloaded = (await reloadResponse.json()).configurations[0];
+        assert.equal(reloaded.publishingMode, publishingMode);
+        assert.equal(reloaded.mediaStrategy, strategyCase.value);
+
+        const changedMode = publishingMode === "DRAFT" ? "PRODUCTION" : "DRAFT";
+        const editResponse = await app.handle(new Request("http://localhost/ai/campaigns", {
+          method: "POST",
+          headers,
+          body: JSON.stringify(matrixCampaignBody(changedStrategy, changedMode, { id: created.id })),
+        }));
+        assert.equal(editResponse.status, 200);
+        const edited = (await editResponse.json()).configuration;
+        assert.equal(edited.publishingMode, changedMode);
+        assert.equal(edited.mediaStrategy, changedStrategy.value);
+
+        const editedReloadResponse = await app.handle(new Request(`http://localhost/ai/campaigns?configurationId=${created.id}`, {
+          headers: { authorization: "Bearer service-token" },
+        }));
+        const editedReload = (await editedReloadResponse.json()).configurations[0];
+        assert.equal(editedReload.publishingMode, changedMode);
+        assert.equal(editedReload.mediaStrategy, changedStrategy.value);
+      });
+    }
+  }
+});
+
+test("generation hands every publishing-mode/media-strategy combination to the normal Campaign and Buffer flow", async (t) => {
+  const now = new Date("2026-09-20T12:00:00.000Z");
+
+  for (let strategyIndex = 0; strategyIndex < mediaStrategyCases.length; strategyIndex += 1) {
+    const strategyCase = mediaStrategyCases[strategyIndex];
+    for (const publishingMode of publishingModes) {
+      await t.test(`${publishingMode} x ${strategyCase.value}`, async () => {
+        const configuration = {
+          ...normalizeAiCampaignInput(matrixCampaignBody(strategyCase, publishingMode)),
+          id: strategyIndex + 1,
+          status: "ACTIVE",
+        };
+        let delivery = null;
+        const engine = new AICampaignAutomationEngine({
+          repository: {
+            getCompanyProfile: async () => ({ companyName: "Example" }),
+            getAiGenerationHistory: async () => [],
+            getContent: async () => ({ campaigns: matrixMediaAssets }),
+            claimAiGenerationRun: async () => ({ id: 1 }),
+            succeedAiGenerationRun: async () => {},
+            failAiGenerationRun: async (_id, input) => assert.fail(input.error),
+          },
+          providerService: {
+            provider: async () => providerRows[0],
+            generateCampaignContent: async () => ({
+              output: normalizeAiCampaignOutput(generatedValue(), { providerCode: "OPENAI", model: "test", platform: "instagram" }),
+              providerId: 1,
+              providerCode: "OPENAI",
+              model: "test",
+              fallbackUsed: false,
+              attempts: 1,
+            }),
+          },
+          imageService: {
+            generate: async () => ({
+              model: "gpt-image-1",
+              media: {
+                assetId: "asset-ai-image",
+                publicId: "campaigns/ai-fresh-lesson",
+                resourceType: "image",
+                format: "png",
+                mediaId: "asset-ai-image",
+                mediaType: "image",
+                mediaUrl: "https://res.cloudinary.com/example/image/upload/campaigns/ai-fresh-lesson.png",
+                mediaMimeType: "image/png",
+                mediaSizeBytes: 1000,
+                mediaWidth: 1080,
+                mediaHeight: 1080,
+              },
+            }),
+          },
+          bufferCampaignService: {
+            getChannels: async () => ({ channels: [{ id: "ig-1", service: "instagram", displayName: "Instagram", isQueuePaused: false }] }),
+            scheduleCampaign: async (input) => {
+              delivery = normalizeBufferCampaignInput(input, { now });
+              return {
+                campaign: { id: `campaign:${strategyIndex + 1}`, ...delivery },
+                posts: [{ id: 1, postStatus: publishingMode === "DRAFT" ? "DRAFT" : "SCHEDULED" }],
+              };
+            },
+          },
+          clock: () => now,
+          logger: { error() {} },
+        });
+
+        const generated = await engine.processConfiguration(configuration, "2026-09-20");
+        assert.equal(generated[0].status, "SUCCEEDED");
+        assert.equal(delivery.campaignStatus, publishingMode);
+        assert.equal(Boolean(delivery.mediaUrl), strategyCase.value !== "TEXT_ONLY");
+        assert.equal(delivery.mediaType, strategyCase.mediaType);
+        assert.equal(delivery.postType, strategyCase.postType);
+        assert.equal(generated[0].output.media_strategy, strategyCase.value);
+      });
+    }
+  }
+});
+
+test("mixed media strategies reject an unresolved asset instead of scheduling a text-only fallback", async (t) => {
+  const unresolvedAssets = [
+    {
+      cloudinaryAssetId: "unrelated-image-1", cloudinaryPublicId: "campaigns/mountain-landscape",
+      cloudinaryResourceType: "image", cloudinaryFormat: "png", mediaType: "image",
+      mediaUrl: "https://res.cloudinary.com/example/image/upload/campaigns/mountain-landscape.png", mediaOriginalName: "mountain landscape.png",
+    },
+    {
+      cloudinaryAssetId: "unrelated-image-2", cloudinaryPublicId: "campaigns/ocean-texture",
+      cloudinaryResourceType: "image", cloudinaryFormat: "png", mediaType: "image",
+      mediaUrl: "https://res.cloudinary.com/example/image/upload/campaigns/ocean-texture.png", mediaOriginalName: "ocean texture.png",
+    },
+    {
+      cloudinaryAssetId: "unrelated-video", cloudinaryPublicId: "campaigns/forest-walk",
+      cloudinaryResourceType: "video", cloudinaryFormat: "mp4", mediaType: "video",
+      mediaUrl: "https://res.cloudinary.com/example/video/upload/campaigns/forest-walk.mp4", mediaOriginalName: "forest walk.mp4",
+      mediaDurationSeconds: 20,
+    },
+  ];
+  const cases = [
+    { value: "MIXED_IMAGE", storedMediaAssetIds: ["unrelated-image-1", "unrelated-image-2"] },
+    { value: "IMAGE_AND_VIDEO_MIXED", storedMediaAssetIds: ["unrelated-image-1", "unrelated-image-2", "unrelated-video"] },
+  ];
+
+  for (const strategyCase of cases) {
+    await t.test(strategyCase.value, async () => {
+      let bufferCalls = 0;
+      let failure = null;
+      const configuration = {
+        ...normalizeAiCampaignInput(matrixCampaignBody({ ...strategyCase, imageProviderId: null }, "PRODUCTION")),
+        id: 90,
+        status: "ACTIVE",
+      };
+      const engine = new AICampaignAutomationEngine({
+        repository: {
+          getCompanyProfile: async () => ({ companyName: "Example" }),
+          getAiGenerationHistory: async () => [],
+          getContent: async () => ({ campaigns: unresolvedAssets }),
+          claimAiGenerationRun: async () => ({ id: 900 }),
+          succeedAiGenerationRun: async () => assert.fail("unresolved media must not succeed"),
+          failAiGenerationRun: async (_id, input) => { failure = input; },
+        },
+        providerService: {
+          provider: async () => providerRows[0],
+          generateCampaignContent: async () => ({
+            output: normalizeAiCampaignOutput(generatedValue(), { providerCode: "OPENAI", model: "test", platform: "instagram" }),
+            providerId: 1,
+            providerCode: "OPENAI",
+            model: "test",
+            fallbackUsed: false,
+            attempts: 1,
+          }),
+        },
+        bufferCampaignService: {
+          getChannels: async () => ({ channels: [{ id: "ig-1", service: "instagram", displayName: "Instagram", isQueuePaused: false }] }),
+          scheduleCampaign: async () => { bufferCalls += 1; assert.fail("Buffer must not receive a text-only fallback"); },
+        },
+        clock: () => new Date("2026-09-20T12:00:00.000Z"),
+        logger: { error() {} },
+      });
+
+      const result = await engine.processConfiguration(configuration, "2026-09-20");
+      assert.equal(result[0].status, "FAILED");
+      assert.match(failure.error, /No required stored or generated media/);
+      assert.equal(bufferCalls, 0);
+    });
+  }
+});
+
+test("saved production configuration becomes active, is discovered by the worker, and schedules through Buffer once", async () => {
+  const now = new Date("2026-09-20T12:00:00.000Z");
+  let configuration = null;
+  let runSequence = 0;
+  const claimed = new Set();
+  const deliveries = [];
+  const repository = {
+    getAiCampaignConfigurations: async (id = null) => configuration && (id == null || Number(id) === configuration.id) ? [configuration] : [],
+    saveAiCampaignConfiguration: async (input) => {
+      configuration = { ...input, id: input.id || 41, successfulGenerationCount: 0, lastGenerationAt: null };
+      return configuration;
+    },
+    setAiCampaignStatus: async (_id, status, error = null) => {
+      configuration = { ...configuration, status, lastError: error };
+      return configuration;
+    },
+    getCompanyProfile: async () => ({ companyName: "Example" }),
+    getAiGenerationHistory: async () => [],
+    claimAiGenerationRun: async (input) => {
+      const key = `${input.configurationId}:${input.generationDate}:${input.runSlot}:${input.bufferChannelId}:${input.regenerated ? 1 : 0}`;
+      if (claimed.has(key)) return null;
+      claimed.add(key);
+      runSequence += 1;
+      return { id: runSequence, ...input };
+    },
+    succeedAiGenerationRun: async () => {},
+    failAiGenerationRun: async (_id, input) => assert.fail(input.error),
+    completeExpiredAiCampaigns: async () => 0,
+    getDueAiCampaignConfigurations: async (date) => configuration?.status === "ACTIVE" && configuration.startDate <= date && configuration.endDate >= date
+      ? [configuration]
+      : [],
+    getContent: async () => ({ campaigns: [] }),
+  };
+  const providerService = {
+    provider: async () => providerRows[0],
+    generateCampaignContent: async () => ({
+      output: normalizeAiCampaignOutput(generatedValue(), { providerCode: "OPENAI", model: "test", platform: "instagram" }),
+      providerId: 1,
+      providerCode: "OPENAI",
+      model: "test",
+      fallbackUsed: false,
+      attempts: 1,
+    }),
+  };
+  const bufferCampaignService = {
+    getChannels: async () => ({ channels: [{ id: "ig-1", service: "instagram", displayName: "Instagram", isQueuePaused: false }] }),
+    scheduleCampaign: async (input) => {
+      const persisted = normalizeBufferCampaignInput(input, { now });
+      deliveries.push(persisted);
+      return {
+        campaign: { id: "campaign:41", ...persisted },
+        posts: [{ id: 410, postStatus: "SCHEDULED", scheduledAt: persisted.publishDateTime }],
+      };
+    },
+  };
+  const engine = new AICampaignAutomationEngine({ repository, providerService, bufferCampaignService, clock: () => now, logger: { error() {} } });
+  const app = await createSocialListenerApp({
+    env: { SERVICE_AUTH_TOKEN: "service-token" },
+    repository,
+    adapters: {},
+    bufferCampaignService,
+    aiProviderService: providerService,
+    aiCampaignAutomationEngine: engine,
+    logger: { error() {}, info() {} },
+  });
+  const headers = { authorization: "Bearer service-token", "content-type": "application/json" };
+
+  const saveResponse = await app.handle(new Request("http://localhost/ai/campaigns", {
+    method: "POST",
+    headers,
+    body: JSON.stringify(matrixCampaignBody(mediaStrategyCases[0], "PRODUCTION")),
+  }));
+  assert.equal(saveResponse.status, 201);
+  assert.equal((await saveResponse.json()).configuration.status, "DRAFT");
+
+  const startResponse = await app.handle(new Request("http://localhost/ai/campaigns/start", {
+    method: "POST",
+    headers,
+    body: JSON.stringify({ id: 41 }),
+  }));
+  const started = await startResponse.json();
+  assert.equal(startResponse.status, 200);
+  assert.equal(started.configuration.status, "ACTIVE");
+  assert.equal(deliveries.length, 1);
+  assert.equal(deliveries[0].campaignStatus, "PRODUCTION");
+  assert.deepEqual(deliveries[0].targetSocialChannels, ["ig-1"]);
+  assert.equal(deliveries[0].publishDateTime, "2026-09-20T17:30:00.000Z");
+
+  const reloadedResponse = await app.handle(new Request("http://localhost/ai/campaigns?configurationId=41", {
+    headers: { authorization: "Bearer service-token" },
+  }));
+  const reloaded = (await reloadedResponse.json()).configurations[0];
+  assert.equal(reloaded.status, "ACTIVE");
+  assert.equal(reloaded.publishingMode, "PRODUCTION");
+  assert.deepEqual(reloaded.selectedBufferChannelIds, ["ig-1"]);
+
+  const tick = await engine.tick();
+  assert.equal(tick.campaigns[0].results[0].status, "SKIPPED");
+  assert.equal(deliveries.length, 1);
+});
+
+test("a Buffer scheduling failure remains failed in AI campaign history and campaign status", async () => {
+  const now = new Date("2026-09-20T12:00:00.000Z");
+  let configuration = {
+    ...normalizeAiCampaignInput(matrixCampaignBody(mediaStrategyCases[0], "PRODUCTION")),
+    id: 42,
+    status: "DRAFT",
+  };
+  let succeeded = false;
+  let failedRun = null;
+  const engine = new AICampaignAutomationEngine({
+    repository: {
+      getAiCampaignConfigurations: async () => [configuration],
+      setAiCampaignStatus: async (_id, status, error = null) => {
+        configuration = { ...configuration, status, lastError: error };
+        return configuration;
+      },
+      getCompanyProfile: async () => ({ companyName: "Example" }),
+      getAiGenerationHistory: async () => [],
+      claimAiGenerationRun: async () => ({ id: 420 }),
+      succeedAiGenerationRun: async () => { succeeded = true; },
+      failAiGenerationRun: async (_id, input) => { failedRun = input; },
+    },
+    providerService: {
+      provider: async () => providerRows[0],
+      generateCampaignContent: async () => ({
+        output: normalizeAiCampaignOutput(generatedValue(), { providerCode: "OPENAI", model: "test", platform: "instagram" }),
+        providerId: 1,
+        providerCode: "OPENAI",
+        model: "test",
+        fallbackUsed: false,
+        attempts: 1,
+      }),
+    },
+    bufferCampaignService: {
+      getChannels: async () => ({ channels: [{ id: "ig-1", service: "instagram", displayName: "Instagram", isQueuePaused: false }] }),
+      scheduleCampaign: async () => ({
+        ok: false,
+        statusCode: 424,
+        error: "Buffer rejected the scheduled publication.",
+        campaign: { id: "campaign:42" },
+        posts: [{ id: 420, postStatus: "FAILED" }],
+      }),
+    },
+    clock: () => now,
+    logger: { error() {} },
+  });
+
+  const result = await engine.start(42);
+  assert.equal(result.generated[0].status, "FAILED");
+  assert.equal(result.configuration.status, "FAILED");
+  assert.equal(succeeded, false);
+  assert.match(failedRun.error, /Buffer rejected/);
+  assert.match(result.configuration.lastError, /Buffer rejected/);
+});
+
+test("missing Buffer destination is rejected before an AI campaign configuration can be persisted", async () => {
+  let saveCalls = 0;
+  const app = await createSocialListenerApp({
+    env: { SERVICE_AUTH_TOKEN: "service-token" },
+    repository: { getAiCampaignConfigurations: async () => [] },
+    adapters: {},
+    bufferCampaignService: {},
+    aiProviderService: {},
+    aiCampaignAutomationEngine: { saveConfiguration: async () => { saveCalls += 1; } },
+    logger: { error() {}, info() {} },
+  });
+  const response = await app.handle(new Request("http://localhost/ai/campaigns", {
+    method: "POST",
+    headers: { authorization: "Bearer service-token", "content-type": "application/json" },
+    body: JSON.stringify(matrixCampaignBody(mediaStrategyCases[0], "PRODUCTION", { selectedBufferChannelIds: [] })),
+  }));
+  assert.equal(response.status, 400);
+  assert.match((await response.json()).error, /Buffer channel/);
+  assert.equal(saveCalls, 0);
 });
 
 test("stored media catalog deduplicates Cloudinary assets and matches relevant labels", () => {
@@ -449,6 +914,8 @@ test("source/media migration extends AI configurations and leaves normal Campaig
     assert.match(sql, new RegExp(`ADD ${column} `));
   }
   assert.match(sql, /CREATE OR ALTER PROCEDURE dbo\.AICampaignConfiguration_Save/);
+  assert.match(sql, /DestinationUrl = @DestinationUrl, PublishingMode = @PublishingMode/);
+  assert.match(sql, /MediaStrategy = @MediaStrategy/);
   assert.doesNotMatch(sql, /ALTER TABLE dbo\.CampaignPosts/);
   assert.doesNotMatch(sql, /CREATE TABLE dbo\.Campaigns/);
 });
@@ -582,4 +1049,25 @@ test("Settings deep link renders AI configuration immediately and keeps optional
   assert.match(configuration, /<h3>AI Provider Configuration<\/h3>/);
   assert.match(configuration, /<textarea name="companyDescription" defaultValue=/);
   assert.doesNotMatch(configuration, /<textarea name="companyDescription" required/);
+});
+
+test("AI Campaign form keeps both publishing modes selectable and independent from every media strategy", async () => {
+  const configuration = await readFile(new URL("../app/components/AIConfiguration.tsx", import.meta.url), "utf8");
+
+  for (const strategyCase of mediaStrategyCases) {
+    assert.match(configuration, new RegExp(`\\["${strategyCase.value}",`));
+  }
+  assert.match(configuration, /useState\(configuration\?\.publishingMode \|\| "DRAFT"\)/);
+  assert.match(configuration, /<option value="DRAFT">Save generated posts as drafts<\/option>/);
+  assert.match(configuration, /<option value="PRODUCTION">Schedule through Buffer<\/option>/);
+  assert.match(configuration, /publishingMode: form\.get\("publishingMode"\)/);
+  assert.match(configuration, /mediaStrategy: form\.get\("mediaStrategy"\)/);
+  assert.match(configuration, /key=\{editing\?\.id \|\| "new-ai-campaign"\}/);
+  assert.match(configuration, /publishingMode === "PRODUCTION" \? "Save and schedule through Buffer"/);
+  assert.match(configuration, /saved\.configuration\.publishingMode === "PRODUCTION" && saved\.configuration\.status === "DRAFT"/);
+  assert.match(configuration, /jsonRequest<\{ generated: Array<\{ status: string \}> \}>\("\/api\/ai\/campaigns\/start"/);
+  assert.match(configuration, /Campaign configuration was saved, but activation failed:/);
+  assert.match(configuration, /Scheduled for <time dateTime=\{run\.scheduledAt\}>/);
+  assert.doesNotMatch(configuration, /<option value="PRODUCTION"[^>]*disabled=/);
+  assert.doesNotMatch(configuration, /setPublishingMode\("DRAFT"\)/);
 });

@@ -58,6 +58,10 @@ interval. SQL claims one run for each configuration/date/post slot/Buffer
 channel with a serializable transaction and a unique key. Retries reuse that
 claim and cannot create another normal run. The end date is inclusive; active
 campaigns become `COMPLETED` on the next date and existing posts remain intact.
+Saving a new `PRODUCTION` configuration activates it after persistence so the
+worker can discover it; an activation failure is reported separately without
+claiming that the already-saved configuration was lost. `DRAFT` publishing
+mode keeps its existing explicit-start behavior.
 
 Each provider request has a bounded three-attempt retry for transient HTTP
 errors. The service never changes providers implicitly. It attempts a fallback
@@ -105,15 +109,18 @@ provider supplies its existing encrypted API key to the image-generation
 endpoint. `AI_CAMPAIGN_IMAGE_MODEL` optionally overrides the default
 `gpt-image-1` image model; it must name a GPT Image model. The returned image
 bytes are validated and uploaded through the existing Cloudinary campaign-media
-path before a normal Campaign/CampaignPost draft is saved. No new media key or
-storage service is required. Claude/Gemini remain supported for copy, but are
+path before a normal Campaign/CampaignPost is saved. No new media key or storage
+service is required. Claude/Gemini remain supported for copy, but are
 not advertised as direct image generators. Direct AI video generation is not
 configured; video strategies use approved stored videos or retain video
 concepts/prompts for manual production.
 
-Transcript or media-rich configurations must use `DRAFT` publishing mode.
-Users review copy, CTA, and media in Campaign Studio and explicitly schedule
-through its existing Buffer flow. Legacy objective-only text campaigns may
-continue to use their existing production scheduling behavior. Migration 027
-must be applied before deploying this code. No new required environment
-variables are introduced; the optional image-model override is noted above.
+`DRAFT` and `PRODUCTION` publishing modes are available independently for every
+media strategy and source-content type. Draft mode keeps the generated ordinary
+Campaign/CampaignPost available for review in Campaign Studio. Production mode
+sends that same post, including stored or generated Cloudinary media, through
+the existing Buffer scheduling flow. Every non-text strategy must resolve its
+required stored or generated media before CampaignPost/Buffer scheduling; it
+cannot silently fall back to a text-only post. Migration 027 must be applied before
+deploying this code. No new required environment variables are introduced; the
+optional image-model override is noted above.

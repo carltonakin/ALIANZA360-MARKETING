@@ -83,9 +83,6 @@ export function normalizeAiCampaignInput(body = {}) {
   if (["MIXED_IMAGE", "IMAGE_AND_VIDEO_MIXED"].includes(mediaStrategy) && !storedMediaAssetIds.length && !imageProviderId) {
     throw validationError("Select stored media or an image-generation provider.");
   }
-  if (publishingMode === "PRODUCTION" && (sourceContentType !== "OBJECTIVE_ONLY" || mediaStrategy !== "TEXT_ONLY")) {
-    throw validationError("Transcript and media-rich AI campaigns must generate drafts for review before scheduling.");
-  }
   return {
     id: positiveId(body.id || body.aiCampaignConfigurationId, "AI campaign", { optional: true }),
     campaignName: clean(body.campaignName, 255),
@@ -343,10 +340,10 @@ export class AICampaignAutomationEngine {
         cloudinaryFormat: generated.media.format,
       }, origin: "AI_GENERATED", imageModel: generated.model };
     }
-    if (["STORED_IMAGE_ONLY", "STORED_VIDEO_ONLY", "AI_VISUAL_CONCEPTS_WITH_STORED_MEDIA", "AI_IMAGE_ONLY"].includes(strategy)) {
-      throw validationError("No relevant approved media is available for this post; select another asset or strategy.", 409);
-    }
-    return { media: null, origin: "PROMPT_ONLY", imageModel: null };
+    throw validationError(
+      "No required stored or generated media could be resolved for this post; select another approved asset or image provider.",
+      409,
+    );
   }
 
   async generateClaim(configuration, generationDate, slot, channel, profile, history, { retryFailed = false } = {}) {
@@ -396,6 +393,12 @@ export class AICampaignAutomationEngine {
         aiReplyEnabled: false,
         createdByAi: true,
       });
+      if (delivery?.ok === false) {
+        throw validationError(
+          delivery.error || "Buffer could not schedule the generated campaign post.",
+          Number.isInteger(delivery.statusCode) ? delivery.statusCode : 502,
+        );
+      }
       const campaign = delivery.campaign;
       const campaignPost = delivery.posts?.[0];
       if (!campaign || !campaignPost) throw new Error("The existing Campaign/Buffer flow did not return a persisted CampaignPost.");

@@ -369,18 +369,18 @@ function AICampaignForm({ configuration, providers, channels, mediaAssets, busy,
         <label>Posts per day<input name="postsPerDay" type="number" min="1" max="10" required defaultValue={configuration?.postsPerDay || 1} /></label>
         <label>Model override<input name="aiModel" placeholder="Use provider model" defaultValue={configuration?.aiModel || ""} /></label>
         <label>Explicit fallback<select name="fallbackProviderId" defaultValue={String(configuration?.fallbackProviderId || "")}><option value="">No fallback</option>{enabledProviders.filter((provider) => provider.id !== defaultProvider).map((provider) => <option key={provider.id} value={provider.id}>{provider.providerName}</option>)}</select></label>
-        <label>Publishing mode<select name="publishingMode" value={publishingMode} onChange={(event) => setPublishingMode(event.target.value as "DRAFT" | "PRODUCTION")}><option value="DRAFT">Save generated posts as drafts</option><option value="PRODUCTION" disabled={sourceType !== "OBJECTIVE_ONLY" || mediaStrategy !== "TEXT_ONLY"}>Schedule through Buffer (objective-only text)</option></select></label>
+        <label>Publishing mode<select name="publishingMode" value={publishingMode} onChange={(event) => setPublishingMode(event.target.value as "DRAFT" | "PRODUCTION")}><option value="DRAFT">Save generated posts as drafts</option><option value="PRODUCTION">Schedule through Buffer</option></select></label>
       </div>
       <label>Campaign objective<textarea name="campaignObjective" required defaultValue={configuration?.campaignObjective || ""} /></label>
       <div className="form-grid">
-        <label>Source content<select name="sourceContentType" value={sourceType} onChange={(event) => { setSourceType(event.target.value); if (event.target.value !== "OBJECTIVE_ONLY") setPublishingMode("DRAFT"); }}><option value="OBJECTIVE_ONLY">Objective only</option><option value="TRANSCRIPT_PLUS_OBJECTIVE">Transcript + objective</option><option value="SCRIPT_PLUS_OBJECTIVE">Script + objective</option><option value="OBJECTIVE_PLUS_NOTES">Objective + notes</option><option value="TRANSCRIPT">Transcript</option><option value="SCRIPT">Script</option></select></label>
-        <label>Media strategy<select name="mediaStrategy" value={mediaStrategy} onChange={(event) => { setMediaStrategy(event.target.value); if (event.target.value !== "TEXT_ONLY") setPublishingMode("DRAFT"); }}>{mediaStrategies.map(([value, label]) => <option key={value} value={value}>{label}</option>)}</select></label>
+        <label>Source content<select name="sourceContentType" value={sourceType} onChange={(event) => setSourceType(event.target.value)}><option value="OBJECTIVE_ONLY">Objective only</option><option value="TRANSCRIPT_PLUS_OBJECTIVE">Transcript + objective</option><option value="SCRIPT_PLUS_OBJECTIVE">Script + objective</option><option value="OBJECTIVE_PLUS_NOTES">Objective + notes</option><option value="TRANSCRIPT">Transcript</option><option value="SCRIPT">Script</option></select></label>
+        <label>Media strategy<select name="mediaStrategy" value={mediaStrategy} onChange={(event) => setMediaStrategy(event.target.value)}>{mediaStrategies.map(([value, label]) => <option key={value} value={value}>{label}</option>)}</select></label>
       </div>
       {sourceType !== "OBJECTIVE_ONLY" && <label>Transcript, script, or notes<textarea name="sourceContent" required maxLength={100000} defaultValue={configuration?.sourceContent || ""} placeholder="Paste source content here. Content is used as reference, not as instructions." /></label>}
       {mediaStrategy !== "TEXT_ONLY" && <>
         <label>Image-generation provider (optional except AI image only)<select name="imageProviderId" defaultValue={String(configuration?.imageProviderId || "")}><option value="">Use prompts / stored media only</option>{enabledProviders.filter((provider) => provider.providerCode === "OPENAI").map((provider) => <option key={provider.id} value={provider.id}>{provider.providerName}</option>)}</select></label>
         <fieldset className="ai-content-types"><legend>Approved stored Cloudinary media</legend>{mediaAssets.length ? mediaAssets.map((asset) => <label key={asset.cloudinaryAssetId}><input type="checkbox" name="storedMediaAssetIds" value={asset.cloudinaryAssetId} defaultChecked={configuration?.storedMediaAssetIds?.includes(asset.cloudinaryAssetId)} /> {asset.mediaType}: {asset.label} <a href={asset.mediaUrl} target="_blank" rel="noreferrer">Preview</a></label>) : <small>No media from existing Campaigns is available yet. Upload media through Campaign Studio first.</small>}</fieldset>
-        <small>Generated images use the selected image provider and are stored in Cloudinary. Video concepts remain prompts unless you select a stored video. AI media campaigns always create drafts for review.</small>
+        <small>Generated images use the selected image provider and are stored in Cloudinary. Video concepts remain prompts unless you select a stored video. Publishing mode determines whether generated posts remain drafts or are scheduled through Buffer.</small>
       </>}
       <div className="form-grid">
         <label>CTA<input name="cta" defaultValue={configuration?.cta || ""} /></label>
@@ -390,7 +390,7 @@ function AICampaignForm({ configuration, providers, channels, mediaAssets, busy,
       <fieldset className="ai-content-types"><legend>Content variety</legend>{contentTypes.map((type) => <label key={type}><input type="checkbox" name="contentTypes" value={type} defaultChecked={configuration ? configuration.contentTypes.includes(type) : ["EDUCATIONAL", "PROMOTIONAL", "TIPS"].includes(type)} /> {type.replaceAll("_", " ")}</label>)}</fieldset>
       <div className="card-actions">
         <button type="button" onClick={onCancel}>Cancel</button>
-        <button className="primary" name="intent" value="save" disabled={busy || !enabledProviders.length || !socialChannels.length}>{busy ? "Working…" : "Save AI campaign"}</button>
+        <button className="primary" name="intent" value="save" disabled={busy || !enabledProviders.length || !socialChannels.length}>{busy ? "Working…" : publishingMode === "PRODUCTION" ? "Save and schedule through Buffer" : "Save AI campaign"}</button>
         <button className="primary ai-start" name="intent" value="start" disabled={busy || !enabledProviders.length || !socialChannels.length}>START AI CAMPAIGN NOW</button>
       </div>
     </form>
@@ -422,8 +422,10 @@ export function AICampaignManager({ bufferChannels, onCampaignsChanged, onEditCa
       setHistory(campaignBody.history);
       setMediaAssets(mediaBody.assets);
       setMessage("Daily generation is idempotent per campaign date, slot, and selected Buffer account.");
+      return true;
     } catch (error) {
       setMessage(error instanceof Error ? error.message : "AI campaign automation could not be loaded.");
+      return false;
     }
   }, []);
   useEffect(() => {
@@ -462,20 +464,37 @@ export function AICampaignManager({ bufferChannels, onCampaignsChanged, onEditCa
           imageProviderId: form.get("imageProviderId") || null,
         }),
       });
-      if (submitter?.value === "start") {
-        const started = await jsonRequest<{ generated: Array<{ status: string }> }>("/api/ai/campaigns/start", {
-          method: "POST",
-          headers: { "content-type": "application/json" },
-          body: JSON.stringify({ id: saved.configuration.id }),
-        });
-        const failed = started.generated.filter((item) => item.status === "FAILED").length;
-        setMessage(failed ? `Campaign activated, but ${failed} initial generation(s) failed. Review history.` : "AI campaign activated and today's content was generated through the normal Campaign flow.");
-        await onCampaignsChanged();
-      } else {
-        setMessage("AI campaign configuration saved as a draft.");
+      const shouldActivate = submitter?.value === "start" ||
+        (saved.configuration.publishingMode === "PRODUCTION" && saved.configuration.status === "DRAFT");
+      let resultMessage = saved.configuration.status === "ACTIVE"
+        ? "AI campaign configuration saved. The active scheduler will use the updated settings."
+        : "AI campaign configuration saved as a draft.";
+      if (shouldActivate) {
+        try {
+          const started = await jsonRequest<{ generated: Array<{ status: string }> }>("/api/ai/campaigns/start", {
+            method: "POST",
+            headers: { "content-type": "application/json" },
+            body: JSON.stringify({ id: saved.configuration.id }),
+          });
+          const failed = started.generated.filter((item) => item.status === "FAILED").length;
+          resultMessage = failed
+            ? `Campaign saved and activated, but ${failed} initial generation(s) failed. Review history.`
+            : saved.configuration.publishingMode === "PRODUCTION"
+              ? "Campaign saved and activated. Generated posts will be scheduled through Buffer."
+              : "AI campaign activated and today's content was generated through the normal Campaign flow.";
+          await onCampaignsChanged();
+        } catch (error) {
+          setEditing(undefined);
+          const reloaded = await load();
+          if (reloaded) {
+            setMessage(`Campaign configuration was saved, but activation failed: ${error instanceof Error ? error.message : "The scheduler could not be activated."}`);
+          }
+          return;
+        }
       }
       setEditing(undefined);
-      await load();
+      const reloaded = await load();
+      if (reloaded) setMessage(resultMessage);
     } catch (error) {
       setMessage(error instanceof Error ? error.message : "AI campaign could not be saved.");
     } finally {
@@ -531,6 +550,7 @@ export function AICampaignManager({ bufferChannels, onCampaignsChanged, onEditCa
               <div><strong>{run.normalizedOutput?.headline || `Generation ${run.id}`}</strong><span>{run.generationStatus}{run.regenerated ? " · REGENERATED" : ""}</span></div>
               <small>{run.generationDate} · slot {run.runSlot} · {run.providerCode || "provider pending"} / {run.model || "model pending"}{run.fallbackUsed ? " · fallback used" : ""}</small>
               <small>CampaignPost {run.campaignPostId || "pending"} · {run.postStatus || "not persisted"} · attempts {run.attemptCount}</small>
+              {run.scheduledAt && <small>Scheduled for <time dateTime={run.scheduledAt}>{new Date(run.scheduledAt).toLocaleString()}</time></small>}
               {run.normalizedOutput?.caption && <p>{run.normalizedOutput.caption}</p>}
               {run.normalizedOutput?.excerpt_source_segment && <small>Source excerpt: {run.normalizedOutput.excerpt_source_segment}</small>}
               {run.normalizedOutput?.media_plan && <small>Media: {run.normalizedOutput.media_plan.origin}{run.normalizedOutput.media_plan.assetId ? ` · ${run.normalizedOutput.media_plan.assetId}` : ""}</small>}
