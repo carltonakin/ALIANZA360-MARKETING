@@ -68,6 +68,10 @@ test("studio supports every V1 block and normalizes deterministic order", () => 
   assert.deepEqual(blocks.map((block) => block.sortOrder), [0, 1]);
   assert.throws(() => normalizeLandingPageBlocks([{ id: "bad", type: "SCRIPT", config: {} }]), /unsupported/i);
   assert.throws(() => normalizeLandingPageBlocks([{ ...defaultLandingPageBlock("CTA_BUTTON"), config: { text: "Unsafe", url: "javascript:alert(1)" } }]), /HTTP or HTTPS/i);
+  assert.throws(() => normalizeLandingPageBlocks([{
+    ...defaultLandingPageBlock("IMAGE", "missing-cloudinary-identity"),
+    config: { url: "https://res.cloudinary.com/demo/image/upload/landing/image.png", alt: "Image" },
+  }]), /Cloudinary URL and media identity/i);
 });
 
 test("legacy fields convert to blocks and blocks project back for old clients", () => {
@@ -114,6 +118,73 @@ test("an unedited block can be selected and updated after save and reload", asyn
   const reloaded = (await (await app.handle(request("/content", undefined, "GET"))).json()).pages.find((page) => page.id === created.id);
   assert.deepEqual(reloaded.blocks.map((block) => block.id), ["hero", "new-cta"]);
   assert.equal(reloaded.blocks[1].config.url, "https://example.com/apply");
+});
+
+test("Cloudinary image and video blocks survive save, reload, edit, and legacy projection", async () => {
+  const { app } = await fixture();
+  const blocks = normalizeLandingPageBlocks([
+    defaultLandingPageBlock("HERO", "hero"),
+    {
+      ...defaultLandingPageBlock("IMAGE", "image:with-colon"),
+      config: {
+        url: "https://res.cloudinary.com/crm-cloud/image/upload/v1/landing/studio-image.png",
+        alt: "Studio image",
+        caption: "Persisted image",
+        cloudinaryAssetId: "asset-image",
+        cloudinaryPublicId: "landing/studio-image",
+        cloudinaryResourceType: "image",
+      },
+    },
+    {
+      ...defaultLandingPageBlock("VIDEO", "video:with-colon"),
+      config: {
+        videoSourceType: "UPLOAD",
+        videoUrl: "https://res.cloudinary.com/crm-cloud/video/upload/v1/landing/studio-video.mp4",
+        videoProvider: "CLOUDINARY",
+        cloudinaryAssetId: "asset-video",
+        cloudinaryPublicId: "landing/studio-video",
+        cloudinaryResourceType: "video",
+        autoplay: false,
+        muted: true,
+        showControls: true,
+      },
+    },
+  ]);
+  const createdResponse = await app.handle(request("/content", {
+    entity: "landing_page", title: "Media persistence", slug: "media-persistence",
+    headline: "Media persistence", status: "published", blocks,
+  }));
+  assert.equal(createdResponse.status, 201);
+  const created = (await createdResponse.json()).record;
+
+  const loaded = (await (await app.handle(request("/content", undefined, "GET"))).json()).pages.find((page) => page.id === created.id);
+  assert.equal(loaded.blocks.find((block) => block.id === "image:with-colon").config.cloudinaryAssetId, "asset-image");
+  assert.equal(loaded.blocks.find((block) => block.id === "video:with-colon").config.cloudinaryAssetId, "asset-video");
+
+  const editedBlocks = loaded.blocks.map((block) => block.id === "hero"
+    ? { ...block, config: { ...block.config, headline: "Edited without replacing media" } }
+    : block);
+  const editResponse = await app.handle(request("/content", {
+    entity: "landing_page", id: created.id, title: loaded.title, slug: loaded.slug,
+    headline: "Edited without replacing media", status: "published", blocks: editedBlocks,
+  }, "PUT"));
+  assert.equal(editResponse.status, 200);
+
+  const reloaded = (await (await app.handle(request("/content", undefined, "GET"))).json()).pages.find((page) => page.id === created.id);
+  const image = reloaded.blocks.find((block) => block.id === "image:with-colon").config;
+  const video = reloaded.blocks.find((block) => block.id === "video:with-colon").config;
+  assert.deepEqual(
+    { url: image.url, assetId: image.cloudinaryAssetId, publicId: image.cloudinaryPublicId, resourceType: image.cloudinaryResourceType },
+    { url: "https://res.cloudinary.com/crm-cloud/image/upload/v1/landing/studio-image.png", assetId: "asset-image", publicId: "landing/studio-image", resourceType: "image" },
+  );
+  assert.deepEqual(
+    { url: video.videoUrl, assetId: video.cloudinaryAssetId, publicId: video.cloudinaryPublicId, resourceType: video.cloudinaryResourceType },
+    { url: "https://res.cloudinary.com/crm-cloud/video/upload/v1/landing/studio-video.mp4", assetId: "asset-video", publicId: "landing/studio-video", resourceType: "video" },
+  );
+  const legacy = projectLegacyLandingPageFields(reloaded.blocks);
+  assert.equal(legacy.pictureCloudinaryAssetId, "asset-image");
+  assert.equal(legacy.cloudinaryAssetId, "asset-video");
+  assert.equal(legacy.mediaMode, "VIDEO_AND_PICTURE");
 });
 
 test("saved preview controls remain selectable through three reopen and edit cycles", async () => {
@@ -214,13 +285,14 @@ test("visitor analytics deduplicates daily refreshes and groups campaign attribu
 });
 
 test("studio UI, public renderer, protected drafts, routes, and SQL migration are wired", async () => {
-  const [dashboard, studio, renderer, landing, proxy, migration, dataRoute] = await Promise.all([
+  const [dashboard, studio, renderer, landing, proxy, migration, syncMigration, dataRoute] = await Promise.all([
     readFile(new URL("../app/page.tsx", import.meta.url), "utf8"),
     readFile(new URL("../app/components/LandingPageStudio.tsx", import.meta.url), "utf8"),
     readFile(new URL("../app/components/LandingPageBlocks.tsx", import.meta.url), "utf8"),
     readFile(new URL("../app/landing/[slug]/page.tsx", import.meta.url), "utf8"),
     readFile(new URL("../proxy.ts", import.meta.url), "utf8"),
     readFile(new URL("../sql/021_landing_page_studio.sql", import.meta.url), "utf8"),
+    readFile(new URL("../sql/030_crm_sync_landing_media_performance.sql", import.meta.url), "utf8"),
     readFile(new URL("../app/api/data/route.ts", import.meta.url), "utf8"),
   ]);
   assert.match(dashboard, /Landing Page Studio/);
@@ -237,10 +309,18 @@ test("studio UI, public renderer, protected drafts, routes, and SQL migration ar
   assert.match(landing, /LandingPageViewTracker/);
   assert.match(proxy, /"\/api\/landing-views"/);
   assert.match(dataRoute, /landingPageAnalytics/);
+  assert.match(dataRoute, /sources/);
+  assert.match(dataRoute, /syncErrors/);
+  assert.match(studio, /expectedResourceType/);
+  assert.match(studio, /lastIndexOf\(":"\)/);
+  assert.doesNotMatch(studio, /file\.type\.startsWith\("video\/"\)/);
   assert.match(migration, /CREATE TABLE dbo\.LandingPageBlocks/);
   assert.match(migration, /CREATE TABLE dbo\.LandingPageViews/);
   assert.match(migration, /CREATE OR ALTER PROCEDURE dbo\.LandingPage_Duplicate/);
   assert.match(migration, /CREATE OR ALTER PROCEDURE dbo\.LandingPageAnalytics_GetAll/);
   assert.match(migration, /NOT EXISTS \(SELECT 1 FROM dbo\.LandingPageBlocks/);
   assert.doesNotMatch(migration, /LeadScore_Recalculate|LeadScoringRules|LeadTemperatureThresholds/);
+  assert.match(syncMigration, /CREATE OR ALTER PROCEDURE dbo\.SocialLead_GetRecent/);
+  assert.match(syncMigration, /CONVERT\(NVARCHAR\(4000\), l\.CrmNotes\)/);
+  assert.match(syncMigration, /ROW_NUMBER\(\) OVER \(PARTITION BY si\.LeadId/);
 });

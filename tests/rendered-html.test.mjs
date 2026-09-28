@@ -301,9 +301,12 @@ test("production dashboard uses the SQL-backed API without demo-record fallback"
   assert.match(page, /useState<Lead\[\]>\(\[\]\)/);
   assert.match(page, /fetch\("\/api\/data", \{ cache: "no-store" \}\)/);
   assert.match(page, /setDataError\(message\)/);
-  assert.match(page, /setLeads\(\[\]\)/);
-  assert.match(dataRoute, /proxySocialRequest\("\/leads\?limit=100"\)/);
+  assert.doesNotMatch(page, /setLeads\(\[\]\)/);
+  assert.match(page, /d\.sources\?\.leads !== false/);
+  assert.match(page, /d\.sources\?\.content !== false/);
+  assert.match(dataRoute, /proxySocialRequest\("\/leads\?limit=500"\)/);
   assert.match(dataRoute, /proxySocialRequest\("\/content"\)/);
+  assert.match(dataRoute, /syncErrors/);
   assert.match(listener, /SqlServerRepository\.connectFromEnv/);
   assert.match(repository, /openSqlConnection\(env\)/);
   assert.match(repository, /SocialLead_GetRecent/);

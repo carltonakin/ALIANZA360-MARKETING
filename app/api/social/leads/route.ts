@@ -1,7 +1,7 @@
 import { proxySocialRequest } from "../_proxy";
 
 export async function GET() {
-  return proxySocialRequest("/leads?limit=100");
+  return proxySocialRequest("/leads?limit=500");
 }
 
 export async function POST(request: Request) {

@@ -890,6 +890,11 @@ test("daily tick includes the end date and completes active campaigns only after
   assert.equal(result.campaigns[0].results[0].date, "2026-09-10");
 });
 
+test("campaign date follows Bogota across the UTC midnight boundary", () => {
+  assert.equal(campaignDate(new Date("2026-09-28T03:30:00.000Z")), "2026-09-27");
+  assert.equal(campaignDate(new Date("2026-09-28T05:00:00.000Z")), "2026-09-28");
+});
+
 test("migration adds configuration and history without replacing Campaign or CampaignPost", async () => {
   const sql = await readFile(new URL("../sql/024_multi_provider_ai_campaign_automation.sql", import.meta.url), "utf8");
   for (const table of ["CompanyProfiles", "AIProviderConfigurations", "AICampaignConfigurations", "AICampaignGenerationRuns"]) {

@@ -254,7 +254,33 @@ export class AICampaignAutomationEngine {
     if (input.mediaStrategy === "IMAGE_AND_VIDEO_MIXED" && !input.storedMediaAssetIds.length) {
       throw validationError("Select a stored video for the mixed image/video strategy.");
     }
-    return this.repository.saveAiCampaignConfiguration(input);
+    try {
+      const configuration = await this.repository.saveAiCampaignConfiguration(input);
+      this.logger.info?.(JSON.stringify({
+        component: "ai_campaign_automation",
+        operation: "save_configuration",
+        timestamp: this.clock().toISOString(),
+        configurationId: configuration?.id || input.id || null,
+        publishingMode: input.publishingMode,
+        mediaStrategy: input.mediaStrategy,
+        scheduleThroughBuffer: input.publishingMode === "PRODUCTION",
+        status: "succeeded",
+      }));
+      return configuration;
+    } catch (error) {
+      this.logger.error?.(JSON.stringify({
+        component: "ai_campaign_automation",
+        operation: "save_configuration",
+        timestamp: this.clock().toISOString(),
+        configurationId: input.id || null,
+        publishingMode: input.publishingMode,
+        mediaStrategy: input.mediaStrategy,
+        scheduleThroughBuffer: input.publishingMode === "PRODUCTION",
+        status: "failed",
+        error: safeAiMessage(error),
+      }));
+      throw error;
+    }
   }
 
   async start(id) {
@@ -380,6 +406,19 @@ export class AICampaignAutomationEngine {
         ai_generated_media_references: mediaResult.origin === "AI_GENERATED" ? [media.cloudinaryAssetId] : [],
         generation_timestamp: this.clock().toISOString(),
       };
+      const scheduleThroughBuffer = configuration.publishingMode === "PRODUCTION";
+      this.logger.info?.(JSON.stringify({
+        component: "ai_campaign_automation",
+        operation: "campaign_delivery_attempt",
+        timestamp: this.clock().toISOString(),
+        configurationId: configuration.id,
+        generationDate,
+        slot,
+        channelId: channel.id,
+        publishingMode: configuration.publishingMode,
+        mediaStrategy: configuration.mediaStrategy || "TEXT_ONLY",
+        scheduleThroughBuffer,
+      }));
       const delivery = await this.bufferCampaignService.scheduleCampaign({
         campaignName: `${configuration.campaignName} · ${generationDate} · ${slot} · ${channel.displayName}`.slice(0, 255),
         campaignObjective: configuration.campaignObjective,
@@ -412,6 +451,23 @@ export class AICampaignAutomationEngine {
         attemptCount: generated.attempts,
         normalizedOutput: output,
       });
+      this.logger.info?.(JSON.stringify({
+        component: "ai_campaign_automation",
+        operation: "generate_daily_post",
+        timestamp: this.clock().toISOString(),
+        configurationId: configuration.id,
+        generationDate,
+        slot,
+        channelId: channel.id,
+        publishingMode: configuration.publishingMode,
+        mediaStrategy: configuration.mediaStrategy || "TEXT_ONLY",
+        scheduleThroughBuffer,
+        campaignId: campaign.id,
+        campaignPostId: campaignPost.id,
+        postStatus: campaignPost.postStatus || null,
+        bufferPostId: campaignPost.bufferPostId || null,
+        status: "succeeded",
+      }));
       history.unshift({ generationStatus: "SUCCEEDED", generationDate, normalizedOutput: output });
       return { status: "SUCCEEDED", runId: run.id, campaign, campaignPost, output };
     } catch (error) {
@@ -427,10 +483,14 @@ export class AICampaignAutomationEngine {
       this.logger.error?.(JSON.stringify({
         component: "ai_campaign_automation",
         operation: "generate_daily_post",
+        timestamp: this.clock().toISOString(),
         configurationId: configuration.id,
         generationDate,
         slot,
         channelId: channel.id,
+        publishingMode: configuration.publishingMode,
+        mediaStrategy: configuration.mediaStrategy || "TEXT_ONLY",
+        scheduleThroughBuffer: configuration.publishingMode === "PRODUCTION",
         status: "failed",
         error: message,
       }));

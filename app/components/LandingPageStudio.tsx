@@ -179,13 +179,19 @@ export function LandingPageStudio({
     try {
       let nextBlocks = structuredClone(blocks);
       for (const [key, file] of Object.entries(pendingFiles)) {
-        const [blockId, slot] = key.split(":");
+        const separator = key.lastIndexOf(":");
+        const blockId = separator < 0 ? key : key.slice(0, separator);
+        const slot = separator < 0 ? "media" : key.slice(separator + 1);
+        const targetBlock = nextBlocks.find((block) => block.id === blockId);
+        if (!targetBlock) throw new Error(`The block selected for ${file.name} no longer exists.`);
+        const expectedResourceType = slot === "media" && targetBlock.type === "VIDEO" ? "video" : "image";
         const form = new FormData();
         form.append("media", file);
-        form.append("purpose", file.type.startsWith("video/") ? "landing_page_video" : "landing_page_picture");
+        form.append("purpose", expectedResourceType === "video" ? "landing_page_video" : "landing_page_picture");
         const response = await fetch("/api/media", { method: "POST", body: form });
         const body = await response.json().catch(() => ({})) as { media?: Upload; error?: string };
         if (!response.ok || !body.media) throw new Error(body.error || `Could not upload ${file.name}.`);
+        if (body.media.resourceType !== expectedResourceType) throw new Error(`${file.name} was uploaded with the wrong Cloudinary media type.`);
         uploaded.push(body.media);
         nextBlocks = nextBlocks.map((block) => {
           if (block.id !== blockId) return block;
@@ -221,6 +227,9 @@ export function LandingPageStudio({
         setBlocks(persisted);
         setSelectedId((current) => persisted.some((block) => block.id === current) ? current : persisted[0]?.id || "");
       }
+      for (const url of Object.values(previews)) URL.revokeObjectURL(url);
+      setPendingFiles({});
+      setPreviews({});
       await onSaved(page ? "Landing-page design saved" : "Landing page created");
     } catch (error) {
       for (const item of uploaded) {

@@ -573,6 +573,8 @@ export default function Home({ initialView = "Overview" }: { initialView?: strin
         pages?: Landing[];
         webinars?: WebinarRecord[];
         landingPageAnalytics?: LandingPageAnalytics[];
+        sources?: { leads?: boolean; content?: boolean; landingPageAnalytics?: boolean };
+        syncErrors?: string[];
       };
       const normalizeLead = (lead: Lead): Lead => ({
         ...lead,
@@ -580,23 +582,47 @@ export default function Home({ initialView = "Overview" }: { initialView?: strin
         instagram: lead.instagram || (lead.source?.toLowerCase().includes("instagram") ? lead.social || "" : ""),
         x: lead.x || (/^(x|x \/ twitter|twitter)$/i.test(lead.source || "") ? lead.social || "" : ""),
       });
-      setLeads((d.leads ?? []).map(normalizeLead).sort((a, b) =>
-        Date.parse(b.createdAt || "") - Date.parse(a.createdAt || "") ||
-        Number(String(b.id).replace(/^social:/, "")) - Number(String(a.id).replace(/^social:/, ""))));
-      setCampaigns(d.campaigns ?? []);
-      setPages(d.pages ?? []);
-      setWebinars(d.webinars ?? []);
-      setLandingPageAnalytics(d.landingPageAnalytics ?? []);
-      setDataError("");
+      if (d.sources?.leads !== false && Array.isArray(d.leads)) {
+        setLeads(d.leads.map(normalizeLead).sort((a, b) =>
+          Date.parse(b.createdAt || "") - Date.parse(a.createdAt || "") ||
+          Number(String(b.id).replace(/^social:/, "")) - Number(String(a.id).replace(/^social:/, ""))));
+      }
+      if (d.sources?.content !== false) {
+        if (Array.isArray(d.campaigns)) setCampaigns(d.campaigns);
+        if (Array.isArray(d.pages)) setPages(d.pages);
+        if (Array.isArray(d.webinars)) setWebinars(d.webinars);
+      }
+      if (d.sources?.landingPageAnalytics !== false && Array.isArray(d.landingPageAnalytics)) {
+        setLandingPageAnalytics(d.landingPageAnalytics);
+      }
+      const syncWarning = (d.syncErrors || []).filter(Boolean).join(" ");
+      setDataError(syncWarning);
+      if (syncWarning) notify(syncWarning);
     } catch (error) {
-      setLeads([]);
-      setCampaigns([]);
-      setPages([]);
-      setWebinars([]);
-      setLandingPageAnalytics([]);
       const message = error instanceof Error ? error.message : "Production data could not be loaded from SQL Server.";
       setDataError(message);
       notify(message);
+    }
+  };
+
+  const openLeadEditor = async (lead: Lead) => {
+    if (!(typeof lead.id === "string" && lead.id.startsWith("social:"))) {
+      setEditingLead(lead);
+      setModal("lead");
+      return;
+    }
+    setBusy(true);
+    try {
+      const leadId = lead.id.slice("social:".length);
+      const response = await fetch(`/api/social/leads/${leadId}`, { cache: "no-store" });
+      const data = await response.json().catch(() => ({})) as { lead?: Lead; error?: string; message?: string };
+      if (!response.ok || !data.lead) throw new Error(data.error || data.message || "The lead could not be loaded for editing.");
+      setEditingLead(data.lead);
+      setModal("lead");
+    } catch (error) {
+      notify(error instanceof Error ? error.message : "The lead could not be loaded for editing.");
+    } finally {
+      setBusy(false);
     }
   };
 
@@ -1345,8 +1371,7 @@ export default function Home({ initialView = "Overview" }: { initialView?: strin
                 setModal("lead");
               }}
               onEdit={(lead) => {
-                setEditingLead(lead);
-                setModal("lead");
+                void openLeadEditor(lead);
               }}
               onView={viewLead360}
               changeStatus={changeStatus}
