@@ -135,3 +135,31 @@ Rollback is operationally safe: disable the Apollo source or all enrichment swit
 ## Validation
 
 The acquisition tests cover configuration validation, stable normalization and contact provenance, People Search without paid enrichment, configurable filters, stable Apollo IDs, bulk limits, fit gating, acceptable standard email stopping waterfall, selective waterfall, disabled phone-channel behavior, async correlation, WhatsApp separation, channel priority/policy enforcement, daily-limit discovery and deduplication, consent-gated automatic scheduling, conversion criteria, opt-out handling, structured AI fallback, and independent listener routes. The normal full regression suite remains the release gate for Campaigns, AI Campaigns, Buffer, Landing Page Studio, social listener, Lead scoring, and Lead 360. Migration 026 was applied to the configured production MSSQL database on 2026-09-19 after a user-confirmed backup. Migration 028 must not be applied until a fresh production backup is confirmed for this Apollo change.
+
+## AI discovery Search Sources
+
+The existing Acquisition Configuration → Search sources checklist includes **ChatGPT (OpenAI)**, **Gemini (Google)**, and **Claude (Anthropic)**. Their stable IDs are `chatgpt`, `gemini`, and `claude`; persisted source codes follow the existing uppercase convention (`CHATGPT`, `GEMINI`, `CLAUDE`). Each defaults to disabled and has its own enabled flag, priority, and existing source settings. Older configurations keep their saved selections. The editor appends missing sources as disabled. No separate search panel, acquisition workflow, schema migration, or tables are required.
+
+Enable the desired source and run the existing discovery action, or let the existing active-configuration job run it within its date window. Prospects use the same normalization, fit scoring, daily caps, review, communication/consent rules, and Lead conversion. Missing credentials, disabled search tools, rejected constraints, and partial source failures appear in the existing feedback area. Other selected sources continue running.
+
+Reuse the enabled encrypted provider credential/model from AI Configuration, or configure server-only credentials. Search-specific model variables override the saved/general model; choose models available to your account that support these tools:
+
+| Source | Credential fallback | Search model override | Required opt-in |
+| --- | --- | --- | --- |
+| ChatGPT | `OPENAI_API_KEY` | `OPENAI_SEARCH_MODEL` | `ACQUISITION_OPENAI_WEB_SEARCH=true` |
+| Gemini | `GEMINI_API_KEY` | `GEMINI_SEARCH_MODEL` | `ACQUISITION_GOOGLE_WEB_SEARCH=true` |
+| Claude | `ANTHROPIC_API_KEY` | `CLAUDE_SEARCH_MODEL` | `ACQUISITION_ANTHROPIC_WEB_SEARCH=true` |
+
+These use OpenAI Responses `web_search`, Gemini GenerateContent `google_search` grounding, and Anthropic `web_search_20250305`. Model IDs are configurable; none is hardcoded for discovery. The account must permit the respective tool. A request that does not actually perform web search cannot import prospects. API calls time out after 45 seconds; transient failures retry up to three attempts with bounded backoff. Invalid configuration/authentication failures do not retry.
+
+Only targeting fields (industry, customer type, location, business size, keywords and source search terms) leave the CRM. Private CRM records, inactive Leads, landing registrations, conversations, and Company Profile data are not sent. Configuration/account relationships remain in the existing authenticated repository pipeline.
+
+Existing source settings `searchTerms`, `industryOrCategory`, `keywords`, `location`, `resultLimit`, `dailyProspectLimit`, and `minimumFitScore` are supported. Source overrides follow the existing Google Places convention. Existing keyword fit scoring and qualification thresholds remain authoritative. Industry, location, customer type, and size require literal supporting phrases on the business evidence page; synonyms, ambiguous regions, or inferred employee counts can be rejected. Unknown settings (for example radius, arbitrary status/date filters, or include/exclude expressions) return an explicit unsupported-constraint error. The existing start/end dates still control the scheduled configuration, rather than filtering web page dates.
+
+Each candidate must cite a URL present in the provider's actual web citations. The server verifies a publicly accessible business-owned HTTPS HTML/text page, checks the company and any accepted contact values against visible text, and discards guessed email/phone values, social handles, consent claims, and model scores. Browser rendering, protected/paywalled pages, PDFs, redirects, IPv6-only sites, blocked robots rules, and unverifiable evidence cannot qualify. Retrieval uses validated, pinned public IPv4 addresses, bounded page sizes, per-page timeouts, and a 15-second evidence budget; no anti-bot bypass is attempted. Results are capped at ten candidates per source call and respect lower configured/remaining limits. Empty and rejected results are reported without inventing replacements.
+
+The existing prospect identity/upsert path merges AI discoveries of the same canonical business domain; scoped website matching also reuses an existing prospect from another source. Evidence from each AI source remains in prospect metadata and is linked in the existing Prospect table. The first source label and consent/engagement lifecycle remain intact. This conservative business-domain identity can combine branches sharing one domain; person-level discovery remains the existing Apollo workflow. No raw page body is retained. Operator review is still required before conversion/outreach under the existing rules.
+
+Verification uses mocked provider/evidence responses for all three sources, persistence/defaults, supported/rejected criteria, missing credentials/tools, error/retry behavior, evidence rejection, and cross-source deduplication. Live paid provider calls and account-specific model/tool permissions have not been verified by these tests.
+
+API references: [OpenAI](https://developers.openai.com/api/docs/guides/tools-web-search), [Gemini](https://ai.google.dev/gemini-api/docs/google-search), [Claude](https://platform.claude.com/docs/en/agents-and-tools/tool-use/web-search-tool).

@@ -2136,6 +2136,20 @@ export class SqlServerRepository {
     return (response.recordset || []).map(mapAcquisitionProspect);
   }
 
+  async findAcquisitionProspectByWebsite(configurationId, domain) {
+    const request = this.request();
+    request.input("AIAcquisitionConfigurationId", this.sql.BigInt, numericId(configurationId));
+    request.input("Domain", this.sql.NVarChar(500), domain.toLowerCase());
+    const response = await request.query(`SELECT TOP (1) IdentityKey, MetadataJson
+      FROM dbo.AIAcquisitionProspects
+      WHERE AIAcquisitionConfigurationId=@AIAcquisitionConfigurationId
+        AND LOWER(REPLACE(REPLACE(LEFT(Website,CHARINDEX('/',Website+'/',CHARINDEX('://',Website)+3)-1),
+          'https://',''),'http://','')) IN (@Domain,'www.'+@Domain)
+      ORDER BY AIAcquisitionProspectId`);
+    const row = response.recordset?.[0];
+    return row ? { identityKey: row.IdentityKey, metadata: jsonValue(row.MetadataJson, {}) } : null;
+  }
+
   async upsertAcquisitionProspect(input) {
     const request = this.request();
     request.input("AIAcquisitionConfigurationId", this.sql.BigInt, numericId(input.acquisitionConfigurationId));

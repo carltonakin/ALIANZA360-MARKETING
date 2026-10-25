@@ -1,6 +1,7 @@
 "use client";
 
 import { useCallback, useEffect, useMemo, useState } from "react";
+import { AI_ACQUISITION_SOURCES } from "../../lib/acquisition-ai-sources.mjs";
 
 export type AcquisitionView = "Overview" | "Acquisition Configurations" | "Prospects" | "Conversations" | "Search Sources" | "Communication Settings" | "Analytics";
 type AIProvider = { id: number; providerName: string; providerCode: string; enabled: boolean };
@@ -23,6 +24,7 @@ type Prospect = {
   location: string; website: string; email: string; phone: string; whatsAppNumber: string; instagram: string;
   facebook: string; source: string; fitScore: number; fitReason: string; status: string; responded: boolean;
   convertedLeadId: string | null; discoveredAt: string;
+  metadata?: { discoveries?: { source: string; sourceUrl: string; discoveredAt: string }[] };
 };
 type Conversation = {
   id: number; prospectId: number; companyName: string; contactName: string; channel: string; direction: string;
@@ -45,6 +47,7 @@ const SOURCE_NAMES: Record<string, string> = {
   CSV_IMPORT: "CSV prospect import",
   BUSINESS_DIRECTORY: "Approved business directories",
   PARTNER_API: "Partner/API data sources",
+  ...Object.fromEntries(AI_ACQUISITION_SOURCES.map((source) => [source.code, source.name])),
 };
 const CHANNEL_NAMES: Record<string, string> = {
   EMAIL: "Email", WHATSAPP_BUSINESS: "WhatsApp Business", INSTAGRAM: "Instagram", FACEBOOK: "Facebook",
@@ -235,8 +238,17 @@ export function AIAcquisition({ view }: { view: AcquisitionView }) {
   const mutate = async (path: string, payload: Record<string, unknown>, successMessage: string) => {
     setBusy(true); setError("");
     try {
-      await api(path, { method: "POST", headers: { "content-type": "application/json" }, body: JSON.stringify(payload) });
-      setMessage(successMessage); setTimeout(() => setMessage(""), 2800); await load();
+      const result = await api<{ configuration?: AcquisitionConfiguration; discovery?: { results: { sourceCode: string; discovered: number; error?: string; reason?: string; rejectedUnverified?: number }[] } }>(path, { method: "POST", headers: { "content-type": "application/json" }, body: JSON.stringify(payload) });
+      if (result.configuration) {
+        const saved = withAvailableSources(result.configuration);
+        setConfigurations((current) => current.map((configuration) => configuration.id === saved.id ? saved : configuration));
+      }
+      const reports = result.discovery?.results || [];
+      const failures = reports.filter((item) => item.error || item.reason).map((item) => `${SOURCE_NAMES[item.sourceCode] || item.sourceCode}: ${item.error || item.reason}`);
+      const rejected = reports.reduce((total, item) => total + (item.rejectedUnverified || 0), 0);
+      setMessage(`${successMessage}${reports.length ? ` ${reports.reduce((total, item) => total + item.discovered, 0)} new prospects.` : ""}${rejected ? ` ${rejected} results excluded because public evidence could not be verified.` : ""}`);
+      setTimeout(() => setMessage(""), 8000); await load();
+      if (failures.length) setError((current) => [current, ...failures].filter(Boolean).join(" "));
     } catch (mutationError) {
       setError(mutationError instanceof Error ? mutationError.message : "The operation failed.");
     } finally { setBusy(false); }
@@ -327,7 +339,7 @@ function OverviewView({ overview, configurations, selected, manualTasks, busy, o
     <section className="panel acquisition-control-panel">
       <div className="panel-head"><div><h3>Acquisition controls</h3><p>Lifecycle controls apply only to the selected acquisition configuration.</p></div>{selected && <span className={`status ${statusClass(selected.status)}`}>{humanize(selected.status)}</span>}</div>
       {selected ? <><h4>{selected.acquisitionName}</h4><p>{selected.objective}</p><div className="card-actions">
-        {selected.status === "DRAFT" && <button disabled={busy} onClick={() => onAction("START")}>Start</button>}
+        {["DRAFT", "STOPPED"].includes(selected.status) && <button disabled={busy} onClick={() => onAction("START")}>Start</button>}
         {selected.status === "ACTIVE" && <button disabled={busy} onClick={() => onAction("PAUSE")}>Pause</button>}
         {selected.status === "PAUSED" && <button disabled={busy} onClick={() => onAction("RESUME")}>Resume</button>}
         {!['STOPPED', 'COMPLETED'].includes(selected.status) && <button disabled={busy} onClick={() => onAction("STOP")}>Stop</button>}
@@ -506,7 +518,7 @@ function ProspectsView({ prospects, busy, onContact, onConvert, onDiscover, onIm
     <div className="acquisition-table acquisition-prospect-cols table-head"><span>Prospect</span><span>Source</span><span>Fit</span><span>Status</span><span>Contact</span><span>Actions</span></div>
     {prospects.map((prospect) => <div className="acquisition-table acquisition-prospect-cols" key={prospect.id}>
       <span className="contact"><i>{prospect.companyName.slice(0, 2).toUpperCase()}</i><b>{prospect.companyName}<small>{prospect.contactName || prospect.location || "No contact name"}</small></b></span>
-      <span>{humanize(prospect.source)}</span><strong>{prospect.fitScore}/100</strong><span className={`status ${statusClass(prospect.status)}`}>{humanize(prospect.status)}</span>
+      <span>{SOURCE_NAMES[prospect.source] || humanize(prospect.source)}{prospect.metadata?.discoveries?.filter((item) => /^https:\/\//i.test(item.sourceUrl)).map((item) => <small key={`${item.source}:${item.sourceUrl}`}><a href={item.sourceUrl} target="_blank" rel="noopener noreferrer">{SOURCE_NAMES[item.source] || item.source} evidence</a></small>)}</span><strong>{prospect.fitScore}/100</strong><span className={`status ${statusClass(prospect.status)}`}>{humanize(prospect.status)}</span>
       <span className="acquisition-contact-stack"><small>{prospect.email || prospect.phone || prospect.instagram || prospect.website || "Not contactable"}</small></span>
       <span className="acquisition-row-actions"><button disabled={busy || prospect.status === "DO_NOT_CONTACT" || Boolean(prospect.convertedLeadId)} onClick={() => onContact(prospect.id)}>Queue contact</button><button disabled={busy || Boolean(prospect.convertedLeadId)} onClick={() => onConvert(prospect.id)}>{prospect.convertedLeadId ? "Converted" : "Convert to Lead"}</button></span>
     </div>)}

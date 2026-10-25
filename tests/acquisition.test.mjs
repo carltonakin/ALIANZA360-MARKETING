@@ -7,13 +7,202 @@ import {
   ApolloOrganizationsProvider,
   CommunicationPolicyEngine,
   ProspectDiscoveryProvider,
+  AISourceDiscoveryProvider,
+  SEARCH_SOURCE_DEFINITIONS,
+  createDiscoveryProviders,
   normalizeAcquisitionDecision,
   normalizeAcquisitionInput,
   normalizeProspect,
 } from "../social/acquisition.mjs";
 import { AIProviderService } from "../social/ai-providers.mjs";
+import { AcquisitionSearchService, ACQUISITION_SEARCH_PROVIDERS } from "../social/acquisition-search.mjs";
 import { createSocialListenerApp } from "../social/server.mjs";
 import { InMemorySocialRepository } from "../social/core.mjs";
+import { AI_ACQUISITION_SOURCES } from "../lib/acquisition-ai-sources.mjs";
+import { aiDiscoveryCriteria } from "../social/acquisition-ai-discovery.mjs";
+import { evidenceText, publicEvidenceAddress, publicEvidenceUrl, robotsAllows } from "../social/acquisition-evidence.mjs";
+import { SqlServerRepository } from "../social/sql-server.mjs";
+
+const verifiedBusiness = { companyName: "Example Advisory", website: "https://example.com", industry: "advisory", location: "Miami", email: "office@example.com", phone: "+1 305 555 0100", sourceUrl: "https://example.com/about", description: "growth automation", customerTypeEvidence: "business owners", businessSizeEvidence: "10 employees" };
+const publicBusinessPage = "Example Advisory offers advisory in Miami. Contact office@example.com or +1 305 555 0100. Our growth automation team serves business owners with 10 employees.";
+
+function groundedFixture(definition, candidates = [verifiedBusiness], { grounded = true, cited = true } = {}) {
+  const answer = `\`\`\`json\n${JSON.stringify({ prospects: candidates })}\n\`\`\``;
+  const citations = cited ? [{ type: "url_citation", url: verifiedBusiness.sourceUrl, title: "Example Advisory" }] : [];
+  if (definition.id === "chatgpt") return { output: [...(grounded ? [{ type: "web_search_call", status: "completed" }] : []), { content: [{ type: "output_text", text: answer, annotations: citations }] }] };
+  if (definition.id === "gemini") return { candidates: [{ content: { parts: [{ text: answer }] }, groundingMetadata: grounded ? { webSearchQueries: ["advisory Miami"], groundingChunks: cited ? [{ web: { uri: verifiedBusiness.sourceUrl } }] : [] } : {} }] };
+  return { content: [{ type: "text", text: answer, citations }, ...(grounded ? [{ type: "web_search_tool_result", content: cited ? [{ url: verifiedBusiness.sourceUrl }] : [] }] : [])] };
+}
+
+function aiSourceFixture(definition, options = {}) {
+  const provider = ACQUISITION_SEARCH_PROVIDERS.find((item) => item.id === (definition.apiProvider || definition.provider));
+  return new AISourceDiscoveryProvider(definition, {
+    env: { [provider.key]: "fixture-secret", [definition.modelEnv]: "account-search-model", [`ACQUISITION_${provider.id.toUpperCase()}_WEB_SEARCH`]: "true" },
+    fetchImpl: async () => Response.json(groundedFixture(definition)),
+    evidenceReader: async (url) => ({ url, text: publicBusinessPage }),
+    sleep: async () => {}, ...options,
+  });
+}
+
+test("AI discovery sources extend the existing defaults and persist independent choices with old configurations intact", async () => {
+  const defaults = configuration({ searchSources: undefined });
+  for (const definition of AI_ACQUISITION_SOURCES) {
+    assert.equal(SEARCH_SOURCE_DEFINITIONS.find((item) => item.code === definition.code).id, definition.id);
+    assert.equal(defaults.searchSources.find((item) => item.sourceCode === definition.code).enabled, false);
+    assert.ok(createDiscoveryProviders({ env: {} }).has(definition.code));
+  }
+  const old = configuration();
+  assert.deepEqual(old.searchSources.map((source) => source.sourceCode), ["CSV_IMPORT"]);
+  let saved;
+  const repository = { saveAcquisitionConfiguration: async (input) => { saved = structuredClone(input); return saved; }, getAcquisitionConfigurations: async () => saved ? [saved] : [] };
+  const service = new AcquisitionService({ repository, env: {} });
+  const input = configuration({ id: null, searchSources: AI_ACQUISITION_SOURCES.map((item, index) => ({ sourceCode: item.id, enabled: index !== 1, priority: index + 1, settings: {} })) });
+  await service.saveConfiguration(input);
+  assert.deepEqual((await service.configurations())[0].searchSources.map((source) => [source.sourceCode, source.enabled]), [["CHATGPT", true], ["GEMINI", false], ["CLAUDE", true]]);
+});
+
+for (const definition of AI_ACQUISITION_SOURCES) {
+  test(`${definition.name} uses existing criteria, verifies evidence, excludes fabricated contacts, and normalizes provenance`, async () => {
+    let payload;
+    const config = { ...configuration({ targetCustomerType: "business owners", businessSize: "10 employees" }), id: 8,
+      privateContacts: [{ email: "private@crm.test" }], objective: "PRIVATE_OBJECTIVE" };
+    const provider = aiSourceFixture(definition, { fetchImpl: async (_url, options) => {
+      payload = JSON.parse(options.body);
+      return Response.json(groundedFixture(definition, [{ ...verifiedBusiness, email: "guessed@example.com", phone: "+1 999 999 9999", fitScore: 100, consentStatus: "GRANTED", whatsAppNumber: "+1 999 999 9999" }]));
+    } });
+    const found = await provider.searchProspects({ configuration: config, settings: {}, limit: 2 });
+    assert.equal(found.length, 1);
+    const prompt = JSON.stringify(payload);
+    assert.match(prompt, /Miami/); assert.match(prompt, /advisory/); assert.match(prompt, /growth, automation/);
+    assert.match(prompt, /business owners/); assert.match(prompt, /10 employees/);
+    assert.equal(prompt.includes("private@crm.test"), false); assert.equal(prompt.includes("PRIVATE_OBJECTIVE"), false);
+    assert.equal(payload.model || "account-search-model", "account-search-model");
+    const normalized = provider.normalizeProspect(found[0], { configuration: config });
+    assert.equal(normalized.source, definition.code);
+    assert.equal(normalized.email, ""); assert.equal(normalized.phone, ""); assert.equal(normalized.whatsAppNumber, "");
+    assert.equal(normalized.consentStatus, "");
+    assert.equal(normalized.metadata.discoveries[0].source, definition.code);
+    assert.ok(normalized.metadata.evidenceVerifiedAt);
+    assert.equal(normalized.contacts.find((item) => item.type === "WEBSITE").verified, true);
+  });
+}
+
+test("AI discovery fails closed on unsupported criteria, missing credentials, disabled search, absent grounding, and absent citations", async () => {
+  const definition = AI_ACQUISITION_SOURCES[0];
+  const config = { ...configuration(), id: 8 };
+  assert.throws(() => aiDiscoveryCriteria(config, { radius: 50 }, 5), /cannot enforce.*radius/);
+  assert.throws(() => aiDiscoveryCriteria(config, { resultLimit: "invalid" }, 5), /Invalid/);
+  await assert.rejects(aiSourceFixture(definition, { env: {} }).searchProspects({ configuration: config }), /OPENAI_API_KEY/);
+  await assert.rejects(aiSourceFixture(definition, { env: { OPENAI_API_KEY: "test", OPENAI_SEARCH_MODEL: "configured" } }).searchProspects({ configuration: config }), /WEB_SEARCH=true/);
+  for (const fixtureOptions of [{ grounded: false }, { cited: false }]) {
+    const provider = aiSourceFixture(definition, { fetchImpl: async () => Response.json(groundedFixture(definition, undefined, fixtureOptions)) });
+    await assert.rejects(provider.searchProspects({ configuration: config }), /evidence|citations/);
+  }
+  const empty = aiSourceFixture(definition, { fetchImpl: async () => Response.json(groundedFixture(definition, [], { cited: false })) });
+  assert.equal((await empty.searchProspects({ configuration: config })).length, 0);
+});
+
+test("AI discovery rejects unsupported/unverifiable targets and unsafe evidence and bounds retries", async () => {
+  const definition = AI_ACQUISITION_SOURCES[0];
+  const config = { ...configuration(), id: 8 };
+  for (const overrides of [{ targetLocation: "Bogota" }, { targetIndustry: "retail" }, { businessSize: "500 employees" }, { targetCustomerType: "hospitals" }]) {
+    const rows = await aiSourceFixture(definition).searchProspects({ configuration: { ...config, ...overrides } });
+    assert.equal(rows.length, 0); assert.equal(rows.diagnostics.rejectedUnverified, 1);
+  }
+  const invalid = aiSourceFixture(definition, { fetchImpl: async () => Response.json(groundedFixture(definition, [{ ...verifiedBusiness, sourceUrl: "https://uncited.test/about" }])), evidenceReader: async () => { throw new Error("must not fetch"); } });
+  assert.equal((await invalid.searchProspects({ configuration: config })).length, 0);
+  let attempts = 0;
+  const unavailable = aiSourceFixture(definition, { fetchImpl: async () => { attempts += 1; return Response.json({}, { status: 429 }); } });
+  await assert.rejects(unavailable.searchProspects({ configuration: config }), /rate limited/);
+  assert.equal(attempts, 3);
+  attempts = 0;
+  const unsupported = aiSourceFixture(definition, { fetchImpl: async () => { attempts += 1; return Response.json({}, { status: 400 }); } });
+  await assert.rejects(unsupported.searchProspects({ configuration: config }), /model or search tool/);
+  assert.equal(attempts, 1);
+});
+
+test("multiple AI sources use the same acquisition pipeline, daily cap, deduplication, and merged evidence", async () => {
+  const config = { ...configuration({ minimumProspectFitScore: 0, dailyProspectLimit: 3,
+    searchSources: [...AI_ACQUISITION_SOURCES.map((source, index) => ({ sourceCode: source.code, enabled: true, priority: index + 1 })), { sourceCode: "CSV_IMPORT", enabled: true, priority: 4 }] }), id: 8 };
+  const records = new Map();
+  const repository = { getAcquisitionConfigurations: async () => [config], getAcquisitionDiscoveryCountToday: async () => 0,
+    findAcquisitionProspectByWebsite: async () => [...records.values()][0] || null,
+    upsertAcquisitionProspect: async (prospect) => { const inserted = !records.has(prospect.identityKey); records.set(prospect.identityKey, prospect); return { ...prospect, inserted }; } };
+  const providers = new Map(AI_ACQUISITION_SOURCES.map((definition) => [definition.code, aiSourceFixture(definition)]));
+  providers.set("CSV_IMPORT", { ...new ProspectDiscoveryProvider("CSV_IMPORT"), searchProspects: async () => { throw new Error("An unrelated source failed."); } });
+  const discovery = await new AcquisitionService({ repository, discoveryProviders: providers }).discover(8);
+  assert.equal(records.size, 1);
+  assert.equal(discovery.remainingDailyLimit, 2);
+  assert.deepEqual(discovery.results.slice(0, 3).map((item) => item.discovered), [1, 0, 0]);
+  assert.deepEqual([...records.values()][0].metadata.discoveries.map((item) => item.source), ["CHATGPT", "GEMINI", "CLAUDE"]);
+  assert.match(discovery.results[3].error, /unrelated source/);
+});
+
+test("AI evidence lookup is scoped and parameterized and public fetch guards reject private hosts", async () => {
+  let query, parameters = {};
+  const repository = new SqlServerRepository({ BigInt: "bigint", NVarChar: () => "text" }, { request: () => ({ input(name, _type, value) { parameters[name] = value; return this; }, async query(sql) { query = sql; return { recordset: [{ IdentityKey: "existing-identity", MetadataJson: "{}" }] }; } }) });
+  assert.equal((await repository.findAcquisitionProspectByWebsite(8, "example.com")).identityKey, "existing-identity");
+  assert.deepEqual(parameters, { AIAcquisitionConfigurationId: 8, Domain: "example.com" });
+  assert.match(query, /AIAcquisitionConfigurationId=@AIAcquisitionConfigurationId/);
+  for (const ip of ["127.0.0.1", "10.1.2.3", "169.254.169.254", "172.16.0.1", "192.168.0.2", "::1"]) assert.equal(publicEvidenceAddress(ip), false);
+  assert.equal(publicEvidenceAddress("8.8.8.8"), true);
+  for (const url of ["http://example.com", "https://127.0.0.1", "https://localhost", "https://user:secret@example.com", "https://example.com:8080"]) assert.equal(publicEvidenceUrl(url), null);
+  assert.equal(robotsAllows("User-agent: *\nDisallow: /private\nAllow: /private/public", "/private/secret"), false);
+  assert.equal(robotsAllows("User-agent: *\nDisallow: /private\nAllow: /private/public", "/private/public"), true);
+  assert.equal(evidenceText("<script>fake@example.com</script><p>Real &amp; Public</p>"), "Real & Public");
+});
+
+test("AI Search registry, validation, and missing configuration", async () => {
+  assert.deepEqual(ACQUISITION_SEARCH_PROVIDERS.map(({ id, label }) => [id, label]), [["openai", "ChatGPT"], ["google", "Gemini"], ["anthropic", "Claude"]]);
+  const service = new AcquisitionSearchService({ env: {} });
+  await assert.rejects(service.search({ provider: "other", query: "test" }), /Select ChatGPT/);
+  await assert.rejects(service.search({ provider: "openai", query: " " }), /search query/);
+  await assert.rejects(service.search({ provider: "openai", query: "a".repeat(4001) }), /4,000/);
+  await assert.rejects(service.search({ provider: "openai", query: "test" }), /OPENAI_API_KEY/);
+});
+
+for (const provider of ACQUISITION_SEARCH_PROVIDERS) {
+  test(`AI Search routes ${provider.id}, normalizes citations, and keeps credentials private`, async () => {
+    const fixtures = {
+      openai: { output: [{ type: "web_search_call", status: "completed" }, { content: [{ type: "output_text", text: "Answer", annotations: [{ type: "url_citation", url: "https://example.com", title: "Source" }] }] }] },
+      google: { candidates: [{ content: { parts: [{ text: "Answer" }] }, groundingMetadata: { webSearchQueries: ["test"], groundingChunks: [{ web: { uri: "https://example.com", title: "Source" } }] } }] },
+      anthropic: { content: [{ type: "text", text: "Answer", citations: [{ url: "https://example.com", title: "Source" }] }, { type: "web_search_tool_result", content: [{ url: "https://example.com", title: "Source" }] }] },
+    };
+    let request;
+    const service = new AcquisitionSearchService({ env: { [provider.key]: "secret-fixture", [provider.model]: "configured-model", [`ACQUISITION_${provider.id.toUpperCase()}_WEB_SEARCH`]: "true" }, fetchImpl: async (url, options) => {
+      request = { url, options, body: JSON.parse(options.body) };
+      return Response.json(fixtures[provider.id]);
+    } });
+    const result = await service.search({ provider: provider.id, query: "Find prospects" });
+    assert.equal(result.provider, provider.id);
+    assert.equal(result.answer, "Answer");
+    assert.equal(result.sources.length, 1);
+    assert.equal(result.webSearchUsed, true);
+    assert.equal(JSON.stringify(result).includes("secret-fixture"), false);
+    assert.match(request.url, provider.id === "openai" ? /api.openai.com\/v1\/responses/ : provider.id === "google" ? /generativelanguage.googleapis.com/ : /api.anthropic.com\/v1\/messages/);
+    assert.equal(request.body.model || "configured-model", "configured-model");
+    assert.ok(request.body.tools);
+  });
+}
+
+test("AI Search reuses encrypted settings, labels generation, and handles failures safely", async () => {
+  const repository = { getAiProviderConfigurations: async () => [{ providerCode: "OPENAI", enabled: true, model: "saved-model", secrets: { apiKey: "stored-secret" } }] };
+  const service = new AcquisitionSearchService({ repository, env: {}, fetchImpl: async (_url, options) => {
+    assert.equal(options.headers.authorization, "Bearer stored-secret");
+    assert.equal(JSON.parse(options.body).tools, undefined);
+    return Response.json({ output: [{ content: [{ type: "output_text", text: "Generated", annotations: [{ type: "url_citation", url: "javascript:alert(1)" }] }] }] });
+  } });
+  const result = await service.search({ provider: "openai", query: "test" });
+  assert.equal(result.webSearchUsed, false);
+  assert.match(result.notice, /live web search was not used/);
+  assert.deepEqual(result.sources, []);
+  for (const status of [401, 429, 500]) {
+    service.fetchImpl = async () => Response.json({ error: { message: "stored-secret" } }, { status });
+    await assert.rejects(service.search({ provider: "openai", query: "test" }), (error) => !error.message.includes("stored-secret") && error.statusCode === (status === 401 ? 409 : status === 429 ? 429 : 502));
+  }
+  service.fetchImpl = async () => { throw new DOMException("stored-secret", "TimeoutError"); };
+  await assert.rejects(service.search({ provider: "openai", query: "test" }), /timed out/);
+});
 
 function configuration(overrides = {}) {
   return normalizeAcquisitionInput({
@@ -594,6 +783,12 @@ test("listener exposes acquisition routes independently of campaign routes", asy
     ...init, headers: { authorization: "Bearer service-token", "content-type": "application/json", ...init.headers },
   }));
   const overview = await request("/acquisition/overview");
+  const searchProviders = await request("/acquisition/ai-search/providers");
+  assert.deepEqual((await searchProviders.json()).providers.map((item) => item.id), ["openai", "google", "anthropic"]);
+  const invalidSearch = await request("/acquisition/ai-search", { method: "POST", body: JSON.stringify({ provider: "invalid", query: "test" }) });
+  assert.equal(invalidSearch.status, 400);
+  const unconfiguredSearch = await request("/acquisition/ai-search", { method: "POST", body: JSON.stringify({ provider: "google", query: "test" }) });
+  assert.equal(unconfiguredSearch.status, 409);
   assert.equal(overview.status, 200);
   assert.equal((await overview.json()).overview.prospectsDiscovered, 7);
   const discovery = await request("/acquisition/discover", { method: "POST", body: JSON.stringify({ configurationId: 3 }) });

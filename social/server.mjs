@@ -40,6 +40,7 @@ import {
 } from "./ai-campaign-automation.mjs";
 import { AIImageService, campaignMediaLibrary } from "./ai-campaign-media.mjs";
 import { AuthService } from "./auth.mjs";
+import { AcquisitionSearchService, ACQUISITION_SEARCH_PROVIDERS } from "./acquisition-search.mjs";
 import {
   AcquisitionService,
   COMMUNICATION_CHANNELS,
@@ -2014,6 +2015,8 @@ export async function createSocialListenerApp({
       fetchImpl,
     });
 
+  const acquisitionSearch = new AcquisitionSearchService({ repository: activeRepository, encryptionKey: aiEncryptionKey, env, fetchImpl });
+
   async function refreshConfiguredAdapters() {
     if (
       typeof activeRepository.getChannelConfigurations !==
@@ -2769,6 +2772,18 @@ export async function createSocialListenerApp({
           ok: true,
           overview: await activeAcquisitionService.overview(optionalId(url.searchParams.get("configurationId"))),
         });
+      }
+
+      if (request.method === "GET" && url.pathname === "/acquisition/ai-search/providers") {
+        return json({ providers: ACQUISITION_SEARCH_PROVIDERS.map(({ id, label }) => ({ id, label })) });
+      }
+
+      if (request.method === "POST" && url.pathname === "/acquisition/ai-search") {
+        try {
+          return json({ ok: true, result: await acquisitionSearch.search(await readJson(request)) });
+        } catch (error) {
+          return json({ error: error.statusCode ? error.message : "AI Search could not be completed. Try again later." }, error.statusCode || 502);
+        }
       }
 
       if (request.method === "GET" && url.pathname === "/acquisition/analytics") {

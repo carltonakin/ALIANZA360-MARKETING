@@ -1,4 +1,6 @@
 import { createHash, randomUUID } from "node:crypto";
+import { AI_ACQUISITION_SOURCES } from "../lib/acquisition-ai-sources.mjs";
+import { GroundedAcquisitionDiscovery } from "./acquisition-ai-discovery.mjs";
 
 export const ACQUISITION_STATUSES = Object.freeze([
   "DRAFT", "ACTIVE", "PAUSED", "COMPLETED", "STOPPED", "FAILED",
@@ -22,6 +24,7 @@ export const SEARCH_SOURCE_DEFINITIONS = Object.freeze([
   { code: "CSV_IMPORT", name: "CSV prospect import", implemented: true },
   { code: "BUSINESS_DIRECTORY", name: "Approved business directories", implemented: false },
   { code: "PARTNER_API", name: "Partner/API data sources", implemented: false },
+  ...AI_ACQUISITION_SOURCES.map((source) => ({ ...source, implemented: true })),
 ]);
 
 export const COMMUNICATION_CHANNELS = Object.freeze([
@@ -713,7 +716,20 @@ export class CSVImportProvider extends ProspectDiscoveryProvider {
   async searchProspects({ rows }) { return arrayValue(rows); }
 }
 
-export function createDiscoveryProviders({ repository, env = process.env, fetchImpl = globalThis.fetch } = {}) {
+export class AISourceDiscoveryProvider extends ProspectDiscoveryProvider {
+  constructor(definition, options) {
+    super(definition.code);
+    this.discovery = new GroundedAcquisitionDiscovery({ ...options, definition });
+  }
+  async searchProspects(context) { return this.discovery.searchProspects(context); }
+  normalizeProspect(prospect, context) {
+    const normalized = super.normalizeProspect(prospect, context);
+    normalized.identityKey = this.discovery.identityKey(prospect);
+    return normalized;
+  }
+}
+
+export function createDiscoveryProviders({ repository, encryptionKey, env = process.env, fetchImpl = globalThis.fetch, evidenceReader } = {}) {
   return new Map([
     ["GOOGLE_PLACES", new GooglePlacesProvider({ apiKey: env.GOOGLE_PLACES_API_KEY, fetchImpl })],
     ["APOLLO_IO", new ApolloProvider({ apiKey: env.APOLLO_API_KEY, fetchImpl })],
@@ -723,6 +739,7 @@ export function createDiscoveryProviders({ repository, env = process.env, fetchI
     ["INSTAGRAM_INBOUND", new RepositoryDiscoveryProvider("INSTAGRAM_INBOUND", repository)],
     ["FACEBOOK_INBOUND", new RepositoryDiscoveryProvider("FACEBOOK_INBOUND", repository)],
     ["CSV_IMPORT", new CSVImportProvider()],
+    ...AI_ACQUISITION_SOURCES.map((definition) => [definition.code, new AISourceDiscoveryProvider(definition, { repository, encryptionKey, env, fetchImpl, evidenceReader })]),
   ]);
 }
 
@@ -882,7 +899,7 @@ export class AcquisitionService {
   constructor({ repository, aiProviderService, discoveryProviders, policyEngine, env = process.env, fetchImpl } = {}) {
     this.repository = repository;
     this.aiProviderService = aiProviderService;
-    this.discoveryProviders = discoveryProviders || createDiscoveryProviders({ repository, env, fetchImpl });
+    this.discoveryProviders = discoveryProviders || createDiscoveryProviders({ repository, encryptionKey: aiProviderService?.encryptionKey || env.AI_PROVIDER_ENCRYPTION_KEY || env.CHANNEL_CONFIG_ENCRYPTION_KEY, env, fetchImpl });
     this.policyEngine = policyEngine || new CommunicationPolicyEngine();
     this.outreachBatchSize = boundedInteger(env.AI_ACQUISITION_OUTREACH_BATCH_SIZE, 10, 1, 100);
   }
@@ -974,7 +991,7 @@ export class AcquisitionService {
         }
         let found;
         try {
-          found = await provider.searchProspects({ configuration, settings: providerSettings, rows });
+          found = await provider.searchProspects({ configuration, settings: providerSettings, rows, limit: sourceLimit });
           if (apolloSearchKey && typeof this.repository.saveApolloUsage === "function") {
             await this.repository.saveApolloUsage({ acquisitionConfigurationId: configuration.id, requestKey: apolloSearchKey,
               requestKind: apolloRequestKind, requestedCount: 1, successCount: 1, status: "COMPLETED" });
@@ -1005,6 +1022,15 @@ export class AcquisitionService {
               fullName: apolloMetadata.fullName,
               companyDomain: apolloMetadata.companyDomain,
             }) : null;
+          if (provider instanceof AISourceDiscoveryProvider && typeof this.repository.findAcquisitionProspectByWebsite === "function") {
+            const matched = await this.repository.findAcquisitionProspectByWebsite(configuration.id, normalizedDomain(prospect.website));
+            if (matched) {
+              prospect.identityKey = matched.identityKey;
+              const discoveries = [...arrayValue(matched.metadata?.discoveries), ...arrayValue(prospect.metadata?.discoveries)];
+              prospect.metadata = { ...objectValue(matched.metadata), ...prospect.metadata,
+                discoveries: discoveries.filter((item, index) => discoveries.findIndex((entry) => entry.source === item.source && entry.sourceUrl === item.sourceUrl) === index) };
+            }
+          }
           const saved = existing || await this.repository.upsertAcquisitionProspect(prospect);
           if (saved && apolloMetadata?.apolloPersonId && typeof this.repository.upsertApolloProfileDiscovery === "function") {
             await this.repository.upsertApolloProfileDiscovery({
@@ -1027,7 +1053,7 @@ export class AcquisitionService {
           }
           if (remaining < 1 || persisted >= sourceLimit) break;
         }
-        results.push({ sourceCode: source.sourceCode, discovered: persisted, belowMinimum });
+        results.push({ sourceCode: source.sourceCode, discovered: persisted, belowMinimum, ...objectValue(found.diagnostics) });
       } catch (error) {
         results.push({ sourceCode: source.sourceCode, discovered: 0, error: clean(error?.message || error, 1000) });
       }
