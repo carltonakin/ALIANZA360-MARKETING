@@ -1,6 +1,6 @@
 import { lookup } from "node:dns/promises";
-import { request } from "node:https";
 import { isIP } from "node:net";
+import { Agent, fetch } from "undici";
 
 export function publicEvidenceUrl(value) {
   try {
@@ -10,6 +10,17 @@ export function publicEvidenceUrl(value) {
     url.hash = "";
     return url;
   } catch { return null; }
+}
+
+export function evidenceCitationKey(value) {
+  const url = publicEvidenceUrl(value);
+  if (!url) return "";
+  for (const name of [...url.searchParams.keys()]) {
+    if (/^(?:utm_(?:source|medium|campaign|term|content)|gclid|fbclid|msclkid)$/i.test(name)) url.searchParams.delete(name);
+  }
+  url.searchParams.sort();
+  if (url.pathname.length > 1) url.pathname = url.pathname.replace(/\/+$/, "");
+  return url.href;
 }
 
 export function publicEvidenceAddress(address) {
@@ -28,24 +39,37 @@ async function readPublicPage(value, signal, redirects = 0) {
   const addresses = await lookup(url.hostname, { all: true, family: 4 });
   if (signal.aborted) throw new Error("Evidence request timed out.");
   if (!addresses.length || addresses.some(({ address }) => !publicEvidenceAddress(address))) throw new Error("Non-public evidence host.");
-  const response = await new Promise((resolve, reject) => {
-    const req = request(url, {
-      signal, agent: false,
-      headers: { "user-agent": "Next2TheTopAcquisition/1.0", accept: "text/html,text/plain", "accept-encoding": "identity" },
-      lookup: (_host, options, callback) => callback(null, ...(options.all ? [[addresses[0]]] : [addresses[0].address, 4])),
-    }, (res) => {
-      let size = 0;
-      const chunks = [];
-      res.on("data", (chunk) => {
-        size += chunk.length;
-        if (size > 512_000) { res.destroy(new Error("Evidence page exceeds the size limit.")); return; }
-        chunks.push(chunk);
-      });
-      res.on("error", reject);
-      res.on("end", () => resolve({ status: res.statusCode, headers: res.headers, text: Buffer.concat(chunks).toString("utf8"), url: url.href }));
-    });
-    req.on("error", reject);
+  const dispatcher = new Agent({
+    connect: {
+      lookup: (_host, options, callback) => {
+        const address = addresses[0];
+        if (options.all) callback(null, [address]);
+        else callback(null, address.address, address.family);
+      },
+    },
   });
+  let response;
+  try {
+    const fetched = await fetch(url, {
+      dispatcher,
+      signal,
+      redirect: "manual",
+      headers: { "user-agent": "Next2TheTopAcquisition/1.0", accept: "text/html,text/plain", "accept-encoding": "identity" },
+    });
+    const headers = Object.fromEntries(fetched.headers.entries());
+    const declaredSize = Number(headers["content-length"] || 0);
+    if (declaredSize > 512_000) throw new Error("Evidence page exceeds the size limit.");
+    let size = 0;
+    const chunks = [];
+    for await (const chunk of fetched.body || []) {
+      size += chunk.length;
+      if (size > 512_000) throw new Error("Evidence page exceeds the size limit.");
+      chunks.push(Buffer.from(chunk));
+    }
+    response = { status: fetched.status, headers, text: Buffer.concat(chunks).toString("utf8"), url: url.href };
+  } finally {
+    await dispatcher.close();
+  }
   if ([301, 302, 303, 307, 308].includes(response.status)) {
     if (redirects >= 2 || !response.headers.location) throw new Error("Evidence redirect limit reached.");
     return readPublicPage(new URL(response.headers.location, url).href, signal, redirects + 1);

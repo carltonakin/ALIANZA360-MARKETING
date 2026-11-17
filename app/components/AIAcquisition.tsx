@@ -238,7 +238,7 @@ export function AIAcquisition({ view }: { view: AcquisitionView }) {
   const mutate = async (path: string, payload: Record<string, unknown>, successMessage: string) => {
     setBusy(true); setError("");
     try {
-      const result = await api<{ configuration?: AcquisitionConfiguration; discovery?: { results: { sourceCode: string; discovered: number; error?: string; reason?: string; rejectedUnverified?: number }[] } }>(path, { method: "POST", headers: { "content-type": "application/json" }, body: JSON.stringify(payload) });
+      const result = await api<{ configuration?: AcquisitionConfiguration; discovery?: { results: { sourceCode: string; discovered: number; error?: string; reason?: string; rejectedUnverified?: number; rejectionReasons?: Record<string, number> }[] } }>(path, { method: "POST", headers: { "content-type": "application/json" }, body: JSON.stringify(payload) });
       if (result.configuration) {
         const saved = withAvailableSources(result.configuration);
         setConfigurations((current) => current.map((configuration) => configuration.id === saved.id ? saved : configuration));
@@ -246,7 +246,23 @@ export function AIAcquisition({ view }: { view: AcquisitionView }) {
       const reports = result.discovery?.results || [];
       const failures = reports.filter((item) => item.error || item.reason).map((item) => `${SOURCE_NAMES[item.sourceCode] || item.sourceCode}: ${item.error || item.reason}`);
       const rejected = reports.reduce((total, item) => total + (item.rejectedUnverified || 0), 0);
-      setMessage(`${successMessage}${reports.length ? ` ${reports.reduce((total, item) => total + item.discovered, 0)} new prospects.` : ""}${rejected ? ` ${rejected} results excluded because public evidence could not be verified.` : ""}`);
+      const reasonLabels: Record<string, string> = {
+        invalidUrl: "invalid evidence URL",
+        uncitedSource: "source was not cited",
+        websiteMismatch: "source did not belong to the business website",
+        evidenceUnavailable: "evidence page could not be read",
+        evidenceTimedOut: "evidence page timed out",
+        evidenceRedirect: "evidence page redirected",
+        robotsBlocked: "evidence page blocked automated verification",
+        companyUnverified: "company name was not found on the page",
+        targetMismatch: "verified evidence did not match the configured targets",
+      };
+      const rejectionReasons = reports.reduce<Record<string, number>>((totals, item) => {
+        for (const [reason, count] of Object.entries(item.rejectionReasons || {})) totals[reason] = (totals[reason] || 0) + count;
+        return totals;
+      }, {});
+      const rejectionDetail = Object.entries(rejectionReasons).map(([reason, count]) => `${count} ${reasonLabels[reason] || reason}`).join(", ");
+      setMessage(`${successMessage}${reports.length ? ` ${reports.reduce((total, item) => total + item.discovered, 0)} new prospects.` : ""}${rejected ? ` ${rejected} results excluded because public evidence could not be verified${rejectionDetail ? ` (${rejectionDetail})` : ""}.` : ""}`);
       setTimeout(() => setMessage(""), 8000); await load();
       if (failures.length) setError((current) => [current, ...failures].filter(Boolean).join(" "));
     } catch (mutationError) {

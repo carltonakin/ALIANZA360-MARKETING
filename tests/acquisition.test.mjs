@@ -20,7 +20,7 @@ import { createSocialListenerApp } from "../social/server.mjs";
 import { InMemorySocialRepository } from "../social/core.mjs";
 import { AI_ACQUISITION_SOURCES } from "../lib/acquisition-ai-sources.mjs";
 import { aiDiscoveryCriteria } from "../social/acquisition-ai-discovery.mjs";
-import { evidenceText, publicEvidenceAddress, publicEvidenceUrl, robotsAllows } from "../social/acquisition-evidence.mjs";
+import { evidenceCitationKey, evidenceText, publicEvidenceAddress, publicEvidenceUrl, robotsAllows } from "../social/acquisition-evidence.mjs";
 import { SqlServerRepository } from "../social/sql-server.mjs";
 
 const verifiedBusiness = { companyName: "Example Advisory", website: "https://example.com", industry: "advisory", location: "Miami", email: "office@example.com", phone: "+1 305 555 0100", sourceUrl: "https://example.com/about", description: "growth automation", customerTypeEvidence: "business owners", businessSizeEvidence: "10 employees" };
@@ -75,6 +75,7 @@ for (const definition of AI_ACQUISITION_SOURCES) {
     const prompt = JSON.stringify(payload);
     assert.match(prompt, /Miami/); assert.match(prompt, /advisory/); assert.match(prompt, /growth, automation/);
     assert.match(prompt, /business owners/); assert.match(prompt, /10 employees/);
+    assert.match(prompt, /required absolute HTTPS URLs/); assert.match(prompt, /hostname must match/);
     assert.equal(prompt.includes("private@crm.test"), false); assert.equal(prompt.includes("PRIVATE_OBJECTIVE"), false);
     assert.equal(payload.model || "account-search-model", "account-search-model");
     const normalized = provider.normalizeProspect(found[0], { configuration: config });
@@ -121,6 +122,45 @@ test("AI discovery rejects unsupported/unverifiable targets and unsafe evidence 
   assert.equal(attempts, 1);
 });
 
+test("AI discovery treats configured target lists as alternatives and reports rejection reasons", async () => {
+  const definition = AI_ACQUISITION_SOURCES[0];
+  const config = { ...configuration({
+    targetIndustry: "retail, advisory; hospitality",
+    targetLocation: "Bogota or Miami",
+    targetCustomerType: "hospitals | business owners",
+    businessSize: "enterprise, 10 employees and medium",
+  }), id: 8 };
+  const accepted = await aiSourceFixture(definition).searchProspects({ configuration: config });
+  assert.equal(accepted.length, 1);
+  assert.deepEqual(accepted.diagnostics.rejectionReasons, {});
+
+  const rejected = await aiSourceFixture(definition).searchProspects({
+    configuration: { ...config, targetIndustry: "retail, hospitality" },
+  });
+  assert.equal(rejected.length, 0);
+  assert.deepEqual(rejected.diagnostics, {
+    rejectedUnverified: 1,
+    rejectionReasons: { targetMismatch: 1 },
+  });
+
+  const trackingCitation = await aiSourceFixture(definition, {
+    fetchImpl: async () => Response.json({
+      output: [
+        { type: "web_search_call", status: "completed" },
+        { content: [{ type: "output_text", text: `\`\`\`json\n${JSON.stringify({ prospects: [verifiedBusiness] })}\n\`\`\``, annotations: [
+          { type: "url_citation", url: `${verifiedBusiness.sourceUrl}/?utm_source=chatgpt.com`, title: "Example Advisory" },
+        ] }] },
+      ],
+    }),
+  }).searchProspects({ configuration: configuration() });
+  assert.equal(trackingCitation.length, 1);
+
+  const timedOut = await aiSourceFixture(definition, {
+    evidenceReader: async () => { throw new Error("Evidence request timed out."); },
+  }).searchProspects({ configuration: configuration() });
+  assert.deepEqual(timedOut.diagnostics.rejectionReasons, { evidenceTimedOut: 1 });
+});
+
 test("multiple AI sources use the same acquisition pipeline, daily cap, deduplication, and merged evidence", async () => {
   const config = { ...configuration({ minimumProspectFitScore: 0, dailyProspectLimit: 3,
     searchSources: [...AI_ACQUISITION_SOURCES.map((source, index) => ({ sourceCode: source.code, enabled: true, priority: index + 1 })), { sourceCode: "CSV_IMPORT", enabled: true, priority: 4 }] }), id: 8 };
@@ -147,6 +187,8 @@ test("AI evidence lookup is scoped and parameterized and public fetch guards rej
   for (const ip of ["127.0.0.1", "10.1.2.3", "169.254.169.254", "172.16.0.1", "192.168.0.2", "::1"]) assert.equal(publicEvidenceAddress(ip), false);
   assert.equal(publicEvidenceAddress("8.8.8.8"), true);
   for (const url of ["http://example.com", "https://127.0.0.1", "https://localhost", "https://user:secret@example.com", "https://example.com:8080"]) assert.equal(publicEvidenceUrl(url), null);
+  assert.equal(evidenceCitationKey("https://example.com/about/?utm_source=chatgpt.com&b=2&a=1"), "https://example.com/about?a=1&b=2");
+  assert.notEqual(evidenceCitationKey("https://example.com/about?location=miami"), evidenceCitationKey("https://example.com/about?location=bogota"));
   assert.equal(robotsAllows("User-agent: *\nDisallow: /private\nAllow: /private/public", "/private/secret"), false);
   assert.equal(robotsAllows("User-agent: *\nDisallow: /private\nAllow: /private/public", "/private/public"), true);
   assert.equal(evidenceText("<script>fake@example.com</script><p>Real &amp; Public</p>"), "Real & Public");
