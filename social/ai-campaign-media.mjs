@@ -4,6 +4,27 @@ function mediaError(message, statusCode = 400) {
   return Object.assign(new Error(message), { statusCode });
 }
 
+async function imageProviderHttpError(response, secrets = {}) {
+  let detail = "";
+  try {
+    const body = await response.json();
+    detail = String(body?.error?.message || body?.message || "")
+      .replace(/\s+/g, " ")
+      .trim();
+    for (const secret of Object.values(secrets)) {
+      const value = String(secret || "");
+      if (value.length >= 4) detail = detail.split(value).join("[REDACTED]");
+    }
+    detail = detail.slice(0, 700);
+  } catch {
+    // Keep the stable HTTP status message when the provider response is not JSON.
+  }
+  return mediaError(
+    `Image provider returned HTTP ${response.status}${detail ? `: ${detail}` : "."}`,
+    response.status === 429 ? 429 : 502,
+  );
+}
+
 export function campaignMediaLibrary(campaigns = []) {
   const assets = new Map();
   for (const campaign of campaigns) {
@@ -71,7 +92,7 @@ export class AIImageService {
   async generate({ providerId, prompt, platform }) {
     const provider = await this.providerService.provider(providerId);
     if (provider.providerCode !== "OPENAI") throw mediaError("Direct image generation is not configured for this provider.", 409);
-    const model = String(this.env.AI_CAMPAIGN_IMAGE_MODEL || "gpt-image-1").trim();
+    const model = String(this.env.AI_CAMPAIGN_IMAGE_MODEL || "gpt-image-2.5-sunburst").trim();
     if (!/^gpt-image-[a-z0-9.-]+$/.test(model)) throw mediaError("AI_CAMPAIGN_IMAGE_MODEL must be a GPT Image model.", 503);
     const response = await this.fetchImpl("https://api.openai.com/v1/images/generations", {
       method: "POST",
@@ -79,7 +100,7 @@ export class AIImageService {
       body: JSON.stringify({ model, prompt: String(prompt || "").slice(0, 4000), n: 1, output_format: "png", size: platform === "instagram" ? "1024x1024" : "1536x1024" }),
       signal: AbortSignal.timeout(120_000),
     });
-    if (!response.ok) throw mediaError(`Image provider returned HTTP ${response.status}.`, response.status === 429 ? 429 : 502);
+    if (!response.ok) throw await imageProviderHttpError(response, provider.secrets);
     const body = await response.json();
     const encoded = body?.data?.[0]?.b64_json;
     if (typeof encoded !== "string" || !encoded) throw mediaError("Image provider did not return image bytes.", 502);

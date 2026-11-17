@@ -327,7 +327,7 @@ test("generation hands every publishing-mode/media-strategy combination to the n
           },
           imageService: {
             generate: async () => ({
-              model: "gpt-image-1",
+              model: "gpt-image-2.5-sunburst",
               media: {
                 assetId: "asset-ai-image",
                 publicId: "campaigns/ai-fresh-lesson",
@@ -632,7 +632,7 @@ test("AI image generation uses an existing provider secret and stores bytes thro
     providerService: { provider: async () => ({ providerCode: "OPENAI", secrets: { apiKey: "stored-secret" } }) },
     fetchImpl: async (_url, request) => {
       assert.equal(request.headers.authorization, "Bearer stored-secret");
-      assert.equal(JSON.parse(request.body).model, "gpt-image-1");
+      assert.equal(JSON.parse(request.body).model, "gpt-image-2.5-sunburst");
       return Response.json({ data: [{ b64_json: Buffer.from("image-bytes").toString("base64") }] });
     },
     uploadMedia: async (input) => { uploaded = input; return { assetId: "generated-1", mediaUrl: "https://res.cloudinary.com/example/generated.png" }; },
@@ -641,6 +641,22 @@ test("AI image generation uses an existing provider secret and stores bytes thro
   const result = await service.generate({ providerId: 1, prompt: "A useful illustration", platform: "instagram" });
   assert.equal(result.media.assetId, "generated-1");
   assert.equal(uploaded.bytes.toString(), "image-bytes");
+});
+
+test("AI image generation preserves actionable provider error details", async () => {
+  const service = new AIImageService({
+    providerService: { provider: async () => ({ providerCode: "OPENAI", secrets: { apiKey: "stored-secret" } }) },
+    fetchImpl: async () => Response.json({ error: { message: "The requested image model is no longer available for stored-secret." } }, { status: 400 }),
+    env: {},
+  });
+  await assert.rejects(
+    service.generate({ providerId: 1, prompt: "A useful illustration", platform: "instagram" }),
+    (error) => {
+      assert.match(error.message, /Image provider returned HTTP 400: The requested image model is no longer available for \[REDACTED\]\./);
+      assert.doesNotMatch(error.message, /stored-secret/);
+      return true;
+    },
+  );
 });
 
 test("transcript series creates normal image CampaignPosts from distinct source segments", async () => {
@@ -771,7 +787,7 @@ test("AI-image strategy attaches the generated Cloudinary reference to a transcr
     },
     imageService: { generate: async ({ prompt }) => {
       imagePrompt = prompt;
-      return { model: "gpt-image-1", media: {
+      return { model: "gpt-image-2.5-sunburst", media: {
         assetId: "ai-1", publicId: "campaigns/ai-1", resourceType: "image", format: "png",
         mediaId: "ai-1", mediaType: "image", mediaUrl: "https://res.cloudinary.com/example/ai-1.png",
       } };

@@ -183,7 +183,8 @@ updated AI campaign save procedure requires its new parameters. The migration
 adds optional source/media configuration fields and does not change normal
 `Campaigns` or `CampaignPosts`. No new credential is required. To use direct
 AI-created images, select an enabled OpenAI provider in AI Campaign setup;
-`AI_CAMPAIGN_IMAGE_MODEL` is an optional GPT Image model override. Validate
+`AI_CAMPAIGN_IMAGE_MODEL` is an optional GPT Image model override; the default is
+`gpt-image-2.5-sunburst`. Validate
 one transcript + stored-image draft, one script + stored-video draft, and one
 AI-image draft in Campaign Studio before scheduling any of them through Buffer.
 

@@ -107,7 +107,7 @@ not a carousel; a series can use different assets across normal posts.
 For image-generation strategies, an explicitly selected, enabled OpenAI
 provider supplies its existing encrypted API key to the image-generation
 endpoint. `AI_CAMPAIGN_IMAGE_MODEL` optionally overrides the default
-`gpt-image-1` image model; it must name a GPT Image model. The returned image
+`gpt-image-2.5-sunburst` image model; it must name a GPT Image model. The returned image
 bytes are validated and uploaded through the existing Cloudinary campaign-media
 path before a normal Campaign/CampaignPost is saved. No new media key or storage
 service is required. Claude/Gemini remain supported for copy, but are
