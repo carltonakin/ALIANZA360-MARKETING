@@ -143,6 +143,9 @@ test("n8n routes require service Bearer auth without falling through to CRM sess
   const acquisitionMissing = await post("/api/acquisition/outreach/claim");
   assert.equal(acquisitionMissing.status, 401);
 
+  const resendWebhook = await post("/api/acquisition/webhooks/resend");
+  assert.notEqual(resendWebhook.status, 401, "Resend webhook authentication is its verified Svix signature, not a CRM session");
+
   const unrelated = await fetch(`${dashboardUrl}/api/leads/1`, {
     headers: { authorization: `Bearer ${testServiceToken}` },
   });

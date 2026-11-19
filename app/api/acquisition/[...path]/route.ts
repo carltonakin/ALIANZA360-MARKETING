@@ -8,13 +8,20 @@ async function forward(request: Request, context: RouteContext<"/api/acquisition
   const headers = new Headers();
   const contentType = request.headers.get("content-type");
   if (contentType) headers.set("content-type", contentType);
+  const resendWebhook = suffix === "webhooks/resend";
+  if (resendWebhook) {
+    for (const name of ["svix-id", "svix-timestamp", "svix-signature"]) {
+      const value = request.headers.get(name);
+      if (value) headers.set(name, value);
+    }
+  }
   const method = request.method.toUpperCase();
   return proxySocialRequest(target, {
     method,
     headers,
     body: method === "GET" || method === "HEAD" ? undefined : await request.arrayBuffer(),
     cache: "no-store",
-  });
+  }, { requiresServiceToken: !resendWebhook });
 }
 
 export async function GET(request: Request, context: RouteContext<"/api/acquisition/[...path]">) {

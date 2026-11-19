@@ -34,6 +34,12 @@ type ManualTask = { id: number; acquisitionConfigurationId: number; prospectId: 
   contactValue: string; message: string; createdAt: string; status: string };
 type Overview = Record<string, number>;
 type Analytics = { overview: Overview; sources: Record<string, unknown>[]; channels: Record<string, unknown>[]; configurations: Record<string, unknown>[] };
+type EmailWorkerHealth = {
+  status: string; enabled: boolean; configured: boolean; sendConfigured: boolean; webhookConfigured: boolean; running: boolean;
+  intervalMs: number; batchSize: number; lastHeartbeatAt: string | null; lastSuccessAt: string | null; lastError: string | null;
+  lastBatch: { claimed: number; accepted: number; retrying: number; failed: number };
+  queue: { queued: number; due: number; processing: number; failedLast24Hours: number; oldestPendingAt: string | null; lastAcceptedAt: string | null; lastDeliveredAt: string | null };
+};
 
 const SOURCE_NAMES: Record<string, string> = {
   GOOGLE_PLACES: "Google Places / business search",
@@ -146,6 +152,10 @@ function humanize(value: string) {
   return value.toLowerCase().replaceAll("_", " ").replace(/\b\w/g, (character) => character.toUpperCase());
 }
 
+function formatTimestamp(value: string | null | undefined) {
+  return value ? new Date(value).toLocaleString() : "Not recorded";
+}
+
 function statusClass(status: string) {
   if (["ACTIVE", "QUALIFIED", "CONVERTED_TO_LEAD"].includes(status)) return "registered";
   if (["ENGAGED", "CONTACTABLE", "CONTACTING"].includes(status)) return "engaged";
@@ -198,6 +208,7 @@ export function AIAcquisition({ view }: { view: AcquisitionView }) {
   const [providers, setProviders] = useState<AIProvider[]>([]);
   const [overview, setOverview] = useState<Overview>({});
   const [analytics, setAnalytics] = useState<Analytics>({ overview: {}, sources: [], channels: [], configurations: [] });
+  const [emailWorkerHealth, setEmailWorkerHealth] = useState<EmailWorkerHealth | null>(null);
   const [selectedConfigurationId, setSelectedConfigurationId] = useState<number | null>(null);
   const [editing, setEditing] = useState<ReturnType<typeof emptyConfiguration> | AcquisitionConfiguration | null>(null);
   const [busy, setBusy] = useState(false);
@@ -220,6 +231,7 @@ export function AIAcquisition({ view }: { view: AcquisitionView }) {
         loadPart("Manual tasks", api<{ tasks: ManualTask[] }>("manual-tasks"), (data) => setManualTasks(data.tasks || [])),
         loadPart("Overview", api<{ overview: Overview }>("overview"), (data) => setOverview(data.overview || {})),
         loadPart("Analytics", api<{ analytics: Analytics }>("analytics"), (data) => setAnalytics(data.analytics || { overview: {}, sources: [], channels: [], configurations: [] })),
+        loadPart("Email worker", api<{ health: EmailWorkerHealth }>("email-worker/health"), (data) => setEmailWorkerHealth(data.health || null)),
         loadPart("AI providers", aiProviderOptions(), setProviders),
       ]);
       setError(failures.filter((failure): failure is string => Boolean(failure)).join(" "));
@@ -301,7 +313,7 @@ export function AIAcquisition({ view }: { view: AcquisitionView }) {
     {message && <p className="acquisition-alert success" role="status">{message}</p>}
     {busy && <div className="acquisition-loading">Updating acquisition data…</div>}
 
-    {view === "Overview" && <OverviewView overview={overview} configurations={configurations} selected={selected} busy={busy}
+    {view === "Overview" && <OverviewView overview={overview} emailWorkerHealth={emailWorkerHealth} configurations={configurations} selected={selected} busy={busy}
       manualTasks={manualTasks.filter((task) => !selected || task.acquisitionConfigurationId === selected.id)}
       onAction={(action) => selected && mutate("configurations/action", { id: selected.id, action }, `${action.toLowerCase()} completed.`)}
       onDiscover={() => selected && mutate("discover", { configurationId: selected.id }, "Discovery run completed.")}
@@ -337,8 +349,8 @@ export function AIAcquisition({ view }: { view: AcquisitionView }) {
   </div>;
 }
 
-function OverviewView({ overview, configurations, selected, manualTasks, busy, onAction, onDiscover, onCompleteTask }: {
-  overview: Overview; configurations: AcquisitionConfiguration[]; selected: AcquisitionConfiguration | null; busy: boolean;
+function OverviewView({ overview, emailWorkerHealth, configurations, selected, manualTasks, busy, onAction, onDiscover, onCompleteTask }: {
+  overview: Overview; emailWorkerHealth: EmailWorkerHealth | null; configurations: AcquisitionConfiguration[]; selected: AcquisitionConfiguration | null; busy: boolean;
   manualTasks: ManualTask[]; onAction: (action: string) => void; onDiscover: () => void; onCompleteTask: (id: number) => void;
 }) {
   const metrics = [
@@ -352,6 +364,27 @@ function OverviewView({ overview, configurations, selected, manualTasks, busy, o
   ];
   return <>
     <div className="acquisition-metric-grid">{metrics.map(([label, value], index) => <article key={String(label)}><span>{index + 1}</span><p>{label}</p><h3>{numberMetric(value)}</h3></article>)}</div>
+    <section className="panel acquisition-email-health">
+      <div className="panel-head"><div><h3>Acquisition email delivery</h3><p>The app worker claims only EMAIL attempts and sends them through Resend.</p></div>
+        <span className={`status ${emailWorkerHealth?.status === "READY" || emailWorkerHealth?.status === "RUNNING" ? "registered" : emailWorkerHealth?.status === "DISABLED" ? "new" : "hot"}`}>{humanize(emailWorkerHealth?.status || "unavailable")}</span>
+      </div>
+      {emailWorkerHealth ? <>
+        <div className="acquisition-email-health-grid">
+          <article><small>Queued</small><strong>{numberMetric(emailWorkerHealth.queue.queued)}</strong></article>
+          <article><small>Due now</small><strong>{numberMetric(emailWorkerHealth.queue.due)}</strong></article>
+          <article><small>Processing</small><strong>{numberMetric(emailWorkerHealth.queue.processing)}</strong></article>
+          <article><small>Failed · 24h</small><strong>{numberMetric(emailWorkerHealth.queue.failedLast24Hours)}</strong></article>
+        </div>
+        <div className="acquisition-email-health-meta">
+          <span>Resend send configuration: <b>{emailWorkerHealth.sendConfigured ? "ready" : "missing"}</b></span>
+          <span>Signed webhook: <b>{emailWorkerHealth.webhookConfigured ? "ready" : "missing"}</b></span>
+          <span>Last accepted: <b>{formatTimestamp(emailWorkerHealth.queue.lastAcceptedAt)}</b></span>
+          <span>Last delivered: <b>{formatTimestamp(emailWorkerHealth.queue.lastDeliveredAt)}</b></span>
+          <span>Oldest pending: <b>{formatTimestamp(emailWorkerHealth.queue.oldestPendingAt)}</b></span>
+        </div>
+        {emailWorkerHealth.lastError && <p className="acquisition-alert error" role="status">{emailWorkerHealth.lastError}</p>}
+      </> : <p className="acquisition-empty-copy">Email worker health is unavailable.</p>}
+    </section>
     <section className="panel acquisition-control-panel">
       <div className="panel-head"><div><h3>Acquisition controls</h3><p>Lifecycle controls apply only to the selected acquisition configuration.</p></div>{selected && <span className={`status ${statusClass(selected.status)}`}>{humanize(selected.status)}</span>}</div>
       {selected ? <><h4>{selected.acquisitionName}</h4><p>{selected.objective}</p><div className="card-actions">

@@ -51,9 +51,13 @@ Prospect identity is SHA-256 over `source + externalSourceId` when a stable exte
 
 Each channel has enabled state, priority, maximum attempts, retry delay, next-channel delay, stop-on-response, and explicit simultaneous-channel behavior. The policy engine blocks disabled channels, missing or invalid contact data, maximum-attempt violations, opt-out/revoked consent/`DO_NOT_CONTACT`, delay windows, and escalation after a response.
 
-The engine selects the first allowed configured method. A contact request creates an idempotent MSSQL queue record; it does not expose credentials or let the model bypass the policy engine. The claim procedure rechecks configuration state, date window, channel enablement, consent, contact provenance, maximum attempts, delay, response, and opt-out before returning work. A successful completion records a sent conversation and advances the contact delay. Manual follow-up is a review task, not an automatic message.
+The engine selects the first allowed configured method. A contact request creates an idempotent MSSQL queue record; it does not expose credentials or let the model bypass the policy engine. The claim procedure rechecks configuration state, date window, channel enablement, consent, contact provenance, suppression, maximum attempts, delay, response, and opt-out before returning work. A successful provider acceptance records a sent conversation and advances the contact delay; Resend webhooks then record delivered, delayed, bounced, complained, failed, opened, clicked, or suppressed outcomes separately. Manual follow-up is a review task, not an automatic message.
 
-An external delivery worker can `POST /api/acquisition/outreach/claim` with `Authorization: Bearer <SERVICE_AUTH_TOKEN>` and `{ "limit": 10 }`, send via an existing approved channel integration, then `POST /api/acquisition/outreach/<attemptId>/complete` with the same service token and `{ "lockToken": "<claim token>", "succeeded": true, "externalMessageId": "<provider ID>" }`. Failed attempts may return `retryable` and `nextAttemptAt`. The worker should pass the attempt idempotency key to its provider if supported and must not send a manual review task as a message. **No built-in Email, WhatsApp, SMS, or Meta delivery worker is installed by this module, and existing n8n workflows are not automatically rewired.** Until a worker is connected, queued attempts remain unsent.
+Migration 031 installs an app-owned Resend worker for EMAIL attempts. It runs inside the persistent Social Listener, claims only EMAIL work through the same lock-token procedure, uses the queue's stable idempotency key with Resend, freezes the exact provider payload before delivery, and completes the existing queue record. It is disabled by default so it cannot compete with n8n during deployment. WhatsApp, SMS, and Meta delivery still require external workers.
+
+The existing external worker contract remains available for non-email channels and rollback: `POST /api/acquisition/outreach/claim` with `Authorization: Bearer <SERVICE_AUTH_TOKEN>` and `{ "limit": 10 }`, followed by `POST /api/acquisition/outreach/<attemptId>/complete`. External workers may optionally request one channel with `{ "channel": "EMAIL" }`. Manual review tasks are never returned by the claim procedure.
+
+Resend must send signed webhooks to `POST /api/acquisition/webhooks/resend`. The public Next.js boundary forwards the untouched body and `svix-*` signature headers; the listener verifies the signature before persisting a unique event. Every acquisition send carries the Resend tag `crm_source=ai_acquisition`, so a shared Resend account can deliver events from other applications to the endpoint without those events entering the acquisition database. A complaint opts the prospect out and cancels other queued attempts. Bounced and suppressed email contacts are excluded from later email selection without disabling otherwise valid channels.
 
 Incoming messages are stored before AI processing. The selected existing AI provider receives Company Profile, acquisition configuration, known prospect fields, conversation history, and missing qualification fields. It must return:
 
@@ -112,11 +116,30 @@ Server-only environment variables:
 ```text
 AI_ACQUISITION_INTERVAL_MS=900000
 AI_ACQUISITION_OUTREACH_BATCH_SIZE=10
+ACQUISITION_EMAIL_WORKER_ENABLED=false
+ACQUISITION_EMAIL_WORKER_INTERVAL_MS=10000
+ACQUISITION_EMAIL_WORKER_BATCH_SIZE=10
+RESEND_API_KEY=<server-only-key>
+RESEND_FROM_EMAIL=<verified-sender@example.com>
+RESEND_REPLY_TO=<reply-inbox@example.com>
+RESEND_WEBHOOK_SECRET=<webhook-signing-secret>
+RESEND_ACQUISITION_SUBJECT=A quick question for {companyName}
 GOOGLE_PLACES_API_KEY=<key with Places API access>
 APOLLO_API_KEY=<Apollo API key with People Search, People Enrichment, and profile access>
 ```
 
-Existing SQL, service-auth, channel-encryption, AI-provider-encryption, Meta, email, SMS, WhatsApp, Buffer, and Cloudinary variables remain unchanged. Never prefix the Google or Apollo key with `NEXT_PUBLIC_`.
+Existing SQL, service-auth, channel-encryption, AI-provider-encryption, Meta, SMS, WhatsApp, Buffer, and Cloudinary variables remain unchanged. Never prefix the Google, Apollo, or Resend key with `NEXT_PUBLIC_`.
+
+### Resend cutover
+
+1. Apply migration 031 while `ACQUISITION_EMAIL_WORKER_ENABLED=false`.
+2. Configure the Resend API key, verified sender, reply-to address, and webhook signing secret on the server.
+3. Register `https://<crm-host>/api/acquisition/webhooks/resend` for Resend email events.
+4. Deploy and confirm AI Acquisition Overview reports the worker as disabled but configured.
+5. Pause the n8n acquisition-email claimant without deleting it.
+6. Enable the app worker on one Social Listener instance and restart the application.
+7. Confirm the existing queue drains, provider IDs are stored, and signed delivered/bounce test events appear.
+8. Observe the worker for 24 to 48 hours before removing the n8n email-delivery nodes.
 
 ### Apollo production deployment
 

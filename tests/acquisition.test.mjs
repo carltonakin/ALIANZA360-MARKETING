@@ -22,6 +22,11 @@ import { AI_ACQUISITION_SOURCES } from "../lib/acquisition-ai-sources.mjs";
 import { aiDiscoveryCriteria } from "../social/acquisition-ai-discovery.mjs";
 import { evidenceCitationKey, evidenceText, publicEvidenceAddress, publicEvidenceUrl, robotsAllows } from "../social/acquisition-evidence.mjs";
 import { SqlServerRepository } from "../social/sql-server.mjs";
+import {
+  AcquisitionEmailWorker,
+  ResendEmailAdapter,
+  buildAcquisitionEmailPayload,
+} from "../social/acquisition-email.mjs";
 
 const verifiedBusiness = { companyName: "Example Advisory", website: "https://example.com", industry: "advisory", location: "Miami", email: "office@example.com", phone: "+1 305 555 0100", sourceUrl: "https://example.com/about", description: "growth automation", customerTypeEvidence: "business owners", businessSizeEvidence: "10 employees" };
 const publicBusinessPage = "Example Advisory offers advisory in Miami. Contact office@example.com or +1 305 555 0100. Our growth automation team serves business owners with 10 employees.";
@@ -766,6 +771,132 @@ test("automatic outreach is opt-in, consent-gated, delayed, and bounded", async 
   assert.deepEqual(queued.map((item) => item.id), [1], "the follow-up waits for its configured delay");
 });
 
+test("acquisition email payloads freeze sender, recipient, subject, text, and escaped HTML", () => {
+  const payload = buildAcquisitionEmailPayload({
+    prospect: { companyName: "Example & Partners" },
+    configuration: { acquisitionName: "Growth", productOrService: "CRM" },
+    contactValue: "owner@example.test",
+    message: "Hello <Owner>\n\nCan we help?",
+    env: {
+      RESEND_FROM_EMAIL: "Alianza <growth@example.test>",
+      RESEND_REPLY_TO: "sales@example.test",
+      RESEND_ACQUISITION_SUBJECT: "{productOrService} for {companyName}",
+    },
+  });
+  assert.equal(payload.from, "Alianza <growth@example.test>");
+  assert.equal(payload.to, "owner@example.test");
+  assert.equal(payload.subject, "CRM for Example & Partners");
+  assert.equal(payload.replyTo, "sales@example.test");
+  assert.match(payload.html, /Hello &lt;Owner&gt;/);
+  assert.equal(payload.headers["X-CRM-Template-Version"], "acquisition-v1");
+  assert.deepEqual(payload.tags, [{ name: "crm_source", value: "ai_acquisition" }]);
+});
+
+test("Resend adapter sends one frozen payload with the queue idempotency key", async () => {
+  const calls = [];
+  const adapter = new ResendEmailAdapter({
+    env: { RESEND_API_KEY: "fixture", RESEND_FROM_EMAIL: "sender@example.test" },
+    client: {
+      emails: { send: async (...args) => { calls.push(args); return { data: { id: "resend-42" }, error: null, headers: {} }; } },
+      webhooks: { verify: () => ({}) },
+    },
+  });
+  const result = await adapter.send({
+    from: "sender@example.test", to: "owner@example.test", subject: "Hello", text: "Message", html: "<p>Message</p>",
+  }, { idempotencyKey: "acquisition:42:EMAIL:1" });
+  assert.equal(result.id, "resend-42");
+  assert.equal(calls.length, 1);
+  assert.equal(calls[0][1].idempotencyKey, "acquisition:42:EMAIL:1");
+});
+
+test("app-owned email worker claims only EMAIL and completes provider acceptance", async () => {
+  const completions = [];
+  const sent = [];
+  const repository = {
+    freezeAcquisitionEmailPayload: async (_id, _lockToken, payload) => ({ emailPayload: payload }),
+    getAcquisitionEmailQueueHealth: async () => ({ queued: 0, due: 0, processing: 0, failedLast24Hours: 0 }),
+  };
+  const acquisitionService = {
+    claimOutreach: async (input) => {
+      assert.equal(input.channel, "EMAIL");
+      return { lockToken: "lock-42", attempts: [{
+        id: 42, channel: "EMAIL", contactValue: "owner@example.test", message: "Hello", idempotencyKey: "attempt-42", attemptCount: 1,
+      }] };
+    },
+    completeOutreach: async (id, body) => { completions.push({ id, body }); },
+  };
+  const worker = new AcquisitionEmailWorker({
+    acquisitionService, repository,
+    adapter: { send: async (payload, options) => { sent.push({ payload, options }); return { id: "resend-42" }; } },
+    env: {
+      ACQUISITION_EMAIL_WORKER_ENABLED: "true", RESEND_API_KEY: "fixture", RESEND_FROM_EMAIL: "sender@example.test",
+      RESEND_WEBHOOK_SECRET: "whsec_fixture", RESEND_ACQUISITION_SUBJECT: "A quick question",
+    },
+    logger: { error() {} },
+  });
+  const result = await worker.tick();
+  assert.deepEqual(result, { claimed: 1, accepted: 1, retrying: 0, failed: 0 });
+  assert.equal(sent[0].options.idempotencyKey, "attempt-42");
+  assert.equal(completions.length, 1);
+  assert.deepEqual(completions[0], { id: 42, body: {
+    lockToken: "lock-42", succeeded: true, externalMessageId: "resend-42", providerStatus: "ACCEPTED",
+  } });
+});
+
+test("email worker schedules short retryable provider failures without creating another attempt", async () => {
+  const completions = [];
+  const worker = new AcquisitionEmailWorker({
+    acquisitionService: {
+      claimOutreach: async () => ({ lockToken: "lock-8", attempts: [{
+        id: 8, channel: "EMAIL", contactValue: "owner@example.test", message: "Hello", idempotencyKey: "attempt-8",
+        attemptCount: 1, emailPayload: { from: "sender@example.test", to: "owner@example.test", subject: "Hello", text: "Hello", html: "<p>Hello</p>" },
+      }] }),
+      completeOutreach: async (id, body) => { completions.push({ id, body }); },
+    },
+    repository: {},
+    adapter: { send: async () => { throw Object.assign(new Error("rate limited"), { code: "rate_limit_exceeded", retryable: true, retryAfterSeconds: 90 }); } },
+    env: { ACQUISITION_EMAIL_WORKER_ENABLED: "true", RESEND_API_KEY: "fixture", RESEND_FROM_EMAIL: "sender@example.test", RESEND_WEBHOOK_SECRET: "whsec_fixture" },
+    logger: { error() {} },
+  });
+  const before = Date.now();
+  const result = await worker.tick();
+  assert.equal(result.retrying, 1);
+  assert.equal(completions[0].body.retryable, true);
+  assert.equal(completions[0].body.providerStatus, "RETRY_SCHEDULED");
+  const delay = new Date(completions[0].body.nextAttemptAt).getTime() - before;
+  assert.ok(delay >= 89_000 && delay <= 92_000);
+});
+
+test("verified Resend webhooks are persisted idempotently by provider email ID", async () => {
+  const applied = [];
+  const worker = new AcquisitionEmailWorker({
+    acquisitionService: {},
+    repository: { applyAcquisitionEmailEvent: async (event) => { applied.push(event); return { matched: true, duplicate: false, attemptId: 7 }; } },
+    adapter: { verifyWebhook: () => ({ type: "email.delivered", created_at: "2026-11-18T12:00:00Z", data: { email_id: "resend-7", tags: { crm_source: "ai_acquisition" } } }) },
+    env: {},
+  });
+  const result = await worker.handleWebhook("{}", { id: "evt-7", timestamp: "1", signature: "v1,test" });
+  assert.deepEqual(result, { ignored: false, eventType: "email.delivered", duplicate: false, attemptId: 7 });
+  assert.equal(applied[0].webhookEventId, "evt-7");
+  assert.equal(applied[0].externalMessageId, "resend-7");
+});
+
+test("shared Resend account webhooks ignore email events from other applications", async () => {
+  let applied = 0;
+  const worker = new AcquisitionEmailWorker({
+    acquisitionService: {},
+    repository: { applyAcquisitionEmailEvent: async () => { applied += 1; } },
+    adapter: { verifyWebhook: () => ({
+      type: "email.delivered",
+      data: { email_id: "another-app-email", tags: { crm_source: "another_app" } },
+    }) },
+    env: {},
+  });
+  const result = await worker.handleWebhook("{}", { id: "evt-other", timestamp: "1", signature: "v1,test" });
+  assert.deepEqual(result, { ignored: true, eventType: "email.delivered", reason: "foreign_application" });
+  assert.equal(applied, 0);
+});
+
 test("structured acquisition decisions preserve the required contract", () => {
   assert.deepEqual(normalizeAcquisitionDecision({
     intent: "pricing", confidence: 1.4, next_action: "HANDOFF", response: "A specialist can help.",
@@ -833,6 +964,8 @@ test("listener exposes acquisition routes independently of campaign routes", asy
   assert.equal(unconfiguredSearch.status, 409);
   assert.equal(overview.status, 200);
   assert.equal((await overview.json()).overview.prospectsDiscovered, 7);
+  const emailHealth = await request("/acquisition/email-worker/health");
+  assert.equal((await emailHealth.json()).health.status, "DISABLED");
   const discovery = await request("/acquisition/discover", { method: "POST", body: JSON.stringify({ configurationId: 3 }) });
   assert.equal(discovery.status, 200);
   assert.deepEqual(calls, [3]);
@@ -857,6 +990,31 @@ test("listener exposes acquisition routes independently of campaign routes", asy
   });
 });
 
+test("listener accepts only verified Resend webhook handling before service authentication", async () => {
+  const calls = [];
+  const app = await createSocialListenerApp({
+    env: { SERVICE_AUTH_TOKEN: "service-token" },
+    repository: new InMemorySocialRepository(),
+    adapters: {},
+    acquisitionService: {},
+    acquisitionEmailWorker: {
+      handleWebhook: async (rawBody, headers) => { calls.push({ rawBody, headers }); return { eventType: "email.delivered", duplicate: false }; },
+      health: async () => ({ status: "READY" }),
+      stop() {},
+    },
+    aiProviderService: {}, aiCampaignAutomationEngine: {}, bufferCampaignService: {},
+    logger: { info() {}, error() {}, log() {} },
+  });
+  const response = await app.handle(new Request("http://listener.test/acquisition/webhooks/resend", {
+    method: "POST",
+    headers: { "svix-id": "evt-1", "svix-timestamp": "1", "svix-signature": "v1,test" },
+    body: "{\"type\":\"email.delivered\"}",
+  }));
+  assert.equal(response.status, 200);
+  assert.equal(calls[0].headers.id, "evt-1");
+  assert.match(calls[0].rawBody, /email\.delivered/);
+});
+
 test("acquisition migration keeps Prospect storage independent and conversion inside the existing Lead lifecycle", () => {
   const sql = readFileSync(new URL("../sql/026_ai_acquisition.sql", import.meta.url), "utf8");
   for (const table of ["AIAcquisitionConfigurations", "AIAcquisitionProspects", "AIAcquisitionProspectContacts",
@@ -874,6 +1032,17 @@ test("acquisition migration keeps Prospect storage independent and conversion in
   assert.match(sql, /ReplyRatePercent/);
   assert.match(sql, /AverageLeadScore/);
   assert.doesNotMatch(sql, /CREATE\s+TABLE\s+dbo\.Leads\b/i);
+});
+
+test("Resend acquisition migration adds frozen payloads, channel claims, webhook deduplication, and suppression", () => {
+  const sql = readFileSync(new URL("../sql/031_acquisition_resend_delivery.sql", import.meta.url), "utf8");
+  assert.match(sql, /EmailPayloadJson/);
+  assert.match(sql, /@Channel NVARCHAR\(64\)=NULL/);
+  assert.match(sql, /AIAcquisitionContactAttempt_EmailPayloadFreeze/);
+  assert.match(sql, /CREATE TABLE dbo\.AIAcquisitionEmailEvents/);
+  assert.match(sql, /WebhookEventId/);
+  assert.match(sql, /SuppressedAt IS NULL/);
+  assert.match(sql, /email\.complained/);
 });
 
 test("Apollo migration adds provider-specific enrichment and usage state without replacing CRM scoring", () => {

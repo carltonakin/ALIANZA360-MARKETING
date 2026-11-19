@@ -1,6 +1,7 @@
 import { createHash, randomUUID } from "node:crypto";
 import { AI_ACQUISITION_SOURCES } from "../lib/acquisition-ai-sources.mjs";
 import { GroundedAcquisitionDiscovery } from "./acquisition-ai-discovery.mjs";
+import { buildAcquisitionEmailPayload } from "./acquisition-email.mjs";
 
 export const ACQUISITION_STATUSES = Object.freeze([
   "DRAFT", "ACTIVE", "PAUSED", "COMPLETED", "STOPPED", "FAILED",
@@ -768,8 +769,13 @@ export class CommunicationPolicyEngine {
     if (prospectContact(prospect, method?.channel) && method?.channel !== "MANUAL_HUMAN_FOLLOW_UP" && !isReply) {
       const type = method?.channel === "EMAIL" ? "EMAIL" : method?.channel === "SMS" ? "PHONE" : method?.channel;
       const contact = prospectContact(prospect, method?.channel);
-      if (!Array.isArray(prospect.contacts) || !prospect.contacts.some((item) => item.type === type && item.value === contact && item.source)) {
+      const matchingContact = Array.isArray(prospect.contacts)
+        ? prospect.contacts.find((item) => item.type === type && item.value === contact && item.source)
+        : null;
+      if (!matchingContact) {
         reasons.push("CONTACT_PROVENANCE_MISSING");
+      } else if (matchingContact.suppressedAt) {
+        reasons.push("CONTACT_SUPPRESSED");
       }
     }
     if (["WHATSAPP_BUSINESS", "INSTAGRAM", "FACEBOOK", "SMS"].includes(method?.channel) && !isReply &&
@@ -899,6 +905,7 @@ export class AcquisitionService {
   constructor({ repository, aiProviderService, discoveryProviders, policyEngine, env = process.env, fetchImpl } = {}) {
     this.repository = repository;
     this.aiProviderService = aiProviderService;
+    this.env = env;
     this.discoveryProviders = discoveryProviders || createDiscoveryProviders({ repository, encryptionKey: aiProviderService?.encryptionKey || env.AI_PROVIDER_ENCRYPTION_KEY || env.CHANNEL_CONFIG_ENCRYPTION_KEY, env, fetchImpl });
     this.policyEngine = policyEngine || new CommunicationPolicyEngine();
     this.outreachBatchSize = boundedInteger(env.AI_ACQUISITION_OUTREACH_BATCH_SIZE, 10, 1, 100);
@@ -1394,12 +1401,24 @@ export class AcquisitionService {
       origin,
       idempotencyKey: clean(body.idempotencyKey, 255) || `acquisition:${selection.prospect.id}:${chosen.method.channel}:${Date.now()}`,
       status: "QUEUED",
+      emailPayload: chosen.method.channel === "EMAIL" ? buildAcquisitionEmailPayload({
+        prospect: selection.prospect,
+        configuration: selection.configuration,
+        contactValue: chosen.contact,
+        message,
+        subject: body.subject,
+        env: this.env,
+      }) : null,
     });
     return { attempt, selectedChannel: chosen.method.channel, policy: chosen.policy };
   }
 
-  async claimOutreach({ limit = 10, lockToken = randomUUID() } = {}) {
-    const attempts = await this.repository.claimAcquisitionContactAttempts({ limit, lockToken });
+  async claimOutreach({ limit = 10, lockToken = randomUUID(), channel = null } = {}) {
+    const attempts = await this.repository.claimAcquisitionContactAttempts({
+      limit,
+      lockToken,
+      channel: clean(channel, 64).toUpperCase() || null,
+    });
     return { lockToken, attempts };
   }
 
@@ -1414,6 +1433,7 @@ export class AcquisitionService {
       error: clean(body.error, 1000),
       retryable: body.retryable === true,
       nextAttemptAt: body.nextAttemptAt || null,
+      providerStatus: clean(body.providerStatus, 64),
     });
   }
 
@@ -1537,6 +1557,14 @@ export class AcquisitionService {
         isReply: true,
         idempotencyKey: `acquisition:reply:${inbound.id}`,
         status: "QUEUED",
+        emailPayload: channel === "EMAIL" ? buildAcquisitionEmailPayload({
+          prospect,
+          configuration,
+          contactValue: prospectContact(prospect, channel),
+          message: proposed.message,
+          subject: body.subject,
+          env: this.env,
+        }) : null,
       });
     }
     return { inbound, proposed, attempt, decision: generated.decision, policy, humanHandoff: requiresHandoff };

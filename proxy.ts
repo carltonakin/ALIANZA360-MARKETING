@@ -15,6 +15,7 @@ const PUBLIC_API_PATHS = new Set([
   "/api/register",
   "/api/landing-views",
   "/api/social/webhook/meta",
+  "/api/acquisition/webhooks/resend",
 ]);
 
 function clean(value: string | undefined) {

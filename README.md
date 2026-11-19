@@ -102,6 +102,13 @@ CHANNEL_CONFIG_ENCRYPTION_KEY=<strong-random-key>
 AI_PROVIDER_ENCRYPTION_KEY=<strong-random-key>
 AI_CAMPAIGN_AUTOMATION_INTERVAL_MS=300000
 AI_ACQUISITION_INTERVAL_MS=900000
+ACQUISITION_EMAIL_WORKER_ENABLED=false
+ACQUISITION_EMAIL_WORKER_INTERVAL_MS=10000
+ACQUISITION_EMAIL_WORKER_BATCH_SIZE=10
+RESEND_API_KEY=<server-only-resend-key>
+RESEND_FROM_EMAIL=<verified-sender@example.com>
+RESEND_REPLY_TO=<reply-inbox@example.com>
+RESEND_WEBHOOK_SECRET=<resend-webhook-signing-secret>
 GOOGLE_PLACES_API_KEY=<server-only-google-places-key>
 APOLLO_API_KEY=<server-only-apollo-api-key>
 BUFFER_API_KEY=<Buffer API key>
@@ -151,6 +158,16 @@ records. Paid Apollo calls require explicit enrichment switches and positive
 daily/monthly limits. Apollo supplies contact data only; it does not send
 outreach, modify LeadScore, or classify a returned phone as WhatsApp-enabled.
 See `docs/ai-acquisition.md`.
+
+Migration 031 adds app-owned Resend delivery for the existing acquisition SQL
+queue. It freezes the exact provider payload, claims only EMAIL work, records
+provider acceptance separately from delivery webhooks, suppresses bounced or
+complaining email contacts, and exposes worker/queue health in AI Acquisition.
+The worker is disabled by default. Apply migration 031, configure the server-only
+Resend values, register `/api/acquisition/webhooks/resend` in Resend, pause the
+n8n acquisition-email claimant, and only then set
+`ACQUISITION_EMAIL_WORKER_ENABLED=true`. Keep n8n paused as a rollback option
+until the app worker has been observed in production.
 
 OpenAI, Anthropic Claude, and Google Gemini keys are entered in the admin
 Settings screen and encrypted server-side. When set,

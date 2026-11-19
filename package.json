@@ -38,6 +38,7 @@
     "react": "19.2.8",
     "react-dom": "19.2.8",
     "react-loading-skeleton": "3.5.0",
+    "resend": "^6.38.1",
     "tailwindcss": "4.2.1",
     "undici": "7.30.2"
   },

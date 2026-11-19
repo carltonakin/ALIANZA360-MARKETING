@@ -47,6 +47,10 @@ import {
   SEARCH_SOURCE_DEFINITIONS,
 } from "./acquisition.mjs";
 import {
+  AcquisitionEmailWorker,
+  acquisitionEmailConfiguration,
+} from "./acquisition-email.mjs";
+import {
   campaignMediaMaximumBytes,
   storeCampaignMediaBuffer,
 } from "../lib/campaign-media.mjs";
@@ -1819,6 +1823,13 @@ export function validateServiceConfiguration(
     );
   }
 
+  const emailConfiguration = acquisitionEmailConfiguration(env);
+  if (emailConfiguration.enabled) {
+    if (!emailConfiguration.apiKey) missing.push("RESEND_API_KEY");
+    if (!emailConfiguration.from) missing.push("RESEND_FROM_EMAIL");
+    if (!emailConfiguration.webhookSecret) missing.push("RESEND_WEBHOOK_SECRET");
+  }
+
   const individualSql =
     (env.DB_SERVER ||
       env.SQL_SERVER_HOST) &&
@@ -1867,6 +1878,8 @@ export async function createSocialListenerApp({
   aiProviderService: providedAiProviderService,
   aiCampaignAutomationEngine: providedAiCampaignAutomationEngine,
   acquisitionService: providedAcquisitionService,
+  acquisitionEmailWorker: providedAcquisitionEmailWorker,
+  resendEmailAdapter: providedResendEmailAdapter,
   authService: providedAuthService,
   fetchImpl,
   logger = console,
@@ -2013,6 +2026,16 @@ export async function createSocialListenerApp({
       aiProviderService: activeAiProviderService,
       env,
       fetchImpl,
+    });
+
+  const activeAcquisitionEmailWorker =
+    providedAcquisitionEmailWorker ||
+    new AcquisitionEmailWorker({
+      acquisitionService: activeAcquisitionService,
+      repository: activeRepository,
+      adapter: providedResendEmailAdapter,
+      env,
+      logger,
     });
 
   const acquisitionSearch = new AcquisitionSearchService({ repository: activeRepository, encryptionKey: aiEncryptionKey, env, fetchImpl });
@@ -2366,6 +2389,19 @@ export async function createSocialListenerApp({
     | AUTHORIZATION
     |--------------------------------------------------------------------------
     */
+
+    if (request.method === "POST" && url.pathname === "/acquisition/webhooks/resend") {
+      try {
+        const result = await activeAcquisitionEmailWorker.handleWebhook(await request.text(), {
+          id: request.headers.get("svix-id"),
+          timestamp: request.headers.get("svix-timestamp"),
+          signature: request.headers.get("svix-signature"),
+        });
+        return json({ ok: true, ...result });
+      } catch (error) {
+        return json({ ok: false, error: safeMessage(error) }, Number.isInteger(error?.statusCode) ? error.statusCode : 400);
+      }
+    }
 
     if (
       !authorized(
@@ -2774,6 +2810,10 @@ export async function createSocialListenerApp({
         });
       }
 
+      if (request.method === "GET" && url.pathname === "/acquisition/email-worker/health") {
+        return json({ ok: true, health: await activeAcquisitionEmailWorker.health() });
+      }
+
       if (request.method === "GET" && url.pathname === "/acquisition/ai-search/providers") {
         return json({ providers: ACQUISITION_SEARCH_PROVIDERS.map(({ id, label }) => ({ id, label })) });
       }
@@ -2900,6 +2940,7 @@ export async function createSocialListenerApp({
         const result = await activeAcquisitionService.claimOutreach({
           limit: Number(body.limit) || 10,
           lockToken: textField(body.lockToken, 64) || undefined,
+          channel: textField(body.channel, 64) || undefined,
         });
         return json({ ok: true, ...result });
       }
@@ -4821,16 +4862,19 @@ export async function createSocialListenerApp({
     acquisitionService:
       activeAcquisitionService,
 
+    acquisitionEmailWorker:
+      activeAcquisitionEmailWorker,
+
     bufferCampaignService:
       activeBufferCampaignService,
 
     authService:
       activeAuthService,
 
-    close: () =>
-      ownsRepository
-        ? activeRepository.close()
-        : Promise.resolve(),
+    close: async () => {
+      activeAcquisitionEmailWorker.stop?.();
+      if (ownsRepository) await activeRepository.close();
+    },
   };
 }
 
@@ -4902,6 +4946,8 @@ async function start() {
 
   const socialListenerApp =
     await createSocialListenerApp();
+
+  socialListenerApp.acquisitionEmailWorker.start();
 
   registerCampaignMediaExpressRoutes(app, {
     env: process.env,

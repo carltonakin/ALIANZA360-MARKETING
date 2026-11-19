@@ -665,6 +665,9 @@ function mapAcquisitionContactAttempt(row) {
     isReply: Boolean(row.IsReply),
     idempotencyKey: row.IdempotencyKey,
     status: row.Status,
+    emailPayload: jsonValue(row.EmailPayloadJson, null),
+    providerStatus: row.ProviderStatus || null,
+    providerStatusAt: iso(row.ProviderStatusAt),
     attemptCount: Number(row.AttemptCount || 0),
     nextAttemptAt: iso(row.NextAttemptAt),
     lockToken: row.LockToken ? String(row.LockToken) : null,
@@ -2441,14 +2444,16 @@ export class SqlServerRepository {
     request.input("IsReply", this.sql.Bit, input.isReply ? 1 : 0);
     request.input("IdempotencyKey", this.sql.NVarChar(255), input.idempotencyKey);
     request.input("Status", this.sql.NVarChar(32), input.status || "QUEUED");
+    request.input("EmailPayloadJson", this.sql.NVarChar(this.sql.MAX), input.emailPayload ? JSON.stringify(input.emailPayload) : null);
     const response = await request.execute("dbo.AIAcquisitionContactAttempt_Create");
     return response.recordset?.[0] ? mapAcquisitionContactAttempt(response.recordset[0]) : null;
   }
 
-  async claimAcquisitionContactAttempts({ limit = 10, lockToken }) {
+  async claimAcquisitionContactAttempts({ limit = 10, lockToken, channel = null }) {
     const request = this.request();
     request.input("Limit", this.sql.Int, Math.max(1, Math.min(100, Number(limit) || 10)));
     request.input("LockToken", this.sql.UniqueIdentifier, lockToken);
+    request.input("Channel", this.sql.NVarChar(64), channel || null);
     const response = await request.execute("dbo.AIAcquisitionContactAttempt_Claim");
     return (response.recordset || []).map(mapAcquisitionContactAttempt);
   }
@@ -2462,8 +2467,58 @@ export class SqlServerRepository {
     request.input("LastError", this.sql.NVarChar(1000), result.error || null);
     request.input("Retryable", this.sql.Bit, result.retryable ? 1 : 0);
     request.input("NextAttemptAt", this.sql.DateTime2, result.nextAttemptAt ? new Date(result.nextAttemptAt) : null);
+    request.input("ProviderStatus", this.sql.NVarChar(64), result.providerStatus || null);
     const response = await request.execute("dbo.AIAcquisitionContactAttempt_Complete");
     return response.recordset?.[0] ? mapAcquisitionContactAttempt(response.recordset[0]) : null;
+  }
+
+  async freezeAcquisitionEmailPayload(attemptId, lockToken, payload) {
+    const request = this.request();
+    request.input("AIAcquisitionContactAttemptId", this.sql.BigInt, numericId(attemptId));
+    request.input("LockToken", this.sql.UniqueIdentifier, lockToken);
+    request.input("EmailPayloadJson", this.sql.NVarChar(this.sql.MAX), JSON.stringify(payload));
+    const response = await request.execute("dbo.AIAcquisitionContactAttempt_EmailPayloadFreeze");
+    return response.recordset?.[0] ? mapAcquisitionContactAttempt(response.recordset[0]) : null;
+  }
+
+  async applyAcquisitionEmailEvent(input) {
+    const request = this.request();
+    request.input("WebhookEventId", this.sql.NVarChar(255), input.webhookEventId);
+    request.input("ExternalMessageId", this.sql.NVarChar(255), input.externalMessageId);
+    request.input("EventType", this.sql.NVarChar(64), input.eventType);
+    request.input("EventAt", this.sql.DateTime2, new Date(input.eventAt));
+    request.input("FailureReason", this.sql.NVarChar(1000), input.failureReason || null);
+    request.input("PayloadJson", this.sql.NVarChar(this.sql.MAX), JSON.stringify(input.payload || {}));
+    const response = await request.execute("dbo.AIAcquisitionEmailEvent_Apply");
+    const row = response.recordset?.[0] || {};
+    return {
+      matched: Boolean(row.Matched),
+      duplicate: Boolean(row.Duplicate),
+      attemptId: row.AIAcquisitionContactAttemptId ? Number(row.AIAcquisitionContactAttemptId) : null,
+      providerStatus: row.ProviderStatus || null,
+    };
+  }
+
+  async getAcquisitionEmailQueueHealth() {
+    const response = await this.request().query(`SELECT
+      SUM(CASE WHEN [Status] IN (N'QUEUED',N'RETRY') THEN 1 ELSE 0 END) Queued,
+      SUM(CASE WHEN [Status] IN (N'QUEUED',N'RETRY') AND NextAttemptAt<=SYSUTCDATETIME() THEN 1 ELSE 0 END) Due,
+      SUM(CASE WHEN [Status]=N'PROCESSING' THEN 1 ELSE 0 END) Processing,
+      SUM(CASE WHEN [Status]=N'FAILED' AND UpdatedAt>=DATEADD(HOUR,-24,SYSUTCDATETIME()) THEN 1 ELSE 0 END) FailedLast24Hours,
+      MIN(CASE WHEN [Status] IN (N'QUEUED',N'RETRY',N'PROCESSING') THEN CreatedAt END) OldestPendingAt,
+      MAX(CASE WHEN [Status]=N'SENT' THEN AttemptedAt END) LastAcceptedAt,
+      MAX(DeliveredAt) LastDeliveredAt
+      FROM dbo.AIAcquisitionContactAttempts WHERE Channel=N'EMAIL'`);
+    const row = response.recordset?.[0] || {};
+    return {
+      queued: Number(row.Queued || 0),
+      due: Number(row.Due || 0),
+      processing: Number(row.Processing || 0),
+      failedLast24Hours: Number(row.FailedLast24Hours || 0),
+      oldestPendingAt: iso(row.OldestPendingAt),
+      lastAcceptedAt: iso(row.LastAcceptedAt),
+      lastDeliveredAt: iso(row.LastDeliveredAt),
+    };
   }
 
   async getAcquisitionManualTasks(configurationId = null, limit = 250) {

@@ -70,6 +70,14 @@ test("listener startup validates only required server configuration", () => {
     () => validateServiceConfiguration({}),
     /SERVICE_AUTH_TOKEN, DB_SERVER\/DB_NAME\/DB_USER\/DB_PASSWORD/,
   );
+  assert.throws(
+    () => validateServiceConfiguration({
+      SERVICE_AUTH_TOKEN: "service-token",
+      DB_SERVER: "sql.example", DB_NAME: "crm", DB_USER: "crm_app", DB_PASSWORD: "password",
+      ACQUISITION_EMAIL_WORKER_ENABLED: "true",
+    }),
+    /RESEND_API_KEY, RESEND_FROM_EMAIL, RESEND_WEBHOOK_SECRET/,
+  );
 });
 
 test("status endpoint requires service authentication and never returns secrets", async () => {
